@@ -85,6 +85,7 @@ img, video { display: block; }
   justify-content: center;
 }
 .ib:active { background: var(--surface-2); }
+.ib.active { background: var(--accent-soft); color: var(--accent); }
 .badge-count {
   position: absolute;
   top: 5px;

@@ -420,12 +420,15 @@
   /**
    * Un lote de posts al azar según la mezcla: sortea la fuente por peso, salta a una página
    * al azar de esa fuente y se queda con 1–2 posts que no estén vistos, ocultos ni excluidos.
-   * st = { favorites, mix, seenSet, filter }; opts = { n, skip:Set }
+   * st = { favorites, mix, seenSet, filter }
+   * opts = { n, skip:Set, sources?, type?, era?, noRepeat? } — sources/type/era/noRepeat
+   *        reemplazan a los de la mezcla (p. ej. un solo hashtag en orden aleatorio).
    */
   RS.randomBatch = async function (st, opts) {
-    const n = (opts && opts.n) || 4;
-    const skip = (opts && opts.skip) || new Set();
-    const list = RS.mixSources(st);
+    opts = opts || {};
+    const n = opts.n || 4;
+    const skip = opts.skip || new Set();
+    const list = opts.sources || RS.mixSources(st);
     const sources = list.length ? list : [{ name: null, kind: null, w: 1 }];
     const total = sources.reduce((a, s) => a + s.w, 0);
     const pick = () => {
@@ -433,8 +436,9 @@
       for (const s of sources) if ((r -= s.w) < 0) return s;
       return sources[sources.length - 1];
     };
-    const type = RS.validType(st.mix.quality) || 'GOOD';
-    const era = st.mix.era || 'any';
+    const type = RS.validType(opts.type) || RS.validType(st.mix.quality) || 'GOOD';
+    const era = opts.era || st.mix.era || 'any';
+    const noRepeat = opts.noRepeat !== undefined ? opts.noRepeat : st.mix.noRepeat;
 
     const one = async (src) => {
       const count = await pagerCount(src.name, type);
@@ -442,7 +446,7 @@
       const first = era === 'any' ? 1 : await firstPageSince(src.name, type, era, last);
       const res = await RS.fetchPage(src.name, type, randInt(first, last));
       const ok = res.posts.filter(
-        (p) => !skip.has(p.id) && st.filter(p) && !(st.mix.noRepeat && st.seenSet && st.seenSet.has(p.id)) && p.media.length
+        (p) => !skip.has(p.id) && st.filter(p) && !(noRepeat && st.seenSet && st.seenSet.has(p.id)) && p.media.length
       );
       return shuffle(ok)
         .slice(0, 2)

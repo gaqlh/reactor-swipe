@@ -1040,18 +1040,27 @@
         return this.add(res.posts.map((post) => ({ post })));
       }
       if (this.kind === 'random') {
-        const batch = await RS.randomBatch({ favorites: S.favorites, mix: S.mix, seenSet: S.seenSet, filter: pass }, { n: 4, skip: this.ids });
+        // Con tag: solo ese hashtag, en orden aleatorio (calidad según el orden elegido arriba).
+        const opts = { n: 4, skip: this.ids };
+        if (this.tag) Object.assign(opts, { sources: [{ name: this.tag, kind: null, w: 1 }], type: this.type, era: 'any', noRepeat: false });
+        const batch = await RS.randomBatch({ favorites: S.favorites, mix: S.mix, seenSet: S.seenSet, filter: pass }, opts);
         const n = this.add(
-          batch.map((x) => ({
-            post: x.post,
-            label: x.source ? 'De tu mezcla · ' + RS.label(x.source, x.sourceKind) : 'Al azar en todo JoyReactor',
-            color: x.source ? mixColor(x.source) : null
-          }))
+          batch.map((x) =>
+            this.tag
+              ? { post: x.post }
+              : {
+                  post: x.post,
+                  label: x.source ? 'De tu mezcla · ' + RS.label(x.source, x.sourceKind) : 'Al azar en todo JoyReactor',
+                  color: x.source ? mixColor(x.source) : null
+                }
+          )
         );
         this.emptyStreak = n ? 0 : this.emptyStreak + 1;
         if (this.emptyStreak >= 4) {
           this.done = true;
-          this.endText = 'No encontré más posts nuevos con tu mezcla. Añade más hashtags o desactiva «No repetir lo que ya vi».';
+          this.endText = this.tag
+            ? 'Ya no encuentro más posts de #' + this.tag + ' que no hayas visto aquí. Toca «Barajar» para empezar otra vez.'
+            : 'No encontré más posts nuevos con tu mezcla. Añade más hashtags o desactiva «No repetir lo que ya vi».';
         }
         return n;
       }
@@ -1463,16 +1472,37 @@
 
   function routeTag(name, q) {
     const type = RS.validType(q.get('sort')) || 'GOOD';
-    const key = 'tag:' + name.toLowerCase() + ':' + type;
+    const random = q.get('order') === 'random';
+    const key = 'tag:' + name.toLowerCase() + ':' + type + (random ? ':random' : '');
+    const url = (sort, rnd) => '#/tag/' + enc(name) + '?sort=' + sort + (rnd ? '&order=random' : '');
     const f = cached(key, () =>
       new Feed({
         key,
-        kind: 'pager',
+        kind: random ? 'random' : 'pager',
         tag: name,
         type,
         back: true,
-        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), viewToggle(f)],
-        extra: () => [tagHero(name), sortChips(type, (t) => navReplace('#/tag/' + enc(name) + '?sort=' + t))]
+        head: (f) => [
+          backBtn('/home'),
+          h('h1', { text: '#' + name }),
+          h('button', {
+            class: 'ib' + (random ? ' active' : ''),
+            'aria-pressed': String(random),
+            'aria-label': random ? 'Volver al orden normal' : 'Ver en orden aleatorio',
+            title: random ? 'Volver al orden normal' : 'Ver en orden aleatorio',
+            onclick: () => navReplace(url(type, !random))
+          }, icon('shuffle', 22)),
+          viewToggle(f)
+        ],
+        extra: (f) => {
+          const chips = sortChips(type, (t) => navReplace(url(t, random)));
+          if (random) chips.append(h('button', { class: 'chip soft', onclick: () => f.reset() }, icon('refresh', 16), 'Barajar'));
+          return [
+            tagHero(name),
+            random ? h('p', { class: 'countline', style: { padding: '12px 16px 0' }, text: 'Orden aleatorio: posts de #' + name + ' de cualquier época.' }) : null,
+            chips
+          ];
+        }
       })
     );
     showFeed(f);
