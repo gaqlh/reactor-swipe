@@ -1,8 +1,8 @@
 {
   "name": "reactor-swipe",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "Extensión de Firefox para Android que convierte JoyReactor en un feed tipo Instagram.",
+  "description": "App de Android (y extensión de Firefox) que convierte JoyReactor en un feed tipo Instagram.",
   "scripts": {
     "dev": "node tools/dev-server.mjs",
     "icons": "python tools/make_icons.py",

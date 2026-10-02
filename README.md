@@ -1,61 +1,49 @@
 # Reactor Swipe
 
-Extensión de **Firefox para Android** que convierte JoyReactor en un feed tipo Instagram:
+App de **Android** que convierte JoyReactor en un feed tipo Instagram:
 
-- **Scroll infinito**: se acabó el botón «Siguiente página».
+- **Un post por pantalla**: deslizas hacia arriba y pasa al siguiente. Se acabó el botón «Siguiente página».
 - **Carrusel**: los posts con varias imágenes o videos se deslizan hacia los lados.
-- **Feed ↔ miniaturas** con un botón; al tocar una miniatura se abre el feed en ese post.
-- **Hashtags tocables**: abren el feed de ese hashtag dentro de la app.
-- **Favoritos**: categorías y hashtags, que también aparecen como «historias» arriba del Inicio.
-- **Aleatorio a tu medida**: eliges qué categorías y hashtags entran y cuánto pesa cada uno. También puedes fijar la calidad mínima y la época, evitar lo que ya viste y excluir hashtags.
-- **Me gusta** (corazón, o dos toques en la imagen), con historial filtrable por hashtag.
-- **No me gusta**: el post no vuelve a aparecer en ningún feed. Hay un historial para restaurarlo y, si ocultas mucho de un mismo hashtag, la app te sugiere excluirlo.
-- **Avisos**: cuando sale un post nuevo en un favorito con la campanita activada, llega una notificación. Al tocarla se abre «Novedades».
-- **Respaldo**: exportar e importar todos tus datos en un archivo.
+- **Doble toque = pantalla completa** (sin barras); doble toque o «atrás» para salir.
+- **Miniaturas** con un botón. Cada miniatura tiene su ♥ y su 👎, y al tocarla se abre ese post.
+- **Hashtags tocables**, y **favoritos** (categorías y hashtags) que salen como «historias» arriba del Inicio.
+- **Aleatorio a tu medida**: eliges qué entra y cuánto pesa cada cosa. También hay calidad mínima, época, «no repetir lo ya visto» y hashtags excluidos.
+- **Me gusta** con historial, y **No me gusta** que oculta el post para siempre (con historial para restaurar).
+- **Avisos** de posts nuevos en tus favoritos con campanita, aunque la app esté cerrada.
+- **Actualizaciones**: cuando hay versión nueva llega un aviso y son 2 toques (**Actualizar** e **Instalar**).
+- **Respaldo**: exportar e importar tus datos (se guarda en Descargas).
 
 Todo se guarda en el teléfono. No hace falta cuenta de JoyReactor.
 
-## Instalarla en el teléfono
+## Instalarla (una sola vez)
 
-Necesitas **Android 10 o superior** y **Firefox** (el normal, de Play Store). Chrome para Android no acepta extensiones.
+1. Abre este enlace en el teléfono: **<https://github.com/gaqlh/reactor-swipe/releases/latest/download/reactor-swipe.apk>**
+2. Abre el archivo descargado. Android te pedirá permitir instalar apps desde el navegador: actívalo y vuelve.
+3. Toca **Instalar**. Si Play Protect avisa de «app desconocida», toca **Instalar de todos modos**.
+4. Al abrirla, permite las notificaciones.
 
-### 1. Firmar la extensión (una sola vez por versión, gratis)
+En **Favoritos → ⚙ Ajustes** aparece «Revisar con la app cerrada → Permitir». Actívalo para que los avisos lleguen a tiempo.
 
-Firefox solo instala extensiones firmadas por Mozilla. Hay una opción «sin publicar» (*unlisted*): Mozilla revisa y firma el archivo automáticamente en unos minutos, pero **no** lo publica en su tienda.
+## Publicar una versión nueva (lo hace Claude)
 
-1. Crea una cuenta en <https://addons.mozilla.org> e inicia sesión.
-2. Entra a <https://addons.mozilla.org/developers/addon/api/key/> y pulsa **Generar nuevas credenciales**. Obtendrás un *emisor JWT* (la clave) y un *secreto JWT*.
-3. En la PC, dentro de esta carpeta, ejecuta (con tus credenciales; no las compartas con nadie):
+```bash
+npm run release
+```
 
-   ```powershell
-   $env:WEB_EXT_API_KEY = "user:12345:678"
-   $env:WEB_EXT_API_SECRET = "tu-secreto"
-   npm run sign
-   ```
+El comando sube el número de versión, crea la etiqueta en GitHub y espera a que GitHub Actions compile y publique la app. Los teléfonos con la app instalada reciben el aviso «versión disponible».
 
-   El archivo firmado queda en `dist/` (termina en `.xpi`).
+- `npm run release -- 1.2.0` publica una versión exacta.
+- `npm run release -- --same` vuelve a publicar la versión actual.
 
-### 2. Instalarla en Firefox para Android
+### La clave de firma
 
-1. Pasa el `.xpi` firmado al teléfono (por Drive, WhatsApp o cable USB).
-2. En Firefox: **Ajustes → Acerca de Firefox** y toca el logo de Firefox **5 veces** hasta que diga que se activó el menú de depuración.
-3. Vuelve a **Ajustes**. Abajo aparece **Instalar complemento desde archivo**. Elige el `.xpi` y acepta los permisos.
-4. Permite las notificaciones de Firefox si Android te lo pide.
+Android solo acepta una actualización si viene firmada con la misma clave que la versión instalada. La clave está en `.secrets/` (no se sube a GitHub), con una copia en `OneDrive/Reactor Swipe/clave-de-firma (no compartir)/`. En GitHub está guardada como *secret* (`ANDROID_KEYSTORE_B64` y `ANDROID_KEYSTORE_PASSWORD`).
 
-> Sin firmar se puede probar en **Firefox Nightly**: en `about:config` pon `xpinstall.signatures.required` en `false` y usa el mismo «Instalar complemento desde archivo» con `dist/reactor-swipe-0.1.0.xpi`. Mozilla no garantiza que funcione siempre, así que la versión firmada es la recomendada.
-
-### Para que los avisos lleguen
-
-Firefox revisa tus favoritos cada 15, 30 o 60 minutos mientras sigue abierto en segundo plano. Para que Android no lo cierre: **Ajustes de Android → Apps → Firefox → Batería → Sin restricciones**. Si Android lo cerró igual, la revisión se hace apenas vuelves a abrir la app.
-
-## Cómo se usa
-
-- **Abrir la app**: en joyreactor.com toca el botón flotante **Swipe**, o entra desde el menú ⋮ de Firefox → **Extensiones → Reactor Swipe**.
-- **Campanita** en Favoritos o en el feed de un hashtag: avisarme de posts nuevos.
-- **Icono de mezcla** (flechas cruzadas): meter ese favorito en el Aleatorio. Los pesos se ajustan en **Aleatorio → Personalizar**.
-- **Ajustes** (engranaje en Favoritos): frecuencia de avisos, «todo lo nuevo» o «solo los buenos», ocultar NSFW y respaldo.
+**No la borres:** sin ella habría que desinstalar la app y perder los datos para instalar versiones nuevas.
 
 ## Desarrollo
+
+La interfaz es HTML/CSS/JS en `extension/` y se prueba en la PC:
 
 ```bash
 npm install
@@ -65,32 +53,22 @@ npm install
 npm run dev
 ```
 
-Abre <http://localhost:5178/app.html> (conviene en vista de móvil). El servidor local hace de intermediario con JoyReactor, porque fuera de la extensión su API y sus videos bloquean al navegador.
+Abre <http://localhost:5178/app.html> en vista de móvil. El servidor local hace de intermediario con JoyReactor: fuera de la app, su API y sus videos bloquean al navegador.
 
-```bash
-npm run lint
-```
-
-```bash
-npm run build
-```
-
-`build` genera `dist/reactor-swipe-<versión>.xpi` sin firmar. Antes de volver a firmar, sube el número de `version` en `extension/manifest.json`.
-
-### Estructura
-
-| Archivo | Qué hace |
+| Carpeta / archivo | Qué es |
 | --- | --- |
-| `extension/manifest.json` | Permisos y configuración de la extensión |
-| `extension/js/shared.js` | API GraphQL de JoyReactor, almacenamiento, aleatorio y revisión de novedades |
-| `extension/background.js` | Alarmas, notificaciones, apertura de la app y cabecera `Referer` para los videos |
-| `extension/js/app.js` + `app.html` + `app.css` | La app |
-| `extension/content.js` | Botón flotante en joyreactor.com |
+| `extension/` | La interfaz (feed, miniaturas, aleatorio, favoritos…). También funciona como extensión de Firefox |
+| `extension/js/shared.js` | API GraphQL de JoyReactor, datos del usuario y aleatorio |
+| `extension/js/app.js` | Pantallas y navegación |
+| `android/` | App nativa: WebView con la interfaz, avisos (WorkManager), actualizaciones y pantalla completa |
+| `.github/workflows/android.yml` | Compila y publica la app en GitHub |
+| `tools/release.mjs` | Publica una versión nueva |
 | `tools/dev-server.mjs` | Servidor de desarrollo con proxy |
-| `tools/make_icons.py` | Genera los íconos PNG |
 
 ### Notas técnicas
 
-- API: `https://api.joyreactor.com/graphql`. Las páginas tienen unos 10 posts y van numeradas de la más vieja (1) a la más nueva.
-- Imágenes: `https://img10.joyreactor.com/pics/post/post-<id>.<ext>` (`full/` para tamaño original, `static/…jpeg` para la portada de un GIF). Los videos (`mp4/`) solo responden con `Referer: https://joyreactor.com/`, y eso lo añade `background.js`.
-- Muchos hashtags son sinónimos (por ejemplo, `cat` → `cats`). Los favoritos se guardan con el nombre principal y recuerdan el sinónimo.
+- **API:** `https://api.joyreactor.com/graphql`. Las páginas tienen unos 10 posts y van de la más vieja (1) a la más nueva.
+- **Origen de la página:** la app sirve la interfaz desde sus assets en `https://joyreactor.com/__rs/` (`WebViewAssetLoader`). Con ese origen, la API acepta las peticiones y los videos (`mp4/`, que exigen el `Referer` de joyreactor.com) se cargan.
+- **Imágenes:** `https://img10.joyreactor.com/pics/post/post-<id>.<ext>`. Con `full/` sale el tamaño original y con `static/…jpeg` la portada de un GIF.
+- **Sinónimos:** muchos hashtags son sinónimos (`cat` → `cats`). Los favoritos se guardan con el nombre principal.
+- **Avisos:** los revisa `NewsChecker.kt` cada 15/30/60 min. La primera vez que revisa un favorito solo toma nota de lo que hay, sin avisar.
