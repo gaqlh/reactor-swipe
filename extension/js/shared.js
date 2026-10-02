@@ -206,6 +206,36 @@
     };
   };
 
+  // ---- Solo GIF y videos de un hashtag: la búsqueda de JoyReactor con «hashtag + gif».
+  // Devuelve como máximo 1000 resultados (100 páginas); la página 1 es la más nueva (o la mejor, en Top).
+  const SEARCH_Q = `query($t:[String!],$p:Int,$d:Boolean,$r:Boolean,$min:Int,$nsfw:Boolean){ search(query:"", tagNames:$t, sortByDate:$d, sortByRating:$r, minRating:$min, showNsfw:$nsfw){ postPager{ count posts(page:$p){ ${POST_FIELDS} } } } }`;
+  // «Bueno» se aproxima con rating mínimo 10 (la búsqueda no tiene el filtro «bueno» de los hashtags).
+  const GIF_ORDER = { NEW: { d: true }, ALL: { d: true }, GOOD: { d: true, min: 10 }, BEST: { r: true } };
+  RS.GIF_LIMIT = 1000;
+
+  RS.isAnimated = (p) => p.media.some((m) => m.kind === 'video' || m.kind === 'embed' || m.ext === 'gif');
+
+  RS.fetchGifPage = async function (tag, type, page, hideNsfw) {
+    const info = await RS.fetchTagInfo(tag).catch(() => null);
+    const name = info ? info.name : tag;
+    const o = GIF_ORDER[type] || GIF_ORDER.GOOD;
+    const d = await gql(SEARCH_Q, {
+      t: name.toLowerCase() === 'gif' ? ['gif'] : [name, 'gif'],
+      p: page,
+      d: o.d || null,
+      r: o.r || null,
+      min: o.min == null ? null : o.min,
+      nsfw: hideNsfw ? false : null
+    });
+    const pp = d.search && d.search.postPager;
+    if (!pp) throw new Error('No pude buscar GIF de «' + tag + '»');
+    return {
+      count: pp.count,
+      lastPage: Math.max(1, Math.ceil(Math.min(pp.count, RS.GIF_LIMIT) / PAGE_SIZE)),
+      posts: (pp.posts || []).map(RS.normalizePost)
+    };
+  };
+
   const tagCache = new Map();
   RS.fetchTagInfo = async function (name) {
     const key = String(name).toLowerCase();
@@ -421,8 +451,8 @@
    * Un lote de posts al azar según la mezcla: sortea la fuente por peso, salta a una página
    * al azar de esa fuente y se queda con 1–2 posts que no estén vistos, ocultos ni excluidos.
    * st = { favorites, mix, seenSet, filter }
-   * opts = { n, skip:Set, sources?, type?, era?, noRepeat? } — sources/type/era/noRepeat
-   *        reemplazan a los de la mezcla (p. ej. un solo hashtag en orden aleatorio).
+   * opts = { n, skip:Set, sources?, type?, era?, noRepeat?, gif?, hideNsfw? } — sources/type/era/noRepeat
+   *        reemplazan a los de la mezcla (p. ej. un solo hashtag en orden aleatorio); gif = solo GIF/videos.
    */
   RS.randomBatch = async function (st, opts) {
     opts = opts || {};
@@ -441,12 +471,31 @@
     const noRepeat = opts.noRepeat !== undefined ? opts.noRepeat : st.mix.noRepeat;
 
     const one = async (src) => {
-      const count = await pagerCount(src.name, type);
-      const last = Math.max(1, Math.ceil(count / PAGE_SIZE));
-      const first = era === 'any' ? 1 : await firstPageSince(src.name, type, era, last);
-      const res = await RS.fetchPage(src.name, type, randInt(first, last));
+      let res;
+      if (opts.gif) {
+        // Solo GIF/videos: página al azar dentro de los resultados de la búsqueda (máx. 1000).
+        const key = 'gif|' + src.name + '|' + type;
+        let c = countCache.get(key);
+        if (!c || Date.now() - c.at > 30 * 60 * 1000) {
+          const firstPage = await RS.fetchGifPage(src.name, type, 1, opts.hideNsfw);
+          c = { count: firstPage.count, at: Date.now() };
+          countCache.set(key, c);
+        }
+        const lastGif = Math.max(1, Math.ceil(Math.min(c.count, RS.GIF_LIMIT) / PAGE_SIZE));
+        res = await RS.fetchGifPage(src.name, type, randInt(1, lastGif), opts.hideNsfw);
+      } else {
+        const count = await pagerCount(src.name, type);
+        const last = Math.max(1, Math.ceil(count / PAGE_SIZE));
+        const first = era === 'any' ? 1 : await firstPageSince(src.name, type, era, last);
+        res = await RS.fetchPage(src.name, type, randInt(first, last));
+      }
       const ok = res.posts.filter(
-        (p) => !skip.has(p.id) && st.filter(p) && !(noRepeat && st.seenSet && st.seenSet.has(p.id)) && p.media.length
+        (p) =>
+          !skip.has(p.id) &&
+          st.filter(p) &&
+          !(noRepeat && st.seenSet && st.seenSet.has(p.id)) &&
+          p.media.length &&
+          (!opts.gif || RS.isAnimated(p))
       );
       return shuffle(ok)
         .slice(0, 2)

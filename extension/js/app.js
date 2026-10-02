@@ -948,6 +948,7 @@
       this.kind = o.kind; // 'pager' | 'random' | 'static'
       this.tag = o.tag || null;
       this.type = o.type || 'GOOD';
+      this.gif = !!o.gif; // solo GIF y videos (hashtag)
       this.mode = o.mode || 'feed';
       this.source = o.source || '';
       this.staticItems = o.items || [];
@@ -1033,6 +1034,16 @@
     }
 
     async fetchChunk() {
+      if (this.kind === 'pager' && this.gif) {
+        const page = this.next == null ? 1 : this.next;
+        const res = await RS.fetchGifPage(this.tag, this.type, page, S.settings.hideNsfw);
+        this.next = page + 1;
+        if (this.next > res.lastPage || !res.posts.length) {
+          this.done = true;
+          if (res.count >= RS.GIF_LIMIT) this.endText = 'Llegaste al límite: JoyReactor solo deja ver los ' + RS.GIF_LIMIT + ' GIF más recientes de cada hashtag. Prueba con «Top» o con el orden aleatorio.';
+        }
+        return this.add(res.posts.filter(RS.isAnimated).map((post) => ({ post })));
+      }
       if (this.kind === 'pager') {
         const res = await RS.fetchPage(this.tag, this.type, this.next);
         this.next = this.next == null ? res.lastPage - 1 : this.next - 1;
@@ -1042,7 +1053,7 @@
       if (this.kind === 'random') {
         // Con tag: solo ese hashtag, en orden aleatorio (calidad según el orden elegido arriba).
         const opts = { n: 4, skip: this.ids };
-        if (this.tag) Object.assign(opts, { sources: [{ name: this.tag, kind: null, w: 1 }], type: this.type, era: 'any', noRepeat: false });
+        if (this.tag) Object.assign(opts, { sources: [{ name: this.tag, kind: null, w: 1 }], type: this.type, era: 'any', noRepeat: false, gif: this.gif, hideNsfw: S.settings.hideNsfw });
         const batch = await RS.randomBatch({ favorites: S.favorites, mix: S.mix, seenSet: S.seenSet, filter: pass }, opts);
         const n = this.add(
           batch.map((x) =>
@@ -1473,36 +1484,58 @@
   function routeTag(name, q) {
     const type = RS.validType(q.get('sort')) || 'GOOD';
     const random = q.get('order') === 'random';
-    const key = 'tag:' + name.toLowerCase() + ':' + type + (random ? ':random' : '');
-    const url = (sort, rnd) => '#/tag/' + enc(name) + '?sort=' + sort + (rnd ? '&order=random' : '');
+    const gif = q.get('media') === 'gif';
+    const key = 'tag:' + name.toLowerCase() + ':' + type + (random ? ':random' : '') + (gif ? ':gif' : '');
+    const url = (o) => {
+      const sort = o.sort || type;
+      const rnd = o.random === undefined ? random : o.random;
+      const onlyGif = o.gif === undefined ? gif : o.gif;
+      return '#/tag/' + enc(name) + '?sort=' + sort + (rnd ? '&order=random' : '') + (onlyGif ? '&media=gif' : '');
+    };
+    const note = gif && random
+      ? 'Solo GIF y videos de #' + name + ', en orden aleatorio.'
+      : gif
+        ? 'Solo GIF y videos de #' + name + '.'
+        : random
+          ? 'Orden aleatorio: posts de #' + name + ' de cualquier época.'
+          : null;
     const f = cached(key, () =>
       new Feed({
         key,
         kind: random ? 'random' : 'pager',
         tag: name,
         type,
+        gif,
         back: true,
         head: (f) => [
           backBtn('/home'),
           h('h1', { text: '#' + name }),
           h('button', {
+            class: 'ib gifbtn' + (gif ? ' active' : ''),
+            'aria-pressed': String(gif),
+            'aria-label': gif ? 'Ver todos los posts' : 'Ver solo GIF y videos',
+            title: gif ? 'Ver todos los posts' : 'Ver solo GIF y videos',
+            onclick: () => navReplace(url({ gif: !gif }))
+          }, 'GIF'),
+          h('button', {
             class: 'ib' + (random ? ' active' : ''),
             'aria-pressed': String(random),
             'aria-label': random ? 'Volver al orden normal' : 'Ver en orden aleatorio',
             title: random ? 'Volver al orden normal' : 'Ver en orden aleatorio',
-            onclick: () => navReplace(url(type, !random))
+            onclick: () => navReplace(url({ random: !random }))
           }, icon('shuffle', 22)),
           viewToggle(f)
         ],
         extra: (f) => {
-          const chips = sortChips(type, (t) => navReplace(url(t, random)));
+          const chips = sortChips(type, (t) => navReplace(url({ sort: t })));
           if (random) chips.append(h('button', { class: 'chip soft', onclick: () => f.reset() }, icon('refresh', 16), 'Barajar'));
           return [
             tagHero(name),
-            random ? h('p', { class: 'countline', style: { padding: '12px 16px 0' }, text: 'Orden aleatorio: posts de #' + name + ' de cualquier época.' }) : null,
+            note ? h('p', { class: 'countline', style: { padding: '12px 16px 0' }, text: note }) : null,
             chips
           ];
-        }
+        },
+        empty: gif ? () => emptyBox('play', 'Sin GIF ni videos', '#' + name + ' no tiene GIF ni videos con este orden. Prueba con «Todo».') : null
       })
     );
     showFeed(f);
