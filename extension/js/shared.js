@@ -128,6 +128,7 @@
       return 0;
     }
   }
+  RS.numId = numId;
 
   function cleanText(html) {
     if (!html) return '';
@@ -182,7 +183,9 @@
   RS.imageUrl = (m, full) => IMG + (full ? 'full/' : '') + 'post-' + m.id + '.' + (m.ext || 'jpeg');
   RS.videoUrl = (m) => viaProxy(IMG + 'mp4/post-' + m.id + '.mp4');
   RS.posterUrl = (m) => IMG + 'static/post-' + m.id + '.jpeg';
-  RS.avatarUrl = (p) => (p.userId ? 'https://img10.joyreactor.com/pics/avatar/user/' + p.userId : '');
+  // Avatares de usuarios y hashtags: también exigen el Referer de joyreactor.com.
+  RS.avatarUrl = (p) => (p.userId ? viaProxy('https://img10.joyreactor.com/pics/avatar/user/' + p.userId) : '');
+  RS.tagImageUrl = (tagId) => viaProxy('https://img10.joyreactor.com/pics/avatar/tag/' + tagId);
   RS.postUrl = (p) => RS.SITE + '/post/' + p.num;
   RS.embedUrl = function (m, p) {
     if (m.provider === 'YOUTUBE') return 'https://www.youtube.com/watch?v=' + encodeURIComponent(m.value);
@@ -241,7 +244,7 @@
     const key = String(name).toLowerCase();
     if (tagCache.has(key)) return tagCache.get(key);
     // Muchos hashtags son sinónimos (p. ej. «cat» → «cats»): uso siempre el principal.
-    const F = 'name count subscribers showAsCategory nsfw category { name } subTags { name }';
+    const F = 'id name count subscribers showAsCategory nsfw image { id } category { name } subTags { name }';
     const d = await gql(`query($n:String){ tag(name:$n){ ${F} mainTag { ${F} } } }`, { n: name });
     const t = d.tag && (d.tag.mainTag || d.tag);
     const info = t
@@ -252,7 +255,8 @@
           nsfw: !!t.nsfw,
           parent: t.category ? t.category.name : null,
           subTags: (t.subTags || []).map((s) => s.name),
-          kind: t.showAsCategory || (t.subTags || []).length ? 'category' : 'hashtag'
+          kind: t.showAsCategory || (t.subTags || []).length ? 'category' : 'hashtag',
+          pic: t.image ? numId(t.id) : 0
         }
       : null;
     tagCache.set(key, info);
@@ -261,7 +265,7 @@
   };
 
   RS.autocomplete = async function (mask) {
-    const d = await gql(`query($m:String!){ tagAutocomplete(mask:$m){ name count nsfw } }`, { m: mask });
+    const d = await gql(`query($m:String!){ tagAutocomplete(mask:$m){ id name count nsfw image { id } } }`, { m: mask });
     return d.tagAutocomplete || [];
   };
 

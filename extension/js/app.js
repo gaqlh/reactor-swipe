@@ -288,7 +288,7 @@
       toast('No existe el hashtag «' + name + '»');
       return null;
     }
-    const f = S.favorites[info.name] || { name: info.name, kind: info.kind, notify: info.kind === 'category', addedAt: Date.now() };
+    const f = S.favorites[info.name] || { name: info.name, kind: info.kind, notify: info.kind === 'category', addedAt: Date.now(), pic: info.pic || 0 };
     Object.assign(f, extra || {});
     if (name.toLowerCase() !== info.name.toLowerCase()) f.aliases = Array.from(new Set((f.aliases || []).concat(name)));
     S.favorites[info.name] = f;
@@ -551,12 +551,14 @@
     if (!ms.length) return null;
     if (ms.length === 1) return h('div', { class: 'media single' }, slide(ms[0], p, 0, feed));
     const c = carousel(ms.map((m, i) => slide(m, p, i, feed)));
-    return h('div', { class: 'media carousel' }, c.track, c.counter, c.dots);
+    const el = h('div', { class: 'media carousel' }, c.track, c.counter);
+    el._dots = c.dots;
+    return el;
   }
 
   function tagsRow(p) {
     return h('div', { class: 'tags' },
-      p.tags.map((t) => h('a', { class: 'tag' + (favOf(t) ? ' fav' : ''), href: '#/tag/' + enc(t), text: '#' + t }))
+      p.tags.map((t) => h('a', { class: 'htag' + (favOf(t) ? ' fav' : ''), href: '#/tag/' + enc(t), text: '#' + t }))
     );
   }
 
@@ -576,8 +578,11 @@
     else card.classList.add('textonly');
 
     const liked = !!S.likes[p.id];
+    const dots = media && media._dots && p.media.length <= 12 ? media._dots : null;
+    if (dots) dots.className = 'dots ig';
     card.append(
       h('div', { class: 'actions' },
+        dots,
         h('button', { class: 'act like' + (liked ? ' on' : ''), 'aria-label': 'Me gusta', 'aria-pressed': String(liked), onclick: () => toggleLike(p) }, icon('heart', 27)),
         h('button', { class: 'act', 'aria-label': 'No me gusta: ocultar para siempre', onclick: () => dislike(it, card, feed) }, icon('down', 25)),
         h('a', { class: 'act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': p.comments + ' comentarios en JoyReactor' }, icon('comment', 24), fmt(p.comments)),
@@ -692,6 +697,23 @@
       { root: scroller, threshold: 0.6 }
     );
     items.forEach((it) => scroller.append(makePage(it)));
+    // Respaldo de los observadores: al terminar de deslizar, el post visible pasa a ser el actual.
+    let settle = null;
+    scroller.addEventListener(
+      'scroll',
+      () => {
+        clearTimeout(settle);
+        settle = setTimeout(() => {
+          if (viewer !== v) return;
+          const i = Math.round(scroller.scrollTop / Math.max(1, scroller.clientHeight));
+          const page = scroller.children[i];
+          if (!page) return;
+          [scroller.children[i - 1], scroller.children[i + 1]].forEach((q) => q && fillPage(q, 0));
+          if (v.current !== page) setCurrentPage(page);
+        }, 90);
+      },
+      { passive: true }
+    );
     if (feed) {
       v.onAdd = (added) => {
         if (viewer === v) added.forEach((it) => scroller.append(makePage(it)));
@@ -756,6 +778,10 @@
       media = h('div', { class: 'vw-media' }, c.track, c.counter);
       page._track = c.track;
       page._counter = c.counter;
+      if (slides.length <= 12) {
+        c.dots.className = 'dots vw-dots';
+        page._dots = c.dots;
+      }
     } else if (slides.length) {
       media = h('div', { class: 'vw-media' }, slides[0]);
     } else {
@@ -772,6 +798,7 @@
       h('a', { class: 'vw-act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': 'Abrir el post original en JoyReactor' }, icon('external', 25))
     );
     const info = h('div', { class: 'vw-info' },
+      page._dots || null,
       it.label ? h('span', { class: 'vw-src', text: it.label }) : null,
       h('div', { class: 'vw-who' },
         h('strong', { text: p.user || 'anónimo' }),
@@ -780,12 +807,23 @@
       ),
       p.tags.length
         ? h('div', { class: 'vw-tags' },
-            p.tags.map((t) => h('button', { class: 'tag' + (favOf(t) ? ' fav' : ''), onclick: () => closeViewerThen(() => nav('#/tag/' + enc(t))) }, '#' + t))
+            p.tags.map((t) =>
+              h('a', {
+                class: 'htag' + (favOf(t) ? ' fav' : ''),
+                href: '#/tag/' + enc(t),
+                text: '#' + t,
+                onclick: (e) => {
+                  e.preventDefault();
+                  closeViewerThen(() => nav('#/tag/' + enc(t)));
+                }
+              })
+            )
           )
         : null
     );
 
     fill(page, media, side, info);
+    page._dots = null;
     page.dataset.filled = '1';
     page._videos = videos;
     if (mediaIndex && page._track) {
@@ -903,16 +941,18 @@
     document.body.classList.remove('noscroll');
     setFullscreen(false);
 
-    // Al salir, el feed de abajo queda en el post que estabas viendo.
+    // Al salir, el feed de abajo queda en el post que estabas viendo (también si después
+    // entras a un hashtag y vuelves con «atrás»).
     const id = v.current && v.current.dataset.id;
     const feed = v.feed;
-    if (id && feed && current && current.feed === feed) {
-      setTimeout(() => {
-        const target = feed.list.querySelector('[data-id="' + CSS.escape(id) + '"]');
-        if (!target) return;
-        if (feed.mode === 'grid') target.scrollIntoView({ block: 'center' });
-        else window.scrollTo(0, target.getBoundingClientRect().top + window.scrollY - feed.headEl.offsetHeight);
-      }, 150);
+    if (id && feed) {
+      feed.anchorId = id;
+      feed.anchorHold = Date.now() + 1500;
+      if (current && current.feed === feed) {
+        feed.scrollToPost(id);
+        // Repite cuando Android termine de mostrar otra vez las barras (cambia el alto de la pantalla).
+        for (const ms of [150, 450]) setTimeout(() => current && current.feed === feed && feed.scrollToPost(id), ms);
+      }
     }
   }
 
@@ -1104,6 +1144,14 @@
       return null;
     }
 
+    scrollToPost(id) {
+      const el = id && this.list.querySelector('[data-id="' + CSS.escape(id) + '"]');
+      if (!el || !el.isConnected) return false;
+      if (this.mode === 'grid') el.scrollIntoView({ block: 'center' });
+      else window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - this.headEl.offsetHeight);
+      return true;
+    }
+
     setMode(mode, anchorId) {
       if (mode === this.mode && !anchorId) return;
       const anchor = anchorId || this.topVisibleId();
@@ -1183,8 +1231,10 @@
 
   function mount(nodes, feed) {
     if (current && current.feed) {
-      current.feed.scrollY = window.scrollY;
-      pauseIn(current.feed.root);
+      const prev = current.feed;
+      prev.scrollY = window.scrollY;
+      if (!(prev.anchorHold && Date.now() < prev.anchorHold)) prev.anchorId = prev.topVisibleId();
+      pauseIn(prev.root);
     }
     fill(viewEl, ...[].concat(nodes));
     current = { feed: feed || null };
@@ -1200,7 +1250,10 @@
   function showFeed(f) {
     mount(f.root, f);
     f.refresh();
-    window.scrollTo(0, f.scrollY || 0);
+    const anchor = f.anchorId;
+    if (!(anchor && f.scrollToPost(anchor))) window.scrollTo(0, f.scrollY || 0);
+    // La cabecera del hashtag termina de dibujarse un momento después: vuelvo a alinear.
+    if (anchor) setTimeout(() => current && current.feed === f && f.scrollToPost(anchor), 250);
     if (!f.items.length) f.loadMore();
     else f.checkMore();
   }
@@ -1280,6 +1333,39 @@
     );
   }
 
+  // Círculo con la imagen del hashtag (la de JoyReactor); mientras carga, o si no tiene, «#».
+  const picCache = new Map();
+  function tagPic(name, cls, fallback, known) {
+    const c = colorFor(name);
+    const el = h('span', { class: cls, style: { background: c[0], color: c[1] } }, fallback);
+    const show = (pic) => {
+      if (!pic) return;
+      const img = new Image();
+      img.alt = '';
+      img.onload = () => fill(el, img);
+      img.src = RS.tagImageUrl(pic);
+    };
+    const key = String(name).toLowerCase();
+    const fav = favOf(name);
+    if (known !== undefined) show(known);
+    else if (picCache.has(key)) show(picCache.get(key));
+    else if (fav && fav.pic !== undefined) show(fav.pic);
+    else {
+      RS.fetchTagInfo(name)
+        .then((info) => {
+          const pic = info ? info.pic || 0 : 0;
+          picCache.set(key, pic);
+          if (fav && fav.pic === undefined) {
+            fav.pic = pic;
+            persist('favorites');
+          }
+          show(pic);
+        })
+        .catch(() => {});
+    }
+    return el;
+  }
+
   function storiesRow() {
     const favs = favList();
     const row = h('section', { class: 'stories', 'aria-label': 'Tus favoritos' });
@@ -1287,7 +1373,7 @@
       const c = colorFor(f.name);
       row.append(
         h('a', { class: 'story', href: '#/tag/' + enc(f.name) },
-          h('span', { class: 'ring' }, h('span', { class: 'disc', style: { background: c[0], color: c[1] } }, f.kind === 'category' ? f.name.charAt(0).toUpperCase() : '#')),
+          h('span', { class: 'ring' }, tagPic(f.name, 'disc', f.kind === 'category' ? f.name.charAt(0).toUpperCase() : '#')),
           h('span', { class: 'label', text: f.name })
         )
       );
@@ -1462,7 +1548,7 @@
 
       fill(el,
         h('div', { class: 'hero-row' },
-          h('span', { class: 'hero-tile', style: { background: c[0], color: c[1] } }, '#'),
+          tagPic(canon, 'hero-tile', '#', info ? info.pic || 0 : undefined),
           h('div', { class: 'grow' }, h('h2', { text: canon }), h('span', { class: 'meta', text: meta }))
         ),
         h('div', { class: 'hero-actions' }, favBtn, mixBtn, bellBtn),
@@ -1593,7 +1679,7 @@
     paint();
     return h('div', { class: 'result' },
       h('a', { href: '#/tag/' + enc(t.name) },
-        h('span', { class: 'htile', style: { background: c[0], color: c[1] } }, '#'),
+        tagPic(t.name, 'htile', '#', t.image ? RS.numId(t.id) : 0),
         h('span', { class: 'rtext' },
           h('span', { class: 'n' }, t.name, t.nsfw ? h('span', { class: 'nsfw', text: 'NSFW' }) : null),
           h('span', { class: 'm', text: fmt(t.count) + ' posts' })
@@ -1847,22 +1933,17 @@
       const cats = favs.filter((f) => f.kind === 'category');
       const tags = favs.filter((f) => f.kind !== 'category');
 
-      // Sugerencias: hashtags que más se repiten en tus me gusta.
-      const counts = {};
-      for (const x of Object.values(S.likes)) for (const t of x.post.tags) counts[t] = (counts[t] || 0) + 1;
-      const excluded = new Set(S.mix.exclude.map((x) => x.toLowerCase()));
-      const suggested = Object.entries(counts)
-        .filter(([t, n]) => n >= 2 && !favOf(t) && !excluded.has(t.toLowerCase()))
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 8);
-
       fill(lists,
         h('div', { class: 'secline' }, h('h2', { class: 'grow section-label', text: 'Categorías' }), h('span', { class: 'c', text: cats.length + (cats.length === 1 ? ' guardada' : ' guardadas') })),
         h('div', { class: 'tiles' },
           cats.map((f) => {
             const c = colorFor(f.name);
             return h('div', { class: 'tile', style: { background: c[0] } },
-              h('a', { href: '#/tag/' + enc(f.name) }, h('span', { class: 'tn', text: RS.label(f.name, f.kind) }), h('span', { class: 'tm', text: mixText(f.name) })),
+              h('a', { href: '#/tag/' + enc(f.name) },
+                tagPic(f.name, 'tile-pic', f.name.charAt(0).toUpperCase()),
+                h('span', { class: 'tn', text: RS.label(f.name, f.kind) }),
+                h('span', { class: 'tm', text: mixText(f.name) })
+              ),
               h('div', { class: 'tbtns' }, bellBtn(f), starBtn(f))
             );
           }),
@@ -1875,7 +1956,7 @@
               const inMix = !!(S.mix.sources[f.name] && S.mix.sources[f.name].on);
               return h('div', { class: 'result' },
                 h('a', { href: '#/tag/' + enc(f.name) },
-                  h('span', { class: 'htile', style: { background: c[0], color: c[1] } }, '#'),
+                  tagPic(f.name, 'htile', '#'),
                   h('span', { class: 'rtext' }, h('span', { class: 'n', text: f.name }), h('span', { class: 'm', text: mixText(f.name), style: inMix ? { color: 'var(--blue)' } : null }))
                 ),
                 h('button', {
@@ -1892,24 +1973,6 @@
               );
             })
           : h('p', { class: 'countline', style: { paddingTop: '4px' }, text: 'Busca arriba y toca ★ para guardar hashtags. También puedes guardarlos desde el feed de cada hashtag.' }),
-        suggested.length
-          ? h('div', { style: { padding: '24px 16px 8px', display: 'flex', flexDirection: 'column', gap: '10px' } },
-              h('h2', { class: 'section-label', text: 'Sugeridos por tus me gusta' }),
-              h('div', { class: 'wrap' },
-                suggested.map(([t]) =>
-                  h('button', {
-                    class: 'chip soft',
-                    onclick: async () => {
-                      if (await addFavorite(t)) {
-                        toast('#' + t + ' guardado en favoritos');
-                        drawLists();
-                      }
-                    }
-                  }, icon('plus', 16), '#' + t)
-                )
-              )
-            )
-          : null,
         h('p', { class: 'foot-note', text: 'La campanita avisa cuando hay posts nuevos. El icono de mezcla decide si entra en tu Aleatorio.' })
       );
     }
@@ -2307,6 +2370,11 @@
   }
 
   async function boot() {
+    try {
+      history.scrollRestoration = 'manual';
+    } catch (e) {
+      /* no disponible */
+    }
     Object.assign(S, await RS.load(RS.KEYS.filter((k) => k !== 'eraCache')));
     S.seenSet = new Set(S.seen);
     refreshFilter();

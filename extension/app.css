@@ -190,7 +190,7 @@ img, video { display: block; }
 .story .ring { width: 64px; height: 64px; border-radius: 32px; border: 2px solid var(--accent); padding: 3px; display: block; position: relative; }
 .story .ring.dashed { border: 2px dashed #4a443d; display: flex; align-items: center; justify-content: center; color: var(--text-2); }
 .story .ring.new::after { content: ''; position: absolute; right: 0; top: 2px; width: 14px; height: 14px; border-radius: 7px; background: var(--like); border: 2px solid var(--bg); }
-.story .disc { width: 54px; height: 54px; border-radius: 27px; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 800; }
+.story .disc { width: 54px; height: 54px; border-radius: 27px; overflow: hidden; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 800; }
 .story .label { width: 68px; font-size: 12px; font-weight: 600; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- Tarjeta de post: una por pantalla ---------- */
@@ -318,7 +318,11 @@ html.snap .list.cards .card { scroll-snap-stop: always; }
   white-space: nowrap;
 }
 
-.actions { flex-shrink: 0; display: flex; align-items: center; padding: 2px 6px 0 6px; }
+.actions { position: relative; flex-shrink: 0; display: flex; align-items: center; padding: 2px 6px 0 6px; }
+/* Puntitos del carrusel debajo de la imagen, centrados (como Instagram). */
+.dots.ig { left: 50%; right: auto; top: 50%; bottom: auto; transform: translate(-50%, -50%); gap: 5px; }
+.dots.ig span { width: 6px; height: 6px; border-radius: 3px; background: rgba(243, 239, 233, 0.32); }
+.dots.ig span.on { background: var(--accent); }
 .act {
   height: 46px;
   min-width: 46px;
@@ -353,8 +357,11 @@ html.snap .list.cards .card { scroll-snap-stop: always; }
 }
 .caption.open { display: block; max-height: 35%; overflow-y: auto; }
 .card.textonly .caption { flex: 1 1 auto; display: block; max-height: none; overflow-y: auto; padding: 12px 16px; font-size: 17px; line-height: 1.5; }
-.tags { flex-shrink: 0; display: flex; gap: 7px; padding: 8px 16px 12px; overflow-x: auto; scrollbar-width: none; }
-.tags::-webkit-scrollbar { display: none; }
+/* Hashtags del post como texto: se ven todos sin deslizar. */
+.tags { flex-shrink: 0; display: block; max-height: calc(14.5px * 1.75 * 6 + 18px); overflow: hidden; padding: 6px 16px 12px; font-size: 14.5px; line-height: 1.75; }
+.htag { display: inline-block; }
+.htag { color: #8ec5ff; font-weight: 600; margin-right: 9px; white-space: nowrap; }
+.htag.fav { color: var(--accent); }
 .tag {
   flex-shrink: 0;
   height: 32px;
@@ -402,7 +409,7 @@ html.snap .list.cards .card { scroll-snap-stop: always; }
 /* ---------- Cabecera de hashtag ---------- */
 .hero { padding: 18px 16px 4px; display: flex; flex-direction: column; gap: 14px; }
 .hero-row { display: flex; align-items: center; gap: 14px; }
-.hero-tile { width: 66px; height: 66px; border-radius: 20px; display: flex; align-items: center; justify-content: center; font-size: 32px; font-weight: 800; flex-shrink: 0; }
+.hero-tile { width: 66px; height: 66px; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center; font-size: 32px; font-weight: 800; flex-shrink: 0; }
 .hero h2 { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; overflow-wrap: anywhere; }
 .hero .meta { font-size: 13.5px; color: var(--text-2); }
 .hero-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
@@ -496,7 +503,7 @@ html.snap .list.cards .card { scroll-snap-stop: always; }
 .results { padding: 4px 0; }
 .result { display: flex; align-items: center; gap: 4px; padding: 2px 6px 2px 16px; border-bottom: 1px solid #1f1c1a; }
 .result a { flex: 1 1 auto; min-width: 0; min-height: 52px; display: flex; align-items: center; gap: 12px; color: var(--text); }
-.htile { width: 44px; height: 44px; border-radius: 13px; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 800; flex-shrink: 0; }
+.htile { width: 44px; height: 44px; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 800; flex-shrink: 0; }
 .rtext { display: flex; flex-direction: column; min-width: 0; }
 .rtext .n { font-size: 16px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rtext .m { font-size: 12.5px; color: var(--text-2); }
@@ -504,7 +511,7 @@ html.snap .list.cards .card { scroll-snap-stop: always; }
 .secline { display: flex; align-items: baseline; padding: 22px 16px 10px; }
 .secline .c { font-size: 12.5px; color: var(--text-2); }
 .tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 0 16px; }
-.tile { position: relative; height: 96px; border-radius: 16px; overflow: hidden; border: 1px solid var(--line-2); }
+.tile { position: relative; height: 116px; border-radius: 16px; overflow: hidden; border: 1px solid var(--line-2); }
 .tile > a { position: absolute; inset: 0; padding: 12px 12px 12px 14px; display: flex; flex-direction: column; justify-content: flex-end; color: var(--text); }
 .tile .tn { font-size: 17px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 4px; }
 .tile .tm { font-size: 12px; color: #c9c1b7; }
@@ -513,7 +520,7 @@ html.snap .list.cards .card { scroll-snap-stop: always; }
 .star.on { color: var(--accent); }
 .bellb.on { color: var(--green); }
 .mixb.on { color: var(--blue); background: var(--blue-soft); }
-.addtile { height: 96px; border-radius: 16px; border: 1px dashed #4a443d; background: transparent; color: #e4ded6; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 14px; font-weight: 700; }
+.addtile { height: 116px; border-radius: 16px; border: 1px dashed #4a443d; background: transparent; color: #e4ded6; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 14px; font-weight: 700; }
 
 /* ---------- Mis posts ---------- */
 .tabs2 { display: flex; border-bottom: 1px solid var(--line); }
@@ -603,10 +610,11 @@ html.snap .list.cards .card { scroll-snap-stop: always; }
 .vw-src { font-size: 12.5px; font-weight: 700; color: var(--accent); align-self: flex-start; }
 .vw-who { font-size: 14px; color: #f3efe9; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .vw-rating { color: var(--accent); font-family: ui-monospace, Menlo, monospace; display: inline-flex; align-items: center; gap: 2px; }
-.vw-tags { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
-.vw-tags::-webkit-scrollbar { display: none; }
-.vw-tags .tag { height: 30px; border: 0; background: rgba(36, 33, 30, 0.8); font: inherit; font-size: 13.5px; font-weight: 600; }
-.vw-tags .tag.fav { background: rgba(42, 33, 19, 0.92); }
+.vw-tags { max-height: 30vh; overflow-y: auto; font-size: 14.5px; line-height: 1.8; }
+.vw-tags .htag { color: #a9d3ff; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85); }
+.vw-tags .htag.fav { color: var(--accent); }
+.dots.vw-dots { position: static; align-self: center; gap: 6px; }
+.dots.vw-dots span { width: 7px; height: 7px; }
 .vw-bar { position: absolute; top: 0; left: 0; z-index: 3; padding: max(8px, env(safe-area-inset-top)) 10px 0; }
 .vw-btn {
   height: 44px;
@@ -650,3 +658,7 @@ html.snap .list.cards .card { scroll-snap-stop: always; }
 @media (min-width: 620px) {
   #view { border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
 }
+
+/* Imagen del hashtag dentro de los círculos */
+.disc img, .hero-tile img, .htile img, .tile-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tile-pic { position: absolute; top: 12px; left: 12px; width: 38px; height: 38px; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center; font-size: 17px; font-weight: 800; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.25); }
