@@ -1,0 +1,65 @@
+name: App de Android
+
+# Compila la app. Con una etiqueta vX.Y.Z además la publica como release (de ahí se actualiza el teléfono).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Versión
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF#refs/tags/v}"; else V="$(cat VERSION)-prueba"; fi
+          echo "name=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Clave de firma
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
+            echo "RS_KEYSTORE=$RUNNER_TEMP/release.p12" >> "$GITHUB_ENV"
+          fi
+
+      - name: Compilar
+        working-directory: android
+        env:
+          RS_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RS_KEY_ALIAS: reactorswipe
+        run: gradle assembleRelease --no-daemon -PversionName=${{ steps.version.outputs.name }} -PversionCode=${{ github.run_number }}
+
+      - name: Preparar APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk reactor-swipe.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reactor-swipe-${{ steps.version.outputs.name }}
+          path: reactor-swipe.apk
+
+      - name: Publicar release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" reactor-swipe.apk \
+            --title "Reactor Swipe ${{ steps.version.outputs.name }}" \
+            --notes "Instálala o actualízala desde el teléfono: https://github.com/${{ github.repository }}/releases/latest/download/reactor-swipe.apk" \
+            --latest

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0F0E0D">
+<title>Reactor Swipe</title>
+<link rel="icon" href="icons/icon-48.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="view"></div>
+<nav id="tabs" aria-label="Secciones">
+  <a href="#/home" data-tab="home"><span class="tab-icon" data-icon="home"></span><span>Inicio</span></a>
+  <a href="#/random" data-tab="random"><span class="tab-icon" data-icon="shuffle"></span><span>Aleatorio</span></a>
+  <a href="#/favorites" data-tab="favorites"><span class="tab-icon" data-icon="star"></span><span>Favoritos</span></a>
+  <a href="#/likes" data-tab="likes"><span class="tab-icon" data-icon="heart"></span><span>Me gusta</span></a>
+</nav>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="js/shared.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

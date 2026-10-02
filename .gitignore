@@ -1,0 +1,14 @@
+node_modules/
+dist/
+web-ext-artifacts/
+.amo-upload-uuid
+.secrets/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.p12
+*.jks
