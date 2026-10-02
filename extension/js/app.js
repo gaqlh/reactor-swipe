@@ -678,7 +678,7 @@
     viewer = v;
     v.el = h('div', { class: 'viewer', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Pantalla completa' },
       scroller,
-      h('div', { class: 'vw-bar' }, h('button', { class: 'vw-btn', 'aria-label': 'Salir de pantalla completa', onclick: () => history.back() }, icon('x', 24)))
+      h('div', { class: 'vw-bar' }, h('button', { class: 'vw-btn', 'aria-label': 'Salir de pantalla completa', onclick: () => exitViewer() }, icon('x', 24)))
     );
     // Solo se cargan los posts cercanos; los lejanos se vacían para no gastar memoria.
     v.near = new IntersectionObserver(
@@ -702,7 +702,11 @@
     document.querySelectorAll('#view video').forEach((x) => x.pause());
     document.body.append(v.el);
     document.body.classList.add('noscroll');
-    history.pushState({ rsViewer: true }, '');
+    // En el navegador el «atrás» cierra la pantalla completa vía historial; en la app lo maneja Android (RSApp.handleBack).
+    if (!RS.android) {
+      history.pushState({ rsViewer: true }, '');
+      v.pushed = true;
+    }
     setFullscreen(true);
 
     const start = scroller.querySelector('[data-id="' + CSS.escape(p.id) + '"]') || scroller.firstElementChild;
@@ -731,13 +735,13 @@
       if (m.kind === 'image') {
         if (m.w && m.h / m.w > window.innerHeight / Math.max(1, window.innerWidth)) s.classList.add('tall');
         s.append(h('img', { src: RS.imageUrl(m, true), alt: '', decoding: 'async' }));
-        onTaps(s, () => history.back());
+        onTaps(s, () => exitViewer());
       } else if (m.kind === 'video') {
         const vid = h('video', { src: RS.videoUrl(m), loop: true, playsinline: true, poster: RS.posterUrl(m), preload: 'auto' });
         vid.muted = viewer.muted;
         videos.push(vid);
         s.append(vid);
-        onTaps(s, () => history.back(), toggleViewerSound);
+        onTaps(s, () => exitViewer(), toggleViewerSound);
       } else {
         s.append(embedLink(m, p));
       }
@@ -756,7 +760,7 @@
       media = h('div', { class: 'vw-media' }, slides[0]);
     } else {
       media = h('div', { class: 'vw-media text' }, h('p', { text: p.text || '' }));
-      onTaps(media, () => history.back());
+      onTaps(media, () => exitViewer());
     }
 
     const liked = !!S.likes[p.id];
@@ -868,7 +872,7 @@
     v.seen.unobserve(page);
     page.remove();
     if (next) setCurrentPage(next);
-    else history.back();
+    else exitViewer();
 
     toast('Post ocultado: no volverá a aparecer', 'Deshacer', () => {
       delete S.dislikes[p.id];
@@ -912,9 +916,21 @@
     }
   }
 
+  // Sale de la pantalla completa sin moverse de la página en la que estabas.
+  function exitViewer() {
+    if (!viewer) return;
+    if (viewer.pushed) history.back();
+    else closeViewer();
+  }
+
   function closeViewerThen(fn) {
-    afterViewerClose = fn;
-    history.back();
+    if (viewer && viewer.pushed) {
+      afterViewerClose = fn;
+      history.back();
+    } else {
+      closeViewer();
+      fn();
+    }
   }
 
   window.addEventListener('popstate', () => {
@@ -2178,6 +2194,23 @@
     navigate(hash) {
       if (location.hash === hash) route();
       else location.hash = hash;
+    },
+    // Botón «atrás» de Android: 1) cierra la pantalla completa, 2) vuelve a la página anterior,
+    // 3) desde otra sección vuelve a Inicio, 4) desde Inicio sale de la app.
+    handleBack() {
+      if (viewer) {
+        exitViewer();
+        return 'handled';
+      }
+      if (stack.length > 1) {
+        history.back();
+        return 'handled';
+      }
+      if ((parseHash().parts[0] || 'home') !== 'home') {
+        navReplace('#/home');
+        return 'handled';
+      }
+      return 'exit';
     },
     // Android avisa cuando la app vuelve a primer plano.
     onResume() {

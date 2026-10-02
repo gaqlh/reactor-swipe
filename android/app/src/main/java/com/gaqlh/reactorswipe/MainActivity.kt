@@ -131,14 +131,16 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // «Atrás» lo decide la interfaz (cerrar pantalla completa, página anterior…);
+        // el historial del WebView a veces se salta páginas, por eso no se usa directamente.
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (web.canGoBack()) {
-                    web.goBack()
-                } else {
-                    isEnabled = false
-                    onBackPressedDispatcher.onBackPressed()
-                    isEnabled = true
+                web.evaluateJavascript("(window.RSApp && RSApp.handleBack) ? RSApp.handleBack() : 'native'") { result ->
+                    when (result?.trim('"')) {
+                        "handled" -> Unit
+                        "exit" -> moveTaskToBack(true)
+                        else -> if (web.canGoBack()) web.goBack() else moveTaskToBack(true)
+                    }
                 }
             }
         })

@@ -13,7 +13,7 @@
 
   // En la extensión y en la app se habla directo con JoyReactor;
   // en modo desarrollo todo pasa por el proxy local de tools/dev-server.mjs.
-  const direct = !!(ext || android);
+  const direct = !!(ext || android) && !g.__RS_DEV_PROXY;
   const API_URL = direct ? 'https://api.joyreactor.com/graphql' : '/proxy/graphql';
   const IMG = 'https://img10.joyreactor.com/pics/post/';
   const PAGE_SIZE = 10;

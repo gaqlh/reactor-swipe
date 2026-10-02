@@ -64,6 +64,37 @@ async function proxyMedia(req, res, url) {
   else res.end();
 }
 
+// /android.html: la misma app pero con un puente RSAndroid simulado, para probar el modo Android en la PC.
+// (Las peticiones siguen pasando por el proxy porque el navegador no tiene el origen joyreactor.com.)
+const ANDROID_STUB = `<script>
+window.RSAndroid = {
+  getVersion: () => '0.0.0-sim',
+  getNews: () => '{}',
+  markNewsRead() {},
+  syncConfig() {},
+  notificationsAllowed: () => true,
+  batteryUnrestricted: () => true,
+  requestNotifications() {},
+  requestBatteryExemption() {},
+  setFullscreen(on) { window.__simFullscreen = on; },
+  checkNow(cb) { setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ total: 0, per: {} })), 50); },
+  saveFile(n, c, cb) { setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ ok: true, message: 'Simulado: ' + n })), 50); },
+  installUpdate(u, cb) { setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ ok: true })), 50); }
+};
+window.__RS_DEV_PROXY = true;
+</script>`;
+
+function serveAndroidSim(res) {
+  fs.readFile(path.join(ROOT, 'app.html'), 'utf8', (err, html) => {
+    if (err) {
+      res.writeHead(500).end(String(err));
+      return;
+    }
+    res.writeHead(200, { 'content-type': TYPES['.html'], 'cache-control': 'no-store' });
+    res.end(html.replace('<script src="js/shared.js"></script>', ANDROID_STUB + '\n<script src="js/shared.js"></script>'));
+  });
+}
+
 function serveStatic(res, pathname) {
   const file = path.normalize(path.join(ROOT, decodeURIComponent(pathname)));
   if (!file.startsWith(ROOT)) {
@@ -86,6 +117,7 @@ http
     try {
       if (url.pathname === '/proxy/graphql' && req.method === 'POST') return await proxyGraphql(req, res);
       if (url.pathname === '/proxy/media') return await proxyMedia(req, res, url);
+      if (url.pathname === '/android.html') return serveAndroidSim(res);
       if (url.pathname === '/') {
         res.writeHead(302, { location: '/app.html' }).end();
         return;

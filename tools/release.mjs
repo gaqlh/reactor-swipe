@@ -60,8 +60,10 @@ async function main() {
   if (!runId) throw new Error('No encontré la compilación en GitHub. Revisa la pestaña Actions del repositorio.');
   run('gh', ['run', 'watch', runId, '--repo', REPO, '--exit-status', '--interval', '15']);
 
+  const qr = spawnSync('python', ['tools/make_qr.py', version], { cwd: ROOT, encoding: 'utf8' });
   console.log(`\n✔ Versión ${version} publicada.`);
   console.log(`  Enlace para instalar: https://github.com/${REPO}/releases/latest/download/reactor-swipe.apk`);
+  if (qr.status === 0) console.log(`  QR: ${qr.stdout.trim()}`);
 }
 
 main().catch((e) => {

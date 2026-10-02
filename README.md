@@ -55,6 +55,8 @@ npm run dev
 
 Abre <http://localhost:5178/app.html> en vista de móvil. El servidor local hace de intermediario con JoyReactor: fuera de la app, su API y sus videos bloquean al navegador.
 
+<http://localhost:5178/android.html> es la misma interfaz con el puente de Android simulado, para probar lo que solo pasa en la app: el botón «atrás» (`RSApp.handleBack()`), la pantalla completa, el respaldo y las actualizaciones.
+
 | Carpeta / archivo | Qué es |
 | --- | --- |
 | `extension/` | La interfaz (feed, miniaturas, aleatorio, favoritos…). También funciona como extensión de Firefox |
