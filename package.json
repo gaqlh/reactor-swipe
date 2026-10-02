@@ -8,7 +8,6 @@
     "icons": "python tools/make_icons.py",
     "lint": "web-ext lint --source-dir extension --self-hosted",
     "build": "web-ext build --source-dir extension --artifacts-dir dist --filename reactor-swipe-{version}.xpi --overwrite-dest",
-    "claves": "node tools/save-keys.mjs",
     "release": "node tools/release.mjs"
   },
   "devDependencies": {
