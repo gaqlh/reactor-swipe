@@ -1,0 +1,47 @@
+# Reactor Swipe: guía para Claude
+
+App de Android que muestra joyreactor.com como un feed tipo Instagram. La lee y usa una sola persona, que habla español y usa Android. Toda la interfaz y los textos van en español. Qué hace la app y cómo se instala está en `README.md`.
+
+## Cada versión, en este orden
+
+1. Cambiar el código: la interfaz está en `extension/` y la parte nativa en `android/`.
+2. Probar en la PC con `npm run dev` y abrir <http://localhost:5178/android.html> en vista móvil. Es la interfaz con el puente de Android simulado (atrás, pantalla completa, respaldo, actualizaciones). En la PC no hay Java ni Android SDK, así que el APK solo se compila en GitHub Actions.
+3. Publicar con `npm run release`. Sube `VERSION`, hace commit y etiqueta `vX.Y.Z`, espera a que Actions compile y firme el APK y genera el QR en `dist/reactor-swipe-qr.png`. Los teléfonos reciben el aviso de versión nueva.
+4. Enviar el QR al usuario con SendUserFile.
+5. Contar los cambios en la página de novedades (artifact), no en texto. Ver la memoria `changelog-artifact`.
+
+## Reglas
+
+- **Nunca perder datos del usuario.** Viven en el `localStorage` del WebView, con claves `rs:*` en el origen `https://joyreactor.com`. Se conservan al actualizar mientras no cambien el `applicationId` ni la clave de firma. Todo dato nuevo va en `DEFAULTS` (`extension/js/shared.js`) con un valor por defecto. No renombrar ni borrar claves existentes.
+- **Nunca subir secretos.** El repo es público. La clave de firma está en `.secrets/` (en `.gitignore`), con copia en OneDrive y como *secrets* del repo (`ANDROID_KEYSTORE_B64`, `ANDROID_KEYSTORE_PASSWORD`, alias `reactorswipe`).
+- **Las funciones nuevas grandes se proponen antes de programarlas** cuando el usuario lo pide (por ejemplo, la reputación de usuarios).
+- **Decir siempre qué se probó.** Hasta ahora todo se probó solo en la simulación de la PC, nunca en un teléfono.
+
+## Dónde está cada cosa
+
+| Archivo | Qué hay |
+| --- | --- |
+| `extension/js/shared.js` | API GraphQL, normalización de posts, `DEFAULTS` y guardado, aleatorio (`randomBatch`), fuentes de GIF y videos (`createMediaSource`), búsqueda de actualizaciones |
+| `extension/js/app.js` | Toda la interfaz: router por hash con pila de «atrás», clase `Feed`, visor de pantalla completa (`openViewer`), hashtag (`routeTag`), usuario (`routeUser`), buscador (`searchBox`), historial (`addHistory`, `routeHistory`), estadísticas (`recordView`, `routeStats`), ajustes |
+| `extension/app.css` | Tema oscuro. Tokens en `:root`; acento `#f5a524` |
+| `android/app/src/main/java/com/gaqlh/reactorswipe/` | `MainActivity` (WebView, atrás, pantalla completa), `Bridge` (puente `RSAndroid`), `NewsChecker` y `Workers` (avisos y actualizaciones), `Updater`, `Store`, `Notifs` |
+| `tools/release.mjs`, `tools/make_qr.py` | Publicar y generar el QR |
+| `tools/dev-server.mjs` | Servidor de desarrollo con proxy a JoyReactor y `/android.html` |
+
+Estilo del código: JavaScript sin frameworks. Para crear y vaciar nodos se usan los helpers `h()` y `fill()` (nunca `replaceChildren(null)`, que pinta «null»). Las clases de iconos llevan el prefijo `i-`. Los comentarios van en español.
+
+## API de JoyReactor (`https://api.joyreactor.com/graphql`)
+
+- `tag(name){ postPager(type: NEW|GOOD|BEST|ALL){ count posts(page) } }`: 10 posts por página. La página 1 es la más vieja y la última es `ceil(count/10)`.
+- `user(username: String!){ postPager … rating ratingWeek postNum goodPostNum bestPostNum }`.
+- `search(query, tagNames, sortByDate, sortByRating, …){ postPager }`: máximo 1000 resultados. Aquí la página 1 es la más nueva.
+- Las variables obligatorias van como `String!` (con `String` la API falla).
+- Muchos hashtags son sinónimos (`cat` → `cats`): usar `mainTag`.
+- Los avatares y los mp4 piden `Referer: https://joyreactor.com/`. Por eso la app sirve la interfaz desde `https://joyreactor.com/__rs/` con `WebViewAssetLoader`.
+- Los GIF y los videos llegan igual (WEBM con `hasVideo`). Un video se reconoce por las etiquetas del post (`VIDEO_TAGS` en `shared.js`) y, al reproducirlo, por el sonido (`watchAudio`).
+
+## Trampas conocidas
+
+- En Android la pulsación larga se cancela sobre los enlaces: los hashtags son `<button>`, no `<a>`.
+- El «atrás» de Android lo resuelve JavaScript con `RSApp.handleBack()`, que responde `handled` o `exit` (`MainActivity` usa `native` si la página no respondió). Para abrir la pantalla completa en Android no se usa `history.pushState`: solo en el navegador (`!RS.android`).
+- Si el panel del navegador de pruebas está oculto, se congelan `requestAnimationFrame` y los `IntersectionObserver`. Ninguna lógica debe depender solo de eso.
