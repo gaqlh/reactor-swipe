@@ -38,10 +38,13 @@ Estilo del código: JavaScript sin frameworks. Para crear y vaciar nodos se usan
 - Las variables obligatorias van como `String!` (con `String` la API falla).
 - Muchos hashtags son sinónimos (`cat` → `cats`): usar `mainTag`.
 - Los avatares y los mp4 piden `Referer: https://joyreactor.com/`. Por eso la app sirve la interfaz desde `https://joyreactor.com/__rs/` con `WebViewAssetLoader`.
-- Los GIF y los videos llegan igual (WEBM con `hasVideo`). Un video se reconoce por las etiquetas del post (`VIDEO_TAGS` en `shared.js`) y, al reproducirlo, por el sonido (`watchAudio`).
+- Los GIF y los videos llegan igual (WEBM con `hasVideo`). Un video se reconoce por las etiquetas del post (`VIDEO_TAGS` en `shared.js`) y, al reproducirlo, por el sonido (`watchAudio`). Los GIF usan `scrubBar` (barra que aparece al tocar) y los videos `miniPlayer`.
+- Cada post trae los números del autor (`user { rating ratingWeek postNum goodPostNum bestPostNum }`) en `p.author`; con eso `RS.reputation` calcula las estrellas: 40 % calidad, 45 % trayectoria (posts en «Bueno» y «Top» de toda su historia, escala logarítmica), 15 % actividad semanal. Los posts guardados antes de la 1.0.8 no traen `author` y se piden con `RS.fetchUserInfo`.
 
 ## Trampas conocidas
 
 - En Android la pulsación larga se cancela sobre los enlaces: los hashtags son `<button>`, no `<a>`.
 - El «atrás» de Android lo resuelve JavaScript con `RSApp.handleBack()`, que responde `handled` o `exit` (`MainActivity` usa `native` si la página no respondió). Para abrir la pantalla completa en Android no se usa `history.pushState`: solo en el navegador (`!RS.android`).
+- Los hashtags bloqueados se guardan en `S.mix.exclude` (nombre histórico: antes era «Nunca mostrar» del Aleatorio). Se cambian siempre con `setBlocked`, que rehace los feeds guardados. Bloquear etiquetas de formato (`RS.isFormatTag`: #gif, #video…) esconde casi todos los GIF; la página del hashtag lo avisa.
+- La pila de navegación es la de la app (`stack` en `app.js`). En Android, «atrás» usa `navBack()` sobre esa pila y no `history.back()`, que se desfasaba. Ir a una página que ya está en la pila (p. ej. tocar una pestaña de abajo) recorta la pila hasta ella.
 - Si el panel del navegador de pruebas está oculto, se congelan `requestAnimationFrame` y los `IntersectionObserver`. Ninguna lógica debe depender solo de eso.

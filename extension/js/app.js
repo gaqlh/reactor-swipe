@@ -49,7 +49,10 @@
     chart: '<path d="M4 20V11M10 20V5M16 20v-8M21 20H3"/>',
     film: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M10 9.3v5.4l4.6-2.7z"/>',
     clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
-    trash: '<path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13"/>'
+    trash: '<path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13"/>',
+    ban: '<circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>',
+    trophy: '<path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3.2 4M16 6h3a3 3 0 0 1-3.2 4"/><path d="M12 13v4M9 20.5h6M10 17h4v3.5h-4z"/>',
+    chevright: '<path d="M9 5l7 7-7 7"/>'
   };
 
   // Cada ícono se interpreta una sola vez como SVG y después se clona.
@@ -308,6 +311,14 @@
     return f;
   }
 
+  // JoyReactor trata como «categoría» a los hashtags grandes que agrupan otros (#gif, #cats…):
+  // esos van en Favoritos › Categorías; el resto, en Favoritos › Hashtags.
+  function savedText(asked, f) {
+    const where = 'Favoritos › ' + (f.kind === 'category' ? 'Categorías' : 'Hashtags');
+    const same = f.name.toLowerCase() === String(asked).toLowerCase();
+    return '#' + asked + (same ? ' guardado' : ' guardado como #' + f.name) + ' en ' + where;
+  }
+
   function removeFavorite(name) {
     delete S.favorites[name];
     delete S.mix.sources[name];
@@ -327,6 +338,62 @@
     }
   }
   const favOf = (t) => favIndex.get(String(t).toLowerCase()) || null;
+
+  // Hashtags bloqueados: sus posts no salen en ningún feed ni en los avisos (se guardan en mix.exclude).
+  const isBlocked = (t) => !!t && S.mix.exclude.some((x) => x.toLowerCase() === String(t).toLowerCase());
+  function setBlocked(t, on) {
+    const low = String(t).toLowerCase();
+    S.mix.exclude = S.mix.exclude.filter((x) => x.toLowerCase() !== low);
+    if (on) S.mix.exclude.push(t);
+    persist('mix');
+    refreshFilter();
+    // Los feeds guardados tienen posts que ahora sobran o faltan: se rehacen (menos el que está a la vista).
+    for (const [k, fd] of feeds) {
+      if (current && current.feed === fd) continue;
+      fd.destroy();
+      feeds.delete(k);
+    }
+  }
+  function blockedField(onChange, withTitle) {
+    const el = h('div', { class: 'field', style: { paddingBottom: '28px' } });
+    const input = h('input', { class: 'input', type: 'text', placeholder: 'hashtag a bloquear', 'aria-label': 'Hashtag a bloquear', autocomplete: 'off', enterkeyhint: 'done' });
+    const changed = () => {
+      draw();
+      if (onChange) onChange();
+    };
+    const add = () => {
+      const v = input.value.trim().replace(/^#/, '');
+      if (!v) return;
+      if (!isBlocked(v)) setBlocked(v, true);
+      input.value = '';
+      changed();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') add();
+    });
+    const draw = () =>
+      fill(el,
+        withTitle === false ? null : h('span', { class: 't', text: 'Hashtags bloqueados' }),
+        h('span', { class: 'd', text: 'Los posts con estos hashtags no salen en ningún feed ni en los avisos. También puedes bloquear un hashtag desde su página, con el botón ⊘.' }),
+        S.mix.exclude.length
+          ? h('div', { class: 'wrap' },
+              S.mix.exclude.map((x) =>
+                h('button', {
+                  class: 'xchip',
+                  'aria-label': 'Desbloquear #' + x,
+                  onclick: () => {
+                    setBlocked(x, false);
+                    changed();
+                  }
+                }, '#' + x, icon('x', 16))
+              )
+            )
+          : null,
+        h('div', { class: 'inline-add' }, input, h('button', { class: 'btn ghost', onclick: add }, 'Bloquear'))
+      );
+    draw();
+    return el;
+  }
 
   function setMixOn(name, on) {
     const cfg = S.mix.sources[name] || (S.mix.sources[name] = { on: false, w: 5 });
@@ -546,7 +613,7 @@
     let last = 0;
     let timer = null;
     el.addEventListener('click', (e) => {
-      if (e.target.closest('button, a, input, .mini')) return;
+      if (e.target.closest('button, a, input, .mini, .scrub')) return;
       const now = Date.now();
       if (now - last < 320) {
         clearTimeout(timer);
@@ -643,6 +710,90 @@
     return { el, bind };
   }
 
+  // Barra de los GIF: una línea casi transparente a todo lo ancho, sin botones ni tiempo.
+  // Solo aparece mientras tocas la pantalla (y un momento después); se arrastra para ir a otro momento.
+  const SCRUB_HIDE_MS = 1800;
+  function scrubBar(initial) {
+    const bar = h('span', { class: 'scrub-fill' });
+    const el = h('div', { class: 'scrub', role: 'slider', 'aria-label': 'Posición del GIF', 'aria-valuemin': '0', 'aria-valuemax': '100' }, h('span', { class: 'scrub-track' }, bar));
+    let v = null;
+    let raf = 0;
+    let hideTimer = null;
+    let dragging = false;
+    let wasPlaying = false;
+    const paint = () => {
+      const d = v && v.duration;
+      const r = d ? Math.min(1, v.currentTime / d) : 0;
+      bar.style.transform = 'scaleX(' + r + ')';
+      el.setAttribute('aria-valuenow', String(Math.round(r * 100)));
+    };
+    const loop = () => {
+      paint();
+      raf = el.classList.contains('show') ? requestAnimationFrame(loop) : 0;
+    };
+    const show = () => {
+      if (!v) return;
+      clearTimeout(hideTimer);
+      el.classList.add('show');
+      paint();
+      if (!raf) raf = requestAnimationFrame(loop);
+    };
+    const hideSoon = () => {
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => {
+        if (!dragging) el.classList.remove('show');
+      }, SCRUB_HIDE_MS);
+    };
+    const seekTo = (x) => {
+      if (!v || !v.duration) return;
+      const r = el.getBoundingClientRect();
+      v.currentTime = Math.max(0, Math.min(0.999, (x - r.left) / Math.max(1, r.width))) * v.duration;
+      paint();
+    };
+    el.addEventListener('pointerdown', (e) => {
+      if (!v) return;
+      e.stopPropagation();
+      dragging = true;
+      el.classList.add('drag');
+      show();
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch (err) {
+        /* sin captura */
+      }
+      wasPlaying = !v.paused;
+      v.pause();
+      seekTo(e.clientX);
+    });
+    el.addEventListener('pointermove', (e) => {
+      if (dragging) seekTo(e.clientX);
+    });
+    const end = () => {
+      if (!dragging) return;
+      dragging = false;
+      el.classList.remove('drag');
+      if (v && wasPlaying) v.play().catch(() => {});
+      hideSoon();
+    };
+    el.addEventListener('pointerup', end);
+    el.addEventListener('pointercancel', end);
+    for (const ev of ['click', 'dblclick', 'touchstart']) el.addEventListener(ev, (e) => e.stopPropagation(), { passive: true });
+    // Tocar cualquier parte del GIF la muestra; al soltar se va sola.
+    const watch = (zone) => {
+      zone.addEventListener('pointerdown', show, { passive: true });
+      zone.addEventListener('pointerup', hideSoon, { passive: true });
+      zone.addEventListener('pointercancel', hideSoon, { passive: true });
+    };
+    const bind = (video) => {
+      v = video || null;
+      el.hidden = !v;
+      if (!v) el.classList.remove('show');
+      paint();
+    };
+    bind(initial || null);
+    return { el, bind, watch };
+  }
+
   // Vuelve a empezar el GIF/video que está a la vista dentro de una tarjeta o página.
   function replayIn(scope, index) {
     const slides = scope.querySelectorAll('.slide, .vw-slide');
@@ -672,7 +823,10 @@
       const v = makeVideo(m);
       const snd = soundBtn(v);
       const badge = h('span', { class: 'mbadge', text: m.real ? 'VIDEO' : 'GIF' });
-      box.append(v, badge, snd, miniPlayer(v).el);
+      // Videos: reproductor con pausa y tiempo. GIF: solo la barra limpia que aparece al tocar.
+      const ctl = m.real ? miniPlayer(v) : scrubBar(v);
+      if (!m.real) ctl.watch(box);
+      box.append(v, badge, snd, ctl.el);
       watchAudio(v, () => {
         m.real = true;
         badge.textContent = 'VIDEO';
@@ -756,7 +910,7 @@
         }
         const fav = await addFavorite(tag);
         if (!fav) return;
-        toast('#' + tag + ' guardado en favoritos');
+        toast(savedText(tag, fav));
         document.querySelectorAll('.htag').forEach((a) => {
           if (favOf(a.textContent.slice(1))) a.classList.add('fav');
         });
@@ -780,6 +934,35 @@
     return el;
   }
 
+  // ---- Reputación del autor (ver RS.reputation en shared.js).
+  const decimal = (n) => String(n).replace('.', ',');
+  function repStars(r, cls) {
+    return h('span', { class: 'rep' + (cls ? ' ' + cls : ''), title: 'Reputación: ' + decimal(r.stars) + ' de 5', 'aria-label': 'Reputación ' + decimal(r.stars) + ' de 5' }, icon('star', 12), decimal(r.stars));
+  }
+  // Los posts guardados antes de la 1.0.8 no traen los números del autor: se piden aparte (una vez por usuario).
+  function repChip(p, cls) {
+    const el = h('span', { class: 'rep-slot' });
+    const put = (a) => {
+      const r = RS.reputation(a);
+      if (r) fill(el, repStars(r, cls));
+    };
+    if (p.author) put(p.author);
+    else if (p.user)
+      RS.fetchUserInfo(p.user)
+        .then((u) => u && put(u.author))
+        .catch(() => {});
+    return el;
+  }
+  // Cinco estrellas con relleno parcial (media estrella incluida).
+  function starRow(n) {
+    const row = h('span', { class: 'stars5', role: 'img', 'aria-label': decimal(n) + ' de 5 estrellas' });
+    for (let i = 0; i < 5; i++) {
+      const part = Math.max(0, Math.min(1, n - i));
+      row.append(h('span', { class: 'st', style: '--p:' + part }, icon('star', 22), icon('star', 22)));
+    }
+    return row;
+  }
+
   function buildCard(it, feed) {
     const p = it.post;
     const card = h('article', { class: 'card', 'data-id': p.id });
@@ -789,7 +972,7 @@
         p.user
           ? h('a', { class: 'who-link', href: '#/user/' + enc(p.user), 'aria-label': 'Ver todos los posts de ' + p.user },
               avatar(p),
-              h('div', { class: 'who' }, h('span', { class: 'user', text: p.user }), h('span', { class: 'when', text: ago(p.time) }))
+              h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: p.user }), repChip(p)), h('span', { class: 'when', text: ago(p.time) }))
             )
           : [avatar(p), h('div', { class: 'who' }, h('span', { class: 'user', text: 'anónimo' }), h('span', { class: 'when', text: ago(p.time) }))],
         h('span', { class: 'rating' + (p.rating < 0 ? ' neg' : ''), title: 'Rating en JoyReactor' }, icon('up', 14), String(p.rating).replace('.', ','))
@@ -1032,9 +1215,13 @@
         ? h('button', { class: 'vw-act', 'aria-label': 'Ver el GIF desde el principio', onclick: () => replayIn(page, page._track ? Math.round(page._track.scrollLeft / Math.max(1, page._track.clientWidth)) : 0) }, icon('replay', 27))
         : null
     );
-    const mini = videos.length ? miniPlayer(null) : null;
+    const mini = videos.some((x) => x._real) ? miniPlayer(null) : null;
+    const scrub = videos.some((x) => !x._real) ? scrubBar(null) : null;
+    if (scrub) scrub.watch(media);
     page._mini = mini;
+    page._scrub = scrub;
     const info = h('div', { class: 'vw-info' },
+      scrub ? scrub.el : null,
       mini ? mini.el : null,
       page._dots || null,
       it.label ? h('span', { class: 'vw-src', text: it.label }) : null,
@@ -1049,6 +1236,7 @@
               }
             }, icon('user', 15), p.user)
           : h('strong', { text: 'anónimo' }),
+        p.user ? repChip(p, 'media') : null,
         h('span', { text: ' · ' + ago(p.time) + ' · ' }),
         h('span', { class: 'vw-rating' }, icon('up', 13), String(p.rating).replace('.', ','))
       ),
@@ -1113,7 +1301,11 @@
           shown = vid;
         } else vid.pause();
       }
-      if (page._mini && page === viewer.current) page._mini.bind(shown || null);
+      if (page === viewer.current) {
+        const real = !!(shown && shown._real && page._mini);
+        if (page._mini) page._mini.bind(real ? shown : null);
+        if (page._scrub) page._scrub.bind(real ? null : shown || null);
+      }
     }
   }
 
@@ -1470,8 +1662,17 @@
     replacing = true;
     location.replace(hash);
   }
+  // Atrás: en la app se vuelve a la página anterior de la pila de la app. El historial del navegador
+  // no sirve ahí: se desfasa de la pila (p. ej. al volver a una pestaña tocándola abajo).
+  let goingBack = false;
+  function navBack() {
+    if (!RS.android) return history.back();
+    stack.pop();
+    goingBack = true;
+    location.replace('#' + stack[stack.length - 1]);
+  }
   function goBack(fallback) {
-    if (stack.length > 1) history.back();
+    if (stack.length > 1) navBack();
     else navReplace(fallback);
   }
 
@@ -1534,7 +1735,9 @@
     f.reopen = null;
     if (reopen && lastNavWasBack) {
       const it = f.items.find((x) => x.post.id === reopen);
-      if (it) setTimeout(() => current && current.feed === f && !viewer && openViewer(f, it.post, 0), 60);
+      // En la app se abre en el mismo momento (no se alcanza a ver la lista); en el navegador, tras el «atrás».
+      if (it && RS.android) openViewer(f, it.post, 0);
+      else if (it) setTimeout(() => current && current.feed === f && !viewer && openViewer(f, it.post, 0), 60);
     }
     if (!f.items.length) f.loadMore();
     else f.checkMore();
@@ -1558,17 +1761,25 @@
     return { parts, q, key: raw };
   }
 
-  const TAB_OF = { home: 'home', tag: 'home', user: 'home', search: 'search', news: 'home', random: 'random', mix: 'random', favorites: 'favorites', settings: 'favorites', likes: 'likes', hidden: 'likes', history: 'likes', stats: 'likes' };
+  const TAB_OF = { home: 'home', tag: 'home', user: 'home', search: 'search', news: 'home', random: 'random', mix: 'random', favorites: 'favorites', settings: 'favorites', likes: 'likes', hidden: 'likes', history: 'likes', stats: 'likes', topusers: 'likes' };
   let lastNavWasBack = false;
 
   function route() {
     const { parts, q, key } = parseHash();
     lastNavWasBack = false;
-    if (replacing && stack.length) stack[stack.length - 1] = key;
-    else if (stack.length > 1 && stack[stack.length - 2] === key) {
-      stack.pop();
+    if (goingBack) {
+      goingBack = false;
       lastNavWasBack = true;
-    } else if (stack[stack.length - 1] !== key) stack.push(key);
+    } else if (replacing && stack.length) stack[stack.length - 1] = key;
+    else if (stack[stack.length - 1] !== key) {
+      // Si ya pasaste por esa página (p. ej. tocas «Me gusta» abajo estando en Estadísticas), se vuelve
+      // a ella y se descarta lo de encima: así «atrás» no te lleva otra vez a Estadísticas.
+      const i = stack.length > 1 ? stack.lastIndexOf(key, stack.length - 2) : -1;
+      if (i >= 0) {
+        stack.length = i + 1;
+        lastNavWasBack = true;
+      } else stack.push(key);
+    }
     replacing = false;
     closeViewer();
 
@@ -1585,6 +1796,7 @@
     if (name === 'likes') return routeLikes(q);
     if (name === 'history') return routeHistory();
     if (name === 'stats') return routeStats();
+    if (name === 'topusers') return routeTopUsers();
     if (name === 'hidden') return routeHidden();
     if (name === 'news') return routeNews();
     if (name === 'settings') return routeSettings();
@@ -1798,7 +2010,10 @@
           if (fav) {
             removeFavorite(canon);
             toast('Quitado de favoritos');
-          } else if (await addFavorite(name)) toast('Guardado en favoritos');
+          } else {
+            const nf = await addFavorite(name);
+            if (nf) toast(savedText(name, nf));
+          }
           draw();
         }
       }, icon('star', 18), fav ? 'Guardado' : 'Guardar');
@@ -1841,10 +2056,32 @@
           )
         : null;
 
+      const blocked = isBlocked(name) || isBlocked(canon);
+      const blockBtn = h('button', {
+        class: 'ib blockb' + (blocked ? ' on' : ''),
+        'aria-pressed': String(blocked),
+        'aria-label': (blocked ? 'Desbloquear #' : 'Bloquear #') + canon,
+        title: (blocked ? 'Desbloquear #' : 'Bloquear #') + canon,
+        onclick: () => {
+          if (blocked) {
+            setBlocked(name, false);
+            if (canon !== name) setBlocked(canon, false);
+            toast('#' + canon + ' desbloqueado');
+          } else {
+            setBlocked(canon, true);
+            toast('#' + canon + ' bloqueado: sus posts ya no salen en ningún lado', 'Deshacer', () => {
+              setBlocked(canon, false);
+              route();
+            });
+          }
+          route();
+        }
+      }, icon('ban', 22));
       fill(el,
         h('div', { class: 'hero-row' },
           tagPic(canon, 'hero-tile', '#', info ? info.pic || 0 : undefined),
-          h('div', { class: 'grow' }, h('h2', { text: canon }), h('span', { class: 'meta', text: meta }))
+          h('div', { class: 'grow' }, h('h2', { text: canon }), h('span', { class: 'meta', text: blocked ? 'Bloqueado · sus posts no salen en ningún feed' : meta })),
+          blockBtn
         ),
         h('div', { class: 'hero-actions' }, favBtn, mixBtn, bellBtn),
         relatedRow
@@ -1863,6 +2100,22 @@
   }
 
   function routeTag(name, q) {
+    if (isBlocked(name)) {
+      mount([
+        h('header', { class: 'top' }, backBtn('/home'), h('h1', { text: '#' + name })),
+        tagHero(name),
+        emptyBox('ban', 'Bloqueaste #' + name, 'Sus posts no salen en ningún feed ni en los avisos.',
+          h('button', {
+            class: 'btn',
+            onclick: () => {
+              setBlocked(name, false);
+              toast('#' + name + ' desbloqueado');
+              route();
+            }
+          }, 'Desbloquear #' + name))
+      ]);
+      return;
+    }
     const type = RS.validType(q.get('sort')) || 'GOOD';
     const order = q.get('order') || (S.settings.tagOrder === 'recent' ? 'recent' : 'random');
     const random = order !== 'recent';
@@ -1911,13 +2164,59 @@
         extra: (f) => {
           const chips = sortChips(type, (t) => navReplace(url({ sort: t })));
           if (random) chips.append(h('button', { class: 'chip soft', onclick: () => f.reset() }, icon('refresh', 16), 'Barajar'));
+          // Bloquear #gif (o #video…) esconde casi todos los GIF y videos: se avisa arriba.
+          const fmtBlocked = kinds.length ? S.mix.exclude.filter(RS.isFormatTag) : [];
+          const warn = fmtBlocked.length
+            ? h('section', { class: 'notice', style: { margin: '12px 16px 0' } },
+                h('strong', { text: 'Tienes bloqueado #' + fmtBlocked.join(', #') }),
+                h('span', { text: 'Por eso faltan GIF o videos aquí: casi todos llevan esa etiqueta.' }),
+                h('div', { class: 'row-btns' },
+                  h('button', {
+                    class: 'btn blue',
+                    onclick: () => {
+                      fmtBlocked.forEach((t) => setBlocked(t, false));
+                      const stale = feeds.get(key);
+                      feeds.delete(key);
+                      if (stale) stale.destroy();
+                      toast('Desbloqueado: #' + fmtBlocked.join(', #'));
+                      route();
+                    }
+                  }, 'Desbloquear')
+                )
+              )
+            : null;
           return [
             tagHero(name),
+            warn,
             note ? h('p', { class: 'countline', style: { padding: '12px 16px 0' }, text: note }) : null,
             chips
           ];
         },
-        empty: kinds.length ? () => emptyBox('play', 'No hay ' + emptyWhat, '#' + name + ' no tiene ' + emptyWhat + ' con este orden. Prueba con «Todo» o quita el filtro.') : null
+        empty: kinds.length
+          ? () => {
+              // Si bloqueaste #gif (o parecido), todos los GIF desaparecen: se explica y se ofrece desbloquear.
+              const fmtBlocked = S.mix.exclude.filter(RS.isFormatTag);
+              if (fmtBlocked.length)
+                return emptyBox('ban', 'No se ven porque bloqueaste #' + fmtBlocked.join(', #'), 'Los GIF y los videos de JoyReactor llevan esas etiquetas.',
+                  h('button', {
+                    class: 'btn',
+                    onclick: () => {
+                      fmtBlocked.forEach((t) => setBlocked(t, false));
+                      const stale = feeds.get(key);
+                      feeds.delete(key);
+                      if (stale) stale.destroy();
+                      toast('Desbloqueado: #' + fmtBlocked.join(', #'));
+                      route();
+                    }
+                  }, 'Desbloquear'));
+              // Este hashtag no tiene GIF ni videos: en vez de una pantalla vacía, se muestran todos sus posts.
+              setTimeout(() => {
+                if (current && feeds.get(key) === current.feed) navReplace(url({ gif: false, video: false }));
+              }, 0);
+              toast('#' + name + ' no tiene ' + emptyWhat + ': te muestro todos sus posts');
+              return emptyBox('play', 'No hay ' + emptyWhat, '#' + name + ' no tiene ' + emptyWhat + '.');
+            }
+          : null
       })
     );
     showFeed(f);
@@ -1936,6 +2235,15 @@
         img.onload = () => fill(pic, img);
         img.src = RS.avatarUrl({ userId: u.id });
       }
+      const a = u && u.author;
+      const r = RS.reputation(a);
+      const part = (label, val, text) =>
+        h('div', { class: 'rep-part' },
+          h('span', { class: 'rp-l', text: label }),
+          h('span', { class: 'rp-bar' }, h('i', { style: { width: Math.round(((val - 1) / 4) * 100) + '%' } })),
+          h('span', { class: 'rp-v', text: decimal(Math.round(val * 10) / 10) }),
+          h('span', { class: 'rp-t', text })
+        );
       fill(el,
         h('div', { class: 'hero-row' },
           pic,
@@ -1943,7 +2251,16 @@
             h('h2', { text: u ? u.name : name }),
             h('span', { class: 'meta', text: u ? fmt(u.posts) + ' posts · rating ' + Number(u.rating).toLocaleString('es', { maximumFractionDigits: 0 }) : 'Cargando…' })
           )
-        )
+        ),
+        r
+          ? h('div', { class: 'rep-card' },
+              h('div', { class: 'rep-top' }, starRow(r.stars), h('b', { text: decimal(r.stars) }), h('span', { text: 'de reputación' })),
+              part('Calidad', r.quality, Math.round((a.good / a.posts) * 100) + ' % de sus posts llegó a «Bueno»'),
+              part('Trayectoria', r.career, fmt(a.good) + ' en «Bueno» y ' + fmt(a.best) + ' en «Top» en toda su historia'),
+              part('Actividad', r.activity, fmt(Math.round(a.week)) + ' de rating esta semana'),
+              h('p', { class: 'rep-note', text: 'Calidad 40 % · Trayectoria 45 % · Actividad 15 %' })
+            )
+          : null
       );
     };
     draw(null);
@@ -2040,7 +2357,10 @@
     star.addEventListener('click', async () => {
       const f = favOf(t.name);
       if (f) removeFavorite(f.name);
-      else if (await addFavorite(t.name)) toast('Guardado en favoritos');
+      else {
+        const nf = await addFavorite(t.name);
+        if (nf) toast(savedText(t.name, nf));
+      }
       paint();
       if (onFav) onFav();
     });
@@ -2236,20 +2556,6 @@
       const cats = favs.filter((f) => f.kind === 'category');
       const tags = favs.filter((f) => f.kind !== 'category');
 
-      const exInput = h('input', { class: 'input', type: 'text', placeholder: 'hashtag a excluir', 'aria-label': 'Hashtag a excluir', autocomplete: 'off', enterkeyhint: 'done' });
-      const addEx = () => {
-        const v = exInput.value.trim().replace(/^#/, '');
-        if (!v) return;
-        if (!S.mix.exclude.some((x) => x.toLowerCase() === v.toLowerCase())) S.mix.exclude.push(v);
-        persist('mix');
-        refreshFilter();
-        invalidateRandom();
-        draw();
-      };
-      exInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') addEx();
-      });
-
       fill(body,
         h('section', { style: { padding: '16px 16px 14px', display: 'flex', flexDirection: 'column', gap: '10px', borderBottom: '1px solid var(--line)' } },
           h('p', { style: { fontSize: '14px', lineHeight: '1.45', color: '#c9c1b7' }, text: 'Elige qué entra en tu Aleatorio y cuánto pesa cada cosa. Así queda el reparto:' }),
@@ -2291,28 +2597,7 @@
             invalidateRandom();
           })
         ),
-        h('div', { class: 'field', style: { paddingBottom: '28px' } },
-          h('span', { class: 't', text: 'Nunca mostrar' }),
-          h('span', { class: 'd', text: 'Los posts con estos hashtags desaparecen de todos los feeds.' }),
-          S.mix.exclude.length
-            ? h('div', { class: 'wrap' },
-                S.mix.exclude.map((x) =>
-                  h('button', {
-                    class: 'xchip',
-                    'aria-label': 'Volver a mostrar #' + x,
-                    onclick: () => {
-                      S.mix.exclude = S.mix.exclude.filter((y) => y !== x);
-                      persist('mix');
-                      refreshFilter();
-                      invalidateRandom();
-                      draw();
-                    }
-                  }, '#' + x, icon('x', 16))
-                )
-              )
-            : null,
-          h('div', { class: 'inline-add' }, exInput, h('button', { class: 'btn ghost', onclick: addEx }, 'Añadir'))
-        )
+        blockedField()
       );
       live();
     };
@@ -2408,7 +2693,7 @@
               );
             })
           : h('p', { class: 'countline', style: { paddingTop: '4px' }, text: 'Busca arriba y toca ★ para guardar hashtags. También puedes guardarlos desde el feed de cada hashtag.' }),
-        h('p', { class: 'foot-note', text: 'La campanita avisa cuando hay posts nuevos. El icono de mezcla decide si entra en tu Aleatorio.' })
+        h('p', { class: 'foot-note', text: 'Categorías son los hashtags grandes que en JoyReactor agrupan a otros (como #gif o #cats); el resto sale en Hashtags. Los dos funcionan igual. La campanita avisa cuando hay posts nuevos y el icono de mezcla decide si entra en tu Aleatorio.' })
       );
     }
 
@@ -2420,7 +2705,15 @@
 
   function myTabs(active) {
     const tab = (id, ic, label, n) =>
-      h('a', { class: active === id ? 'on' : '', href: '#/' + id, 'aria-current': active === id ? 'page' : null }, icon(ic, 18), label, h('span', { class: 'tcount', text: String(n) }));
+      h('a', {
+        class: active === id ? 'on' : '',
+        href: '#/' + id,
+        'aria-current': active === id ? 'page' : null,
+        onclick: (e) => {
+          e.preventDefault();
+          if (active !== id) navReplace('#/' + id);
+        }
+      }, icon(ic, 18), label, h('span', { class: 'tcount', text: String(n) }));
     return h('nav', { class: 'tabs2', 'aria-label': 'Mis posts' },
       tab('likes', 'heart', 'Me gusta', Object.keys(S.likes).length),
       tab('hidden', 'down', 'Ocultos', Object.keys(S.dislikes).length),
@@ -2456,6 +2749,7 @@
       head: (f) => [h('h1', { text: 'Mis posts' }), statsLink(), viewToggle(f)],
       extra: () => [
         myTabs('likes'),
+        filter ? null : topUsersStrip(),
         all.length
           ? h('nav', { class: 'chips', 'aria-label': 'Filtrar por hashtag' },
               h('button', { class: 'chip' + (filter ? '' : ' on'), onclick: () => navReplace('#/likes') }, 'Todos'),
@@ -2467,6 +2761,106 @@
       empty: () => emptyBox('heart', 'Todavía no tienes me gusta', 'Toca el corazón en cualquier post.')
     }));
     showFeed(f);
+  }
+
+  // ================================================================ Tus 10 usuarios
+
+  // Los autores de los posts que más te gustaron. La lista se rehace cada lunes y se compara con la anterior.
+  function weekStart(t) {
+    const d = new Date(t);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    return d.getTime();
+  }
+  function countLikedUsers() {
+    const by = new Map();
+    for (const x of Object.values(S.likes)) {
+      const p = x.post;
+      if (!p || !p.user) continue;
+      const u = by.get(p.user) || { name: p.user, userId: p.userId || 0, n: 0, author: null, last: 0 };
+      u.n++;
+      if (p.author && x.at >= u.last) {
+        u.author = p.author;
+        u.last = x.at;
+      }
+      by.set(p.user, u);
+    }
+    return Array.from(by.values())
+      .sort((a, b) => b.n - a.n || a.name.localeCompare(b.name))
+      .slice(0, 10)
+      .map((u) => ({ name: u.name, userId: u.userId, n: u.n, author: u.author }));
+  }
+  function topUsers() {
+    const week = String(weekStart(Date.now()));
+    const t = S.topUsers;
+    if (t.week !== week) {
+      t.prev = t.week ? t.list : [];
+      t.list = countLikedUsers();
+      t.week = week;
+      t.at = Date.now();
+      persist('topUsers');
+    } else if (t.list.length < 10) {
+      // Mientras no llegues a 10, la lista se completa sin esperar al lunes.
+      const now = countLikedUsers();
+      if (now.length > t.list.length) {
+        t.list = now;
+        persist('topUsers');
+      }
+    }
+    return t;
+  }
+  function moveOf(t, name, i) {
+    if (!t.prev.length) return null;
+    const j = t.prev.findIndex((x) => x.name === name);
+    if (j < 0) return h('span', { class: 'mv new', text: 'Nuevo' });
+    if (j === i) return h('span', { class: 'mv same', text: '=' });
+    return h('span', { class: 'mv ' + (j > i ? 'up' : 'down'), text: (j > i ? '▲ ' : '▼ ') + Math.abs(j - i) });
+  }
+  function topUsersStrip() {
+    const t = topUsers();
+    if (!t.list.length) return null;
+    return h('section', { class: 'tops' },
+      h('a', { class: 'tops-head', href: '#/topusers' },
+        icon('trophy', 17),
+        h('span', { class: 'grow', text: 'Tus 10 usuarios de la semana' }),
+        h('span', { class: 'tops-more' }, 'Ver lista', icon('chevright', 15))
+      ),
+      h('div', { class: 'tops-row' },
+        t.list.map((u, i) =>
+          h('a', { class: 'tops-u', href: '#/user/' + enc(u.name), 'aria-label': i + 1 + '. ' + u.name },
+            h('span', { class: 'tops-av' }, avatar({ user: u.name, userId: u.userId }), h('b', { text: String(i + 1) })),
+            h('span', { class: 'tops-name', text: u.name })
+          )
+        )
+      )
+    );
+  }
+  function routeTopUsers() {
+    const t = topUsers();
+    const since = new Date(Number(t.week) || t.at);
+    const day = since.toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'long' });
+    mount([
+      h('header', { class: 'top' }, backBtn('/likes'), h('h1', { text: 'Tus 10 usuarios' })),
+      h('p', { class: 'countline', style: { padding: '14px 16px 6px' }, text: 'Los autores de los posts que más te gustaron. Se actualiza cada lunes (esta lista es del ' + day + ').' }),
+      t.list.length
+        ? h('ol', { class: 'tops-list' },
+            t.list.map((u, i) =>
+              h('li', null,
+                h('a', { href: '#/user/' + enc(u.name) },
+                  h('span', { class: 'tl-rank', text: String(i + 1) }),
+                  avatar({ user: u.name, userId: u.userId }),
+                  h('span', { class: 'tl-main' },
+                    h('span', { class: 'tl-name' }, h('span', { class: 'ellipsis', text: u.name }), repChip({ user: u.name, author: u.author })),
+                    h('span', { class: 'tl-sub' }, icon('heart', 13), u.n + (u.n === 1 ? ' post te gustó' : ' posts te gustaron'))
+                  ),
+                  moveOf(t, u.name, i)
+                )
+              )
+            )
+          )
+        : emptyBox('trophy', 'Todavía no hay lista', 'Dale ♥ a algunos posts y aquí aparecerán los usuarios que más te gustan.'),
+      t.prev.length ? h('p', { class: 'foot-note', text: '▲ y ▼: cuántos puestos subió o bajó respecto de la semana pasada.' }) : null
+    ]);
   }
 
   // ================================================================ Historial (vistos más de 10 s)
@@ -2514,7 +2908,7 @@
     const counts = {};
     for (const x of list.slice(0, 60)) for (const t of x.post.tags) counts[t] = (counts[t] || 0) + 1;
     const sug = Object.entries(counts)
-      .filter(([t, n]) => n >= 3 && !excluded.has(t.toLowerCase()) && !favOf(t) && !S.dismissed.includes(t))
+      .filter(([t, n]) => n >= 3 && !excluded.has(t.toLowerCase()) && !RS.isFormatTag(t) && !favOf(t) && !S.dismissed.includes(t))
       .sort((a, b) => b[1] - a[1])[0];
 
     const sugBox = h('div');
@@ -2523,18 +2917,15 @@
       sugBox.append(
         h('section', { class: 'notice' },
           h('strong', { text: 'Ocultaste ' + n + ' posts con #' + t }),
-          h('span', { text: '¿Lo excluyo de todos los feeds y del Aleatorio? Puedes revertirlo en Tu mezcla.' }),
+          h('span', { text: '¿Lo bloqueo? Sus posts no saldrán en ningún feed. Puedes desbloquearlo en Ajustes.' }),
           h('div', { class: 'row-btns' },
             h('button', {
               class: 'btn blue',
               onclick: () => {
-                S.mix.exclude.push(t);
-                persist('mix');
-                refreshFilter();
-                invalidateRandom();
-                fill(sugBox, h('section', { class: 'notice green' }, h('span', { text: '#' + t + ' ya no aparecerá en ningún feed.' })));
+                setBlocked(t, true);
+                fill(sugBox, h('section', { class: 'notice green' }, h('span', { text: '#' + t + ' bloqueado: ya no aparecerá en ningún feed.' })));
               }
-            }, 'Excluir #' + t),
+            }, 'Bloquear #' + t),
             h('button', {
               class: 'btn quiet',
               onclick: () => {
@@ -2799,6 +3190,10 @@
           h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Tus estadísticas' }), h('span', { class: 'smeta', text: 'Cuánto y cómo usas la app (solo en este teléfono).' })),
           h('a', { class: 'small-btn', href: '#/stats' }, icon('chart', 16), 'Ver')
         )
+      ),
+      h('div', { class: 'setgroup' },
+        h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Hashtags bloqueados' }),
+        blockedField(null, false)
       ),
       h('div', { class: 'setgroup' },
         h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Contenido' }),
@@ -3107,7 +3502,7 @@
         return 'handled';
       }
       if (stack.length > 1) {
-        history.back();
+        navBack();
         return 'handled';
       }
       if ((parseHash().parts[0] || 'home') !== 'home') {

@@ -112,7 +112,7 @@
   RS.gql = gql;
 
   const POST_FIELDS = `id createdAt rating commentsCount nsfw unsafe text
-    user { id username }
+    user { id username rating ratingWeek postNum goodPostNum bestPostNum }
     tags { name }
     attributes {
       type
@@ -153,6 +153,29 @@
   // (y, al reproducirlo, si tiene sonido: ver app.js).
   const VIDEO_TAGS = new Set(['video', 'videos', 'video with sound', 'with sound', 'sound', 'webm', 'coub', 'youtube', 'видео', 'со звуком', 'звук', 'видео со звуком']);
 
+  /** Números del autor que sirven para su reputación (o null si el post no los trae). */
+  function authorStats(u) {
+    if (!u || u.postNum == null) return null;
+    return { rating: Math.round((u.rating || 0) * 10) / 10, week: Math.round((u.ratingWeek || 0) * 10) / 10, posts: u.postNum || 0, good: u.goodPostNum || 0, best: u.bestPostNum || 0 };
+  }
+
+  // ---- Reputación de un usuario: de 1 a 5 estrellas, de a media estrella.
+  // 40 % calidad: qué parte de sus posts llegó a «Bueno» (20 % = 2★, 40 % = 3★, 60 % = 4★, 80 % o más = 5★).
+  // 45 % trayectoria: cuántos posts suyos llegaron a «Bueno» y a «Top» en toda su historia; los Top cuentan
+  //       doble (10 = 2★, 100 = 3★, 1.000 = 4★, 10.000 = 5★). Así pesan mucho los posts antiguos bien votados.
+  // 15 % actividad: el rating que ganó esta semana (10 = 2★, 100 = 3★, 1.000 = 4★, 10.000 = 5★).
+  RS.REP_WEIGHTS = { quality: 0.4, career: 0.45, activity: 0.15 };
+  const clampStars = (x) => Math.max(1, Math.min(5, x));
+  RS.reputation = function (a) {
+    if (!a || !a.posts) return null;
+    const quality = clampStars(1 + a.good / a.posts / 0.2);
+    const career = clampStars(1 + Math.log10(1 + a.good + a.best));
+    const activity = clampStars(1 + Math.log10(1 + Math.max(0, a.week)));
+    const W = RS.REP_WEIGHTS;
+    const raw = W.quality * quality + W.career * career + W.activity * activity;
+    return { stars: Math.round(raw * 2) / 2, raw, quality, career, activity };
+  };
+
   RS.normalizePost = function (p) {
     const media = [];
     const isVideoPost = (p.tags || []).some((t) => VIDEO_TAGS.has(String(t.name).toLowerCase()));
@@ -177,6 +200,7 @@
       unsafe: !!p.unsafe,
       user: p.user ? p.user.username : '',
       userId: p.user ? numId(p.user.id) : 0,
+      author: authorStats(p.user),
       tags: (p.tags || []).map((t) => t.name),
       text: cleanText(p.text),
       media
@@ -233,6 +257,9 @@
     (kinds.includes('gif') && kinds.includes('video') && RS.isAnimated(p)) ||
     (kinds.length === 1 && kinds[0] === 'gif' && RS.isGifPost(p) && !RS.isRealVideo(p)) ||
     (kinds.length === 1 && kinds[0] === 'video' && RS.isRealVideo(p));
+
+  RS.FORMAT_TAGS = new Set(['gif', 'gifs', 'гифки', 'гифка', 'гиф', 'videogif', 'video gif', 'анимация', 'animation', 'animated'].concat(Array.from(VIDEO_TAGS)));
+  RS.isFormatTag = (t) => RS.FORMAT_TAGS.has(String(t).toLowerCase());
 
   async function canonicalTag(tag) {
     const info = await RS.fetchTagInfo(tag).catch(() => null);
@@ -323,14 +350,17 @@
   };
 
   const userCache = new Map();
-  RS.fetchUserInfo = async function (username) {
+  RS.fetchUserInfo = function (username) {
     const key = String(username).toLowerCase();
-    if (userCache.has(key)) return userCache.get(key);
-    const d = await gql(`query($u:String!){ user(username:$u){ id username rating postNum } }`, { u: username });
-    const u = d.user;
-    const info = u ? { id: numId(u.id), name: u.username, rating: Math.round((u.rating || 0) * 10) / 10, posts: u.postNum || 0 } : null;
-    userCache.set(key, info);
-    return info;
+    if (!userCache.has(key)) {
+      const pr = gql(`query($u:String!){ user(username:$u){ id username rating ratingWeek postNum goodPostNum bestPostNum } }`, { u: username }).then((d) => {
+        const u = d.user;
+        return u ? { id: numId(u.id), name: u.username, rating: Math.round((u.rating || 0) * 10) / 10, posts: u.postNum || 0, author: authorStats(u) } : null;
+      });
+      pr.catch(() => userCache.delete(key));
+      userCache.set(key, pr);
+    }
+    return userCache.get(key);
   };
 
   const tagCache = new Map();
@@ -377,6 +407,7 @@
     history: [], // posts vistos más de 10 s: [{ id, at, post }], el más nuevo primero
     searches: [], // búsquedas recientes: [{ type: 'tag' | 'user', name, pic?, at }]
     stats: {}, // métricas de uso (ver app.js)
+    topUsers: { week: '', at: 0, list: [], prev: [] }, // tus 10 usuarios de la semana y los de la anterior
     eraCache: {}
   };
   RS.KEYS = Object.keys(DEFAULTS);
@@ -604,7 +635,18 @@
         .map((post) => ({ post, source: src.name, sourceKind: src.kind }));
     };
 
-    const batches = await Promise.all(Array.from({ length: n }, () => one(pick()).catch(() => [])));
+    let errors = 0;
+    let firstError = null;
+    const batches = await Promise.all(
+      Array.from({ length: n }, () =>
+        one(pick()).catch((e) => {
+          errors++;
+          firstError = firstError || e;
+          return [];
+        })
+      )
+    );
+    if (errors === n && firstError) throw firstError;
     const out = [];
     const ids = new Set();
     for (const it of shuffle([].concat(...batches))) {
