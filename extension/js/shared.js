@@ -151,11 +151,13 @@
 
   RS.normalizePost = function (p) {
     const media = [];
+    const isVideoPost = (p.tags || []).some((t) => String(t.name).toLowerCase() === 'video');
     for (const a of p.attributes || []) {
       const im = a.image || {};
       const id = numId(a.id);
       if (a.type === 'PICTURE') {
-        if (im.hasVideo) media.push({ kind: 'video', id, w: im.width, h: im.height });
+        // real: video de verdad (el post tiene la etiqueta «video»); si no, es un GIF convertido a video.
+        if (im.hasVideo) media.push({ kind: 'video', id, w: im.width, h: im.height, real: isVideoPost });
         else media.push({ kind: 'image', id, w: im.width, h: im.height, ext: String(im.type || 'jpeg').toLowerCase().replace('jpg', 'jpeg') });
       } else if (a.value) {
         media.push({ kind: 'embed', id, provider: a.type, value: a.value, w: im.width || 16, h: im.height || 9 });
@@ -209,34 +211,115 @@
     };
   };
 
-  // ---- Solo GIF y videos de un hashtag: la búsqueda de JoyReactor con «hashtag + gif».
-  // Devuelve como máximo 1000 resultados (100 páginas); la página 1 es la más nueva (o la mejor, en Top).
+  // ---- Solo GIF y videos de un hashtag: la búsqueda de JoyReactor con «hashtag + gif» y
+  // «hashtag + video», mezcladas en un solo listado. Cada búsqueda devuelve como máximo 1000
+  // resultados (100 páginas); la página 1 es la más nueva (o la mejor, en Top).
   const SEARCH_Q = `query($t:[String!],$p:Int,$d:Boolean,$r:Boolean,$min:Int,$nsfw:Boolean){ search(query:"", tagNames:$t, sortByDate:$d, sortByRating:$r, minRating:$min, showNsfw:$nsfw){ postPager{ count posts(page:$p){ ${POST_FIELDS} } } } }`;
+  const SEARCH_COUNT_Q = `query($t:[String!],$d:Boolean,$r:Boolean,$min:Int,$nsfw:Boolean){ search(query:"", tagNames:$t, sortByDate:$d, sortByRating:$r, minRating:$min, showNsfw:$nsfw){ postPager{ count } } }`;
   // «Bueno» se aproxima con rating mínimo 10 (la búsqueda no tiene el filtro «bueno» de los hashtags).
-  const GIF_ORDER = { NEW: { d: true }, ALL: { d: true }, GOOD: { d: true, min: 10 }, BEST: { r: true } };
+  const MEDIA_ORDER = { NEW: { d: true }, ALL: { d: true }, GOOD: { d: true, min: 10 }, BEST: { r: true } };
+  RS.MEDIA_KINDS = ['gif', 'video'];
   RS.GIF_LIMIT = 1000;
 
   RS.isAnimated = (p) => p.media.some((m) => m.kind === 'video' || m.kind === 'embed' || m.ext === 'gif');
 
-  RS.fetchGifPage = async function (tag, type, page, hideNsfw) {
+  async function canonicalTag(tag) {
     const info = await RS.fetchTagInfo(tag).catch(() => null);
-    const name = info ? info.name : tag;
-    const o = GIF_ORDER[type] || GIF_ORDER.GOOD;
-    const d = await gql(SEARCH_Q, {
-      t: name.toLowerCase() === 'gif' ? ['gif'] : [name, 'gif'],
-      p: page,
-      d: o.d || null,
-      r: o.r || null,
-      min: o.min == null ? null : o.min,
-      nsfw: hideNsfw ? false : null
-    });
+    return info ? info.name : tag;
+  }
+  const searchTags = (name, kind) => (name.toLowerCase() === kind ? [kind] : [name, kind]);
+  const searchVars = (tags, type, hideNsfw) => {
+    const o = MEDIA_ORDER[type] || MEDIA_ORDER.GOOD;
+    return { t: tags, d: o.d || null, r: o.r || null, min: o.min == null ? null : o.min, nsfw: hideNsfw ? false : null };
+  };
+
+  /** Una página de «hashtag + gif» o «hashtag + video». */
+  RS.fetchMediaPage = async function (tag, kind, type, page, hideNsfw) {
+    const name = await canonicalTag(tag);
+    const d = await gql(SEARCH_Q, Object.assign(searchVars(searchTags(name, kind), type, hideNsfw), { p: page }));
     const pp = d.search && d.search.postPager;
-    if (!pp) throw new Error('No pude buscar GIF de «' + tag + '»');
+    if (!pp) throw new Error('No pude buscar GIF ni videos de «' + tag + '»');
     return {
       count: pp.count,
       lastPage: Math.max(1, Math.ceil(Math.min(pp.count, RS.GIF_LIMIT) / PAGE_SIZE)),
       posts: (pp.posts || []).map(RS.normalizePost)
     };
+  };
+
+  RS.mediaCount = async function (tag, kind, type, hideNsfw) {
+    const key = 'media|' + tag + '|' + kind + '|' + type + '|' + !!hideNsfw;
+    const c = countCache.get(key);
+    if (c && Date.now() - c.at < 30 * 60 * 1000) return c.count;
+    const name = await canonicalTag(tag);
+    const d = await gql(SEARCH_COUNT_Q, searchVars(searchTags(name, kind), type, hideNsfw));
+    const count = (d.search && d.search.postPager && d.search.postPager.count) || 0;
+    countCache.set(key, { count, at: Date.now() });
+    return count;
+  };
+
+  /**
+   * Listado ordenado de GIF + videos de un hashtag: va pidiendo páginas de ambas búsquedas y
+   * las intercala por fecha (o por rating en Top). next() devuelve el siguiente lote.
+   */
+  RS.createMediaSource = function (tag, type, hideNsfw) {
+    const byRating = type === 'BEST';
+    const key = (p) => (byRating ? p.rating : p.time);
+    const subs = RS.MEDIA_KINDS.map((kind) => ({ kind, page: 0, last: Infinity, buf: [], done: false, capped: false }));
+    const refill = async (s) => {
+      s.page += 1;
+      if (s.page > s.last) {
+        s.done = true;
+        return;
+      }
+      const res = await RS.fetchMediaPage(tag, s.kind, type, s.page, hideNsfw);
+      s.last = res.lastPage;
+      s.capped = res.count > RS.GIF_LIMIT;
+      if (!res.posts.length) s.done = true;
+      s.buf.push(...res.posts);
+    };
+    return {
+      async next() {
+        await Promise.all(subs.filter((s) => !s.done && !s.buf.length).map(refill));
+        const out = [];
+        // Saca siempre el más nuevo (o mejor) de los dos montones mientras ambos tengan algo.
+        while (out.length < 20) {
+          if (subs.some((s) => !s.done && !s.buf.length)) break;
+          const live = subs.filter((s) => s.buf.length);
+          if (!live.length) break;
+          live.sort((a, b) => key(b.buf[0]) - key(a.buf[0]));
+          out.push(live[0].buf.shift());
+        }
+        return {
+          posts: out,
+          done: subs.every((s) => s.done && !s.buf.length),
+          capped: subs.some((s) => s.capped)
+        };
+      }
+    };
+  };
+
+  // ---- Perfil de un usuario y todos sus posts (página 1 = más vieja, como los hashtags).
+  const USER_PAGER_Q = `query($u:String!,$p:Int){ user(username:$u){ id username postPager{ count posts(page:$p){ ${POST_FIELDS} } } } }`;
+  RS.fetchUserPage = async function (username, page) {
+    const d = await gql(USER_PAGER_Q, { u: username, p: page == null ? null : page });
+    if (!d.user) throw new Error('No existe el usuario «' + username + '»');
+    const pp = d.user.postPager;
+    return {
+      count: pp.count,
+      lastPage: Math.max(1, Math.ceil(pp.count / PAGE_SIZE)),
+      posts: (pp.posts || []).map(RS.normalizePost)
+    };
+  };
+
+  const userCache = new Map();
+  RS.fetchUserInfo = async function (username) {
+    const key = String(username).toLowerCase();
+    if (userCache.has(key)) return userCache.get(key);
+    const d = await gql(`query($u:String!){ user(username:$u){ id username rating postNum } }`, { u: username });
+    const u = d.user;
+    const info = u ? { id: numId(u.id), name: u.username, rating: Math.round((u.rating || 0) * 10) / 10, posts: u.postNum || 0 } : null;
+    userCache.set(key, info);
+    return info;
   };
 
   const tagCache = new Map();
@@ -477,16 +560,16 @@
     const one = async (src) => {
       let res;
       if (opts.gif) {
-        // Solo GIF/videos: página al azar dentro de los resultados de la búsqueda (máx. 1000).
-        const key = 'gif|' + src.name + '|' + type;
-        let c = countCache.get(key);
-        if (!c || Date.now() - c.at > 30 * 60 * 1000) {
-          const firstPage = await RS.fetchGifPage(src.name, type, 1, opts.hideNsfw);
-          c = { count: firstPage.count, at: Date.now() };
-          countCache.set(key, c);
-        }
-        const lastGif = Math.max(1, Math.ceil(Math.min(c.count, RS.GIF_LIMIT) / PAGE_SIZE));
-        res = await RS.fetchGifPage(src.name, type, randInt(1, lastGif), opts.hideNsfw);
+        // Solo GIF/videos: elige «gif» o «video» según cuántos hay y salta a una página al azar.
+        const counts = await Promise.all(RS.MEDIA_KINDS.map((k) => RS.mediaCount(src.name, k, type, opts.hideNsfw)));
+        const capped = counts.map((c) => Math.min(c, RS.GIF_LIMIT));
+        const totalMedia = capped.reduce((a, b) => a + b, 0);
+        if (!totalMedia) return [];
+        let r = Math.random() * totalMedia;
+        let ki = 0;
+        while (ki < capped.length - 1 && (r -= capped[ki]) >= 0) ki++;
+        const lastPage = Math.max(1, Math.ceil(capped[ki] / PAGE_SIZE));
+        res = await RS.fetchMediaPage(src.name, RS.MEDIA_KINDS[ki], type, randInt(1, lastPage), opts.hideNsfw);
       } else {
         const count = await pagerCount(src.name, type);
         const last = Math.max(1, Math.ceil(count / PAGE_SIZE));

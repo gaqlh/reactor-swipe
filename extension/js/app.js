@@ -42,7 +42,10 @@
     chevdown: '<path d="M6 9l6 6 6-6"/>',
     expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
     spinner: '<path d="M12 3a9 9 0 1 0 9 9"/>',
-    alert: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/>'
+    alert: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/>',
+    pause: '<rect x="6.5" y="5" width="3.5" height="14" rx="1"/><rect x="14" y="5" width="3.5" height="14" rx="1"/>',
+    replay: '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3 4.5V9h4.5"/>',
+    user: '<circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/>'
   };
 
   // Cada ícono se interpreta una sola vez como SVG y después se clona.
@@ -479,7 +482,7 @@
     let last = 0;
     let timer = null;
     el.addEventListener('click', (e) => {
-      if (e.target.closest('button, a')) return;
+      if (e.target.closest('button, a, input, .mini')) return;
       const now = Date.now();
       if (now - last < 320) {
         clearTimeout(timer);
@@ -500,7 +503,94 @@
   const ytThumb = (m) => 'https://i.ytimg.com/vi/' + enc(m.value) + '/hqdefault.jpg';
   const isTall = (m) => !!(m.w && m.h && m.h / m.w > 1.9);
 
+  const EMBEDS = {
+    YOUTUBE: (v) => 'https://www.youtube-nocookie.com/embed/' + enc(v) + '?playsinline=1&rel=0&modestbranding=1',
+    COUB: (v) => 'https://coub.com/embed/' + enc(v) + '?muted=false&autostart=false&originalSize=false&startWithHD=false',
+    VIMEO: (v) => 'https://player.vimeo.com/video/' + enc(v)
+  };
+
+  // Video de YouTube/Coub/Vimeo: reproductor dentro de la app; los demás, enlace al sitio.
   function embedLink(m, p) {
+    const src = EMBEDS[m.provider] && EMBEDS[m.provider](m.value);
+    if (src) {
+      return h('div', { class: 'embed' },
+        h('iframe', {
+          src,
+          loading: 'lazy',
+          allow: 'autoplay; encrypted-media; picture-in-picture; fullscreen',
+          allowfullscreen: true,
+          referrerpolicy: 'strict-origin-when-cross-origin',
+          title: 'Video de ' + (PROVIDERS[m.provider] || 'JoyReactor')
+        })
+      );
+    }
+    return embedLinkOut(m, p);
+  }
+
+  const fmtTime = (t) => {
+    if (!isFinite(t) || t < 0) t = 0;
+    const m = Math.floor(t / 60);
+    const sec = Math.floor(t % 60);
+    return m + ':' + (sec < 10 ? '0' : '') + sec;
+  };
+
+  // Reproductor mínimo para videos: pausa/reproducir, barra para adelantar o atrasar y tiempo.
+  function miniPlayer(initial) {
+    const btn = h('button', { class: 'mini-btn', 'aria-label': 'Pausar' }, icon('pause', 16));
+    const range = h('input', { class: 'mini-range', type: 'range', min: 0, max: 1000, step: 1, value: 0, 'aria-label': 'Posición del video' });
+    const time = h('span', { class: 'mini-time', text: '0:00' });
+    const el = h('div', { class: 'mini' }, btn, range, time);
+    let v = null;
+    let off = null;
+    let seeking = false;
+    const paint = () => {
+      if (!v) return;
+      const d = v.duration || 0;
+      if (!seeking && d) range.value = String(Math.round((v.currentTime / d) * 1000));
+      time.textContent = fmtTime(v.currentTime) + ' / ' + fmtTime(d);
+      fill(btn, icon(v.paused ? 'play' : 'pause', 16));
+      btn.setAttribute('aria-label', v.paused ? 'Reproducir' : 'Pausar');
+      el.classList.toggle('ready', d > 0);
+    };
+    const bind = (video) => {
+      if (off) off.abort();
+      v = video;
+      el.hidden = !v;
+      if (!v) return;
+      off = new AbortController();
+      for (const ev of ['timeupdate', 'play', 'pause', 'loadedmetadata', 'durationchange']) v.addEventListener(ev, paint, { signal: off.signal });
+      paint();
+    };
+    range.addEventListener('input', () => {
+      if (!v || !v.duration) return;
+      seeking = true;
+      v.currentTime = (Number(range.value) / 1000) * v.duration;
+      time.textContent = fmtTime(v.currentTime) + ' / ' + fmtTime(v.duration);
+    });
+    range.addEventListener('change', () => (seeking = false));
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!v) return;
+      if (v.paused) v.play().catch(() => {});
+      else v.pause();
+    });
+    for (const ev of ['click', 'dblclick', 'pointerdown', 'touchstart']) el.addEventListener(ev, (e) => e.stopPropagation(), { passive: true });
+    bind(initial || null);
+    return { el, bind };
+  }
+
+  // Vuelve a empezar el GIF/video que está a la vista dentro de una tarjeta o página.
+  function replayIn(scope, index) {
+    const slides = scope.querySelectorAll('.slide, .vw-slide');
+    const slideEl = slides[index] || slides[0];
+    const v = (slideEl && slideEl.querySelector('video')) || scope.querySelector('video');
+    if (!v) return;
+    if (!v.getAttribute('src') && v.dataset.src) v.src = v.dataset.src;
+    v.currentTime = 0;
+    v.play().catch(() => {});
+  }
+
+  function embedLinkOut(m, p) {
     return h('a', { class: 'embed', href: RS.embedUrl(m, p), target: '_blank', rel: 'noopener' },
       m.provider === 'YOUTUBE' ? h('img', { src: ytThumb(m), alt: '', loading: 'lazy' }) : null,
       h('span', { class: 'embed-label' }, icon('play', 18), 'Ver en ' + (PROVIDERS[m.provider] || 'JoyReactor'))
@@ -517,7 +607,8 @@
     } else if (m.kind === 'video') {
       const v = makeVideo(m);
       const snd = soundBtn(v);
-      box.append(v, h('span', { class: 'mbadge', text: 'GIF' }), snd);
+      box.append(v, h('span', { class: 'mbadge', text: m.real ? 'VIDEO' : 'GIF' }), snd);
+      if (m.real) box.append(miniPlayer(v).el);
       onTaps(box, () => openViewer(feed, p, i), () => snd.click());
     } else {
       box.append(embedLink(m, p));
@@ -558,8 +649,62 @@
 
   function tagsRow(p) {
     return h('div', { class: 'tags' },
-      p.tags.map((t) => h('a', { class: 'htag' + (favOf(t) ? ' fav' : ''), href: '#/tag/' + enc(t), text: '#' + t }))
+      p.tags.map((t) => holdToFavorite(h('a', { class: 'htag' + (favOf(t) ? ' fav' : ''), href: '#/tag/' + enc(t), text: '#' + t }), t))
     );
+  }
+
+  // Mantener presionado un hashtag 3 segundos lo guarda en Favoritos (se ve una línea que se llena).
+  const HOLD_MS = 3000;
+  function holdToFavorite(el, tag) {
+    let timer = null;
+    let x0 = 0;
+    let y0 = 0;
+    const cancel = () => {
+      clearTimeout(timer);
+      timer = null;
+      el.classList.remove('holding');
+    };
+    el.addEventListener('pointerdown', (e) => {
+      x0 = e.clientX;
+      y0 = e.clientY;
+      el.classList.add('holding');
+      timer = setTimeout(async () => {
+        timer = null;
+        el.classList.remove('holding');
+        el.dataset.held = '1';
+        try {
+          if (navigator.vibrate) navigator.vibrate(40);
+        } catch (err) {
+          /* sin vibración */
+        }
+        if (favOf(tag)) {
+          toast('#' + tag + ' ya está en tus favoritos');
+          return;
+        }
+        const fav = await addFavorite(tag);
+        if (!fav) return;
+        toast('#' + tag + ' guardado en favoritos');
+        document.querySelectorAll('.htag').forEach((a) => {
+          if (favOf(a.textContent.slice(1))) a.classList.add('fav');
+        });
+      }, HOLD_MS);
+    });
+    el.addEventListener('pointermove', (e) => {
+      if (timer && Math.hypot(e.clientX - x0, e.clientY - y0) > 10) cancel();
+    });
+    for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) el.addEventListener(ev, cancel);
+    el.addEventListener(
+      'click',
+      (e) => {
+        if (!el.dataset.held) return;
+        delete el.dataset.held;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      },
+      true
+    );
+    el.addEventListener('contextmenu', (e) => e.preventDefault());
+    return el;
   }
 
   function buildCard(it, feed) {
@@ -568,8 +713,12 @@
     if (it.label) card.append(h('div', { class: 'source', style: it.color ? { color: it.color } : null }, icon(it.icon || 'shuffle', 14), h('span', { text: it.label })));
     card.append(
       h('div', { class: 'head' },
-        avatar(p),
-        h('div', { class: 'who' }, h('span', { class: 'user', text: p.user || 'anónimo' }), h('span', { class: 'when', text: ago(p.time) })),
+        p.user
+          ? h('a', { class: 'who-link', href: '#/user/' + enc(p.user), 'aria-label': 'Ver todos los posts de ' + p.user },
+              avatar(p),
+              h('div', { class: 'who' }, h('span', { class: 'user', text: p.user }), h('span', { class: 'when', text: ago(p.time) }))
+            )
+          : [avatar(p), h('div', { class: 'who' }, h('span', { class: 'user', text: 'anónimo' }), h('span', { class: 'when', text: ago(p.time) }))],
         h('span', { class: 'rating' + (p.rating < 0 ? ' neg' : ''), title: 'Rating en JoyReactor' }, icon('up', 14), String(p.rating).replace('.', ','))
       )
     );
@@ -587,8 +736,10 @@
         h('button', { class: 'act', 'aria-label': 'No me gusta: ocultar para siempre', onclick: () => dislike(it, card, feed) }, icon('down', 25)),
         h('a', { class: 'act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': p.comments + ' comentarios en JoyReactor' }, icon('comment', 24), fmt(p.comments)),
         h('span', { class: 'grow' }),
-        media ? h('button', { class: 'act dim', 'aria-label': 'Pantalla completa', onclick: () => openViewer(feed, p, currentIndex(card)) }, icon('expand', 21)) : null,
-        h('a', { class: 'act dim', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': 'Abrir el post original en JoyReactor' }, icon('external', 20))
+        p.media.some((m) => m.kind === 'video')
+          ? h('button', { class: 'act dim', 'aria-label': 'Ver el GIF desde el principio', title: 'Desde el principio', onclick: () => replayIn(card, currentIndex(card)) }, icon('replay', 23))
+          : null,
+        media ? h('button', { class: 'act dim', 'aria-label': 'Pantalla completa', onclick: () => openViewer(feed, p, currentIndex(card)) }, icon('expand', 21)) : null
       )
     );
     if (p.text) {
@@ -761,6 +912,7 @@
       } else if (m.kind === 'video') {
         const vid = h('video', { src: RS.videoUrl(m), loop: true, playsinline: true, poster: RS.posterUrl(m), preload: 'auto' });
         vid.muted = viewer.muted;
+        vid._real = !!m.real;
         videos.push(vid);
         s.append(vid);
         onTaps(s, () => exitViewer(), toggleViewerSound);
@@ -795,28 +947,45 @@
       h('button', { class: 'vw-act', 'aria-label': 'No me gusta: ocultar para siempre', onclick: () => dislikeInViewer(page) }, icon('down', 29)),
       h('a', { class: 'vw-act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': p.comments + ' comentarios en JoyReactor' }, icon('comment', 29), h('span', { text: fmt(p.comments) })),
       videos.length ? h('button', { class: 'vw-act vw-sound', 'aria-label': viewer.muted ? 'Activar sonido' : 'Silenciar', onclick: toggleViewerSound }, icon(viewer.muted ? 'muted' : 'sound', 27)) : null,
-      h('a', { class: 'vw-act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': 'Abrir el post original en JoyReactor' }, icon('external', 25))
+      videos.length
+        ? h('button', { class: 'vw-act', 'aria-label': 'Ver el GIF desde el principio', onclick: () => replayIn(page, page._track ? Math.round(page._track.scrollLeft / Math.max(1, page._track.clientWidth)) : 0) }, icon('replay', 27))
+        : null
     );
+    const mini = videos.some((x) => x._real) ? miniPlayer(null) : null;
+    page._mini = mini;
     const info = h('div', { class: 'vw-info' },
+      mini ? mini.el : null,
       page._dots || null,
       it.label ? h('span', { class: 'vw-src', text: it.label }) : null,
       h('div', { class: 'vw-who' },
-        h('strong', { text: p.user || 'anónimo' }),
+        p.user
+          ? h('a', {
+              class: 'vw-user',
+              href: '#/user/' + enc(p.user),
+              onclick: (e) => {
+                e.preventDefault();
+                closeViewerThen(() => nav('#/user/' + enc(p.user)));
+              }
+            }, icon('user', 15), p.user)
+          : h('strong', { text: 'anónimo' }),
         h('span', { text: ' · ' + ago(p.time) + ' · ' }),
         h('span', { class: 'vw-rating' }, icon('up', 13), String(p.rating).replace('.', ','))
       ),
       p.tags.length
         ? h('div', { class: 'vw-tags' },
             p.tags.map((t) =>
-              h('a', {
-                class: 'htag' + (favOf(t) ? ' fav' : ''),
-                href: '#/tag/' + enc(t),
-                text: '#' + t,
-                onclick: (e) => {
-                  e.preventDefault();
-                  closeViewerThen(() => nav('#/tag/' + enc(t)));
-                }
-              })
+              holdToFavorite(
+                h('a', {
+                  class: 'htag' + (favOf(t) ? ' fav' : ''),
+                  href: '#/tag/' + enc(t),
+                  text: '#' + t,
+                  onclick: (e) => {
+                    e.preventDefault();
+                    closeViewerThen(() => nav('#/tag/' + enc(t)));
+                  }
+                }),
+                t
+              )
             )
           )
         : null
@@ -868,10 +1037,14 @@
         if (page._track) visibleSlide = page._track.children[Math.round(page._track.scrollLeft / Math.max(1, page._track.clientWidth))];
         else visibleSlide = page.querySelector('.vw-slide');
       }
+      let shown = null;
       for (const vid of vids) {
-        if (visibleSlide && vid.parentNode === visibleSlide) vid.play().catch(() => {});
-        else vid.pause();
+        if (visibleSlide && vid.parentNode === visibleSlide) {
+          vid.play().catch(() => {});
+          shown = vid;
+        } else vid.pause();
       }
+      if (page._mini && page === viewer.current) page._mini.bind(shown && shown._real ? shown : null);
     }
   }
 
@@ -964,6 +1137,7 @@
   }
 
   function closeViewerThen(fn) {
+    if (viewer && viewer.feed && viewer.current) viewer.feed.reopen = viewer.current.dataset.id;
     if (viewer && viewer.pushed) {
       afterViewerClose = fn;
       history.back();
@@ -989,6 +1163,8 @@
       this.tag = o.tag || null;
       this.type = o.type || 'GOOD';
       this.gif = !!o.gif; // solo GIF y videos (hashtag)
+      this.user = o.user || null; // todos los posts de un usuario
+      this.mediaSrc = null;
       this.mode = o.mode || 'feed';
       this.source = o.source || '';
       this.staticItems = o.items || [];
@@ -1075,14 +1251,19 @@
 
     async fetchChunk() {
       if (this.kind === 'pager' && this.gif) {
-        const page = this.next == null ? 1 : this.next;
-        const res = await RS.fetchGifPage(this.tag, this.type, page, S.settings.hideNsfw);
-        this.next = page + 1;
-        if (this.next > res.lastPage || !res.posts.length) {
+        if (!this.mediaSrc) this.mediaSrc = RS.createMediaSource(this.tag, this.type, S.settings.hideNsfw);
+        const res = await this.mediaSrc.next();
+        if (res.done) {
           this.done = true;
-          if (res.count >= RS.GIF_LIMIT) this.endText = 'Llegaste al límite: JoyReactor solo deja ver los ' + RS.GIF_LIMIT + ' GIF más recientes de cada hashtag. Prueba con «Top» o con el orden aleatorio.';
+          if (res.capped) this.endText = 'Llegaste al límite: JoyReactor solo deja ver los ' + RS.GIF_LIMIT + ' GIF y videos más recientes de cada hashtag. Prueba con «Top» o con el orden aleatorio.';
         }
         return this.add(res.posts.filter(RS.isAnimated).map((post) => ({ post })));
+      }
+      if (this.kind === 'pager' && this.user) {
+        const res = await RS.fetchUserPage(this.user, this.next);
+        this.next = this.next == null ? res.lastPage - 1 : this.next - 1;
+        if (this.next < 1) this.done = true;
+        return this.add(res.posts.map((post) => ({ post })));
       }
       if (this.kind === 'pager') {
         const res = await RS.fetchPage(this.tag, this.type, this.next);
@@ -1180,6 +1361,7 @@
       this.failed = false;
       this.emptyStreak = 0;
       this.endText = '';
+      this.mediaSrc = null;
       fill(this.list);
       this.refresh();
       window.scrollTo(0, 0);
@@ -1254,6 +1436,13 @@
     if (!(anchor && f.scrollToPost(anchor))) window.scrollTo(0, f.scrollY || 0);
     // La cabecera del hashtag termina de dibujarse un momento después: vuelvo a alinear.
     if (anchor) setTimeout(() => current && current.feed === f && f.scrollToPost(anchor), 250);
+    // Si saliste de la pantalla completa para ver un hashtag o un usuario, al volver se reabre.
+    const reopen = f.reopen;
+    f.reopen = null;
+    if (reopen && lastNavWasBack) {
+      const it = f.items.find((x) => x.post.id === reopen);
+      if (it) setTimeout(() => current && current.feed === f && !viewer && openViewer(f, it.post, 0), 60);
+    }
     if (!f.items.length) f.loadMore();
     else f.checkMore();
   }
@@ -1276,13 +1465,17 @@
     return { parts, q, key: raw };
   }
 
-  const TAB_OF = { home: 'home', tag: 'home', search: 'home', news: 'home', random: 'random', mix: 'random', favorites: 'favorites', settings: 'favorites', likes: 'likes', hidden: 'likes' };
+  const TAB_OF = { home: 'home', tag: 'home', user: 'home', search: 'search', news: 'home', random: 'random', mix: 'random', favorites: 'favorites', settings: 'favorites', likes: 'likes', hidden: 'likes' };
+  let lastNavWasBack = false;
 
   function route() {
     const { parts, q, key } = parseHash();
+    lastNavWasBack = false;
     if (replacing && stack.length) stack[stack.length - 1] = key;
-    else if (stack.length > 1 && stack[stack.length - 2] === key) stack.pop();
-    else if (stack[stack.length - 1] !== key) stack.push(key);
+    else if (stack.length > 1 && stack[stack.length - 2] === key) {
+      stack.pop();
+      lastNavWasBack = true;
+    } else if (stack[stack.length - 1] !== key) stack.push(key);
     replacing = false;
     closeViewer();
 
@@ -1291,6 +1484,7 @@
     document.querySelectorAll('#tabs a').forEach((a) => (a.classList.contains('on') ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
 
     if (name === 'tag' && parts[1]) return routeTag(parts[1], q);
+    if (name === 'user' && parts[1]) return routeUser(parts[1]);
     if (name === 'random') return routeRandom();
     if (name === 'mix') return routeMix();
     if (name === 'favorites') return routeFavorites();
@@ -1465,7 +1659,7 @@
         kind: 'pager',
         tag: null,
         type,
-        head: (f) => [h('h1', { text: 'Inicio' }), bellLink(), iconLink('search', 'Buscar hashtag', '#/search'), viewToggle(f)],
+        head: (f) => [h('h1', { text: 'Inicio' }), bellLink(), viewToggle(f)],
         extra: () => [
           updateBanner(),
           storiesRow(),
@@ -1569,22 +1763,22 @@
 
   function routeTag(name, q) {
     const type = RS.validType(q.get('sort')) || 'GOOD';
-    const random = q.get('order') === 'random';
+    const random = q.get('order') !== 'recent';
     const gif = q.get('media') === 'gif';
     const key = 'tag:' + name.toLowerCase() + ':' + type + (random ? ':random' : '') + (gif ? ':gif' : '');
     const url = (o) => {
       const sort = o.sort || type;
       const rnd = o.random === undefined ? random : o.random;
       const onlyGif = o.gif === undefined ? gif : o.gif;
-      return '#/tag/' + enc(name) + '?sort=' + sort + (rnd ? '&order=random' : '') + (onlyGif ? '&media=gif' : '');
+      return '#/tag/' + enc(name) + '?sort=' + sort + (rnd ? '' : '&order=recent') + (onlyGif ? '&media=gif' : '');
     };
     const note = gif && random
       ? 'Solo GIF y videos de #' + name + ', en orden aleatorio.'
       : gif
         ? 'Solo GIF y videos de #' + name + '.'
         : random
-          ? 'Orden aleatorio: posts de #' + name + ' de cualquier época.'
-          : null;
+          ? 'Orden aleatorio: posts de #' + name + ' de cualquier época. Toca 🔀 para verlos en orden.'
+          : 'En orden: lo más reciente primero.';
     const f = cached(key, () =>
       new Feed({
         key,
@@ -1606,9 +1800,12 @@
           h('button', {
             class: 'ib' + (random ? ' active' : ''),
             'aria-pressed': String(random),
-            'aria-label': random ? 'Volver al orden normal' : 'Ver en orden aleatorio',
-            title: random ? 'Volver al orden normal' : 'Ver en orden aleatorio',
-            onclick: () => navReplace(url({ random: !random }))
+            'aria-label': random ? 'Ver en orden (más recientes primero)' : 'Ver en orden aleatorio',
+            title: random ? 'Ver en orden (más recientes primero)' : 'Ver en orden aleatorio',
+            onclick: () => {
+              toast(random ? 'En orden: lo más reciente primero' : 'Orden aleatorio');
+              navReplace(url({ random: !random }));
+            }
           }, icon('shuffle', 22)),
           viewToggle(f)
         ],
@@ -1627,9 +1824,55 @@
     showFeed(f);
   }
 
+  // ================================================================ Usuario
+
+  function userHero(name) {
+    const el = h('section', { class: 'hero' });
+    const draw = (u) => {
+      const c = colorFor(name);
+      const pic = h('span', { class: 'hero-tile', style: { background: c[1], color: '#0f0e0d' } }, name.charAt(0).toUpperCase());
+      if (u && u.id) {
+        const img = new Image();
+        img.alt = '';
+        img.onload = () => fill(pic, img);
+        img.src = RS.avatarUrl({ userId: u.id });
+      }
+      fill(el,
+        h('div', { class: 'hero-row' },
+          pic,
+          h('div', { class: 'grow' },
+            h('h2', { text: u ? u.name : name }),
+            h('span', { class: 'meta', text: u ? fmt(u.posts) + ' posts · rating ' + Number(u.rating).toLocaleString('es', { maximumFractionDigits: 0 }) : 'Cargando…' })
+          )
+        )
+      );
+    };
+    draw(null);
+    RS.fetchUserInfo(name)
+      .then((u) => (u ? draw(u) : fill(el, emptyBox('user', 'Ese usuario no existe', 'Revisa cómo está escrito.'))))
+      .catch(() => {});
+    return el;
+  }
+
+  function routeUser(name) {
+    const key = 'user:' + name.toLowerCase();
+    const f = cached(key, () =>
+      new Feed({
+        key,
+        kind: 'pager',
+        user: name,
+        back: true,
+        head: (f) => [backBtn('/home'), h('h1', { text: '@' + name }), viewToggle(f)],
+        extra: () => [userHero(name), h('p', { class: 'countline', style: { padding: '10px 16px 4px' }, text: 'Todos sus posts, lo más reciente primero.' })],
+        empty: () => emptyBox('user', 'Sin posts', name + ' todavía no publicó nada.')
+      })
+    );
+    showFeed(f);
+  }
+
   // ================================================================ Buscar
 
-  function searchBox(placeholder, autofocus, onFav) {
+  function searchBox(placeholder, autofocus, onFav, withUsers) {
     const input = h('input', { type: 'search', placeholder, 'aria-label': placeholder, autocomplete: 'off', enterkeyhint: 'search' });
     const results = h('div', { class: 'results' });
     let timer = null;
@@ -1644,9 +1887,16 @@
       timer = setTimeout(async () => {
         const my = ++seq;
         try {
-          const list = await RS.autocomplete(q);
+          const qUser = q.replace(/^@/, '');
+          const [list, user] = await Promise.all([
+            q.startsWith('@') ? Promise.resolve([]) : RS.autocomplete(q),
+            withUsers ? RS.fetchUserInfo(qUser).catch(() => null) : Promise.resolve(null)
+          ]);
           if (my !== seq) return;
-          fill(results, ...(list.length ? list.slice(0, 15).map((t) => resultRow(t, onFav)) : [h('div', { class: 'status', text: 'Sin resultados para «' + q + '»' })]));
+          const rows = [];
+          if (user) rows.push(userRow(user));
+          rows.push(...list.slice(0, 15).map((t) => resultRow(t, onFav)));
+          fill(results, ...(rows.length ? rows : [h('div', { class: 'status', text: 'Sin resultados para «' + q + '»' })]));
         } catch (e) {
           fill(results, h('div', { class: 'status', text: errText(e) }));
         }
@@ -1658,6 +1908,21 @@
     });
     if (autofocus) setTimeout(() => input.focus(), 60);
     return { el: h('div', { class: 'search' }, h('label', {}, icon('search', 20), input)), results, input };
+  }
+
+  function userRow(u) {
+    const c = colorFor(u.name);
+    const pic = h('span', { class: 'htile', style: { background: c[1], color: '#0f0e0d' } }, u.name.charAt(0).toUpperCase());
+    const img = new Image();
+    img.alt = '';
+    img.onload = () => fill(pic, img);
+    img.src = RS.avatarUrl({ userId: u.id });
+    return h('div', { class: 'result' },
+      h('a', { href: '#/user/' + enc(u.name) },
+        pic,
+        h('span', { class: 'rtext' }, h('span', { class: 'n', text: '@' + u.name }), h('span', { class: 'm', text: 'Usuario · ' + fmt(u.posts) + ' posts' }))
+      )
+    );
   }
 
   function resultRow(t, onFav) {
@@ -1690,8 +1955,13 @@
   }
 
   function routeSearch() {
-    const sb = searchBox('Buscar hashtag o categoría', true);
-    mount([h('header', { class: 'top has-back' }, backBtn('/home'), h('h1', { text: 'Buscar' })), sb.el, sb.results]);
+    const sb = searchBox('Buscar hashtag o @usuario', true, null, true);
+    mount([
+      h('header', { class: 'top' }, h('h1', { text: 'Buscar' })),
+      sb.el,
+      sb.results,
+      h('p', { class: 'foot-note', text: 'Escribe un hashtag, una categoría o el nombre de un usuario. Mantén presionado un hashtag en cualquier post 3 segundos para guardarlo en Favoritos.' })
+    ]);
   }
 
   // ================================================================ Aleatorio
