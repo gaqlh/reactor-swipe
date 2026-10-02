@@ -45,7 +45,11 @@
     alert: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/>',
     pause: '<rect x="6.5" y="5" width="3.5" height="14" rx="1"/><rect x="14" y="5" width="3.5" height="14" rx="1"/>',
     replay: '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3 4.5V9h4.5"/>',
-    user: '<circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/>'
+    user: '<circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/>',
+    chart: '<path d="M4 20V11M10 20V5M16 20v-8M21 20H3"/>',
+    film: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M10 9.3v5.4l4.6-2.7z"/>',
+    clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+    trash: '<path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13"/>'
   };
 
   // Cada ícono se interpreta una sola vez como SVG y después se clona.
@@ -218,10 +222,11 @@
 
   const refreshFilter = () => (pass = RS.makeFilter(S));
 
-  function markSeen(id) {
+  function markSeen(id, post) {
     if (!id || S.seenSet.has(id)) return;
     S.seenSet.add(id);
     S.seen.push(id);
+    if (post) recordView(post);
     if (S.seen.length > 6000) {
       S.seen = S.seen.slice(-5000);
       S.seenSet = new Set(S.seen);
@@ -348,6 +353,10 @@
 
   function toggleLike(p, forceOn) {
     const on = forceOn ? true : !S.likes[p.id];
+    if (on && !S.likes[p.id]) {
+      today().likes++;
+      saveStats();
+    }
     if (on) S.likes[p.id] = S.likes[p.id] || { at: Date.now(), post: p };
     else delete S.likes[p.id];
     persist('likes');
@@ -365,6 +374,8 @@
   function dislike(it, card, feed) {
     const p = it.post;
     S.dislikes[p.id] = { at: Date.now(), post: p };
+    today().dislikes++;
+    saveStats();
     if (S.likes[p.id]) {
       delete S.likes[p.id];
       persist('likes');
@@ -418,12 +429,53 @@
     (entries) => {
       for (const e of entries) {
         if (!e.isIntersecting) continue;
-        markSeen(e.target.dataset.id);
+        markSeen(e.target.dataset.id, e.target._post);
         seenIO.unobserve(e.target);
       }
     },
     { threshold: 0.6 }
   );
+
+  // ---- Historial: los posts que miraste más de 10 segundos (máximo configurable, por defecto 100).
+  const DWELL_MS = 10000;
+  let dwell = null;
+  function focusPost(p) {
+    if (!p) return blurPost();
+    if (dwell && dwell.id === p.id) return;
+    blurPost();
+    dwell = { id: p.id, timer: setTimeout(() => addHistory(p), DWELL_MS) };
+  }
+  function blurPost() {
+    if (dwell) clearTimeout(dwell.timer);
+    dwell = null;
+  }
+  function addHistory(p) {
+    const max = Number(S.settings.historyMax) || 100;
+    S.history = [{ id: p.id, at: Date.now(), post: p }].concat((S.history || []).filter((x) => x.id !== p.id)).slice(0, max);
+    persist('history', 1500);
+  }
+  const dwellIO = new IntersectionObserver(
+    (entries) => {
+      if (viewer) return;
+      for (const e of entries) {
+        if (e.isIntersecting && e.intersectionRatio >= 0.6) focusPost(e.target._post);
+        else if (dwell && dwell.id === e.target.dataset.id) blurPost();
+      }
+    },
+    { threshold: [0, 0.6] }
+  );
+  // Vuelve a contar el tiempo del post que quedó a la vista (al cerrar la pantalla completa o volver a la app).
+  function refocusVisible() {
+    if (viewer) {
+      if (viewer.current && viewer.current._it) focusPost(viewer.current._it.post);
+      return;
+    }
+    const f = current && current.feed;
+    if (!f || f.mode !== 'feed' || !f.root.isConnected) return blurPost();
+    const id = f.topVisibleId();
+    const card = id && f.list.querySelector('[data-id="' + CSS.escape(id) + '"]');
+    focusPost(card && card._post);
+  }
   const pauseIn = (root) => root.querySelectorAll('video').forEach((v) => v.pause());
 
   function makeVideo(m, thumb) {
@@ -445,6 +497,18 @@
     nearIO.observe(v);
     if (!thumb) playIO.observe(v);
     return v;
+  }
+
+  // Un GIF y un video llegan con el mismo formato: si al reproducirlo tiene sonido, es un video.
+  function watchAudio(v, onAudio) {
+    const check = () => {
+      const has = v.mozHasAudio || (v.webkitAudioDecodedByteCount || 0) > 0 || (v.audioTracks && v.audioTracks.length > 0);
+      if (has) {
+        v.removeEventListener('timeupdate', check);
+        onAudio();
+      } else if (v.currentTime > 3) v.removeEventListener('timeupdate', check);
+    };
+    v.addEventListener('timeupdate', check);
   }
 
   function soundBtn(v) {
@@ -607,8 +671,12 @@
     } else if (m.kind === 'video') {
       const v = makeVideo(m);
       const snd = soundBtn(v);
-      box.append(v, h('span', { class: 'mbadge', text: m.real ? 'VIDEO' : 'GIF' }), snd);
-      if (m.real) box.append(miniPlayer(v).el);
+      const badge = h('span', { class: 'mbadge', text: m.real ? 'VIDEO' : 'GIF' });
+      box.append(v, badge, snd, miniPlayer(v).el);
+      watchAudio(v, () => {
+        m.real = true;
+        badge.textContent = 'VIDEO';
+      });
       onTaps(box, () => openViewer(feed, p, i), () => snd.click());
     } else {
       box.append(embedLink(m, p));
@@ -647,10 +715,14 @@
     return el;
   }
 
+  // Botón de hashtag: un toque lo abre; mantenerlo presionado 3 s lo guarda en Favoritos.
+  // (Es un botón y no un enlace: Android cancela la pulsación larga sobre los enlaces.)
+  function tagButton(t, onOpen) {
+    return holdToFavorite(h('button', { type: 'button', class: 'htag' + (favOf(t) ? ' fav' : ''), draggable: 'false', onclick: onOpen }, '#' + t), t);
+  }
+
   function tagsRow(p) {
-    return h('div', { class: 'tags' },
-      p.tags.map((t) => holdToFavorite(h('a', { class: 'htag' + (favOf(t) ? ' fav' : ''), href: '#/tag/' + enc(t), text: '#' + t }), t))
-    );
+    return h('div', { class: 'tags' }, p.tags.map((t) => tagButton(t, () => nav('#/tag/' + enc(t)))));
   }
 
   // Mantener presionado un hashtag 3 segundos lo guarda en Favoritos (se ve una línea que se llena).
@@ -665,6 +737,7 @@
       el.classList.remove('holding');
     };
     el.addEventListener('pointerdown', (e) => {
+      if (e.button) return;
       x0 = e.clientX;
       y0 = e.clientY;
       el.classList.add('holding');
@@ -748,7 +821,9 @@
       card.append(cap);
     }
     if (p.tags.length) card.append(tagsRow(p));
+    card._post = p;
     seenIO.observe(card);
+    dwellIO.observe(card);
     return card;
   }
 
@@ -830,8 +905,10 @@
       feed = null;
     }
     const scroller = h('div', { class: 'vw-feed' });
-    const v = { feed, scroller, current: null, muted: false, onAdd: null };
+    const v = { feed, scroller, current: null, muted: false, onAdd: null, openedAt: Date.now() };
     viewer = v;
+    stats().fsOpens++;
+    saveStats();
     v.el = h('div', { class: 'viewer', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Pantalla completa' },
       scroller,
       h('div', { class: 'vw-bar' }, h('button', { class: 'vw-btn', 'aria-label': 'Salir de pantalla completa', onclick: () => exitViewer() }, icon('x', 24)))
@@ -913,6 +990,10 @@
         const vid = h('video', { src: RS.videoUrl(m), loop: true, playsinline: true, poster: RS.posterUrl(m), preload: 'auto' });
         vid.muted = viewer.muted;
         vid._real = !!m.real;
+        watchAudio(vid, () => {
+          m.real = true;
+          vid._real = true;
+        });
         videos.push(vid);
         s.append(vid);
         onTaps(s, () => exitViewer(), toggleViewerSound);
@@ -951,7 +1032,7 @@
         ? h('button', { class: 'vw-act', 'aria-label': 'Ver el GIF desde el principio', onclick: () => replayIn(page, page._track ? Math.round(page._track.scrollLeft / Math.max(1, page._track.clientWidth)) : 0) }, icon('replay', 27))
         : null
     );
-    const mini = videos.some((x) => x._real) ? miniPlayer(null) : null;
+    const mini = videos.length ? miniPlayer(null) : null;
     page._mini = mini;
     const info = h('div', { class: 'vw-info' },
       mini ? mini.el : null,
@@ -973,20 +1054,7 @@
       ),
       p.tags.length
         ? h('div', { class: 'vw-tags' },
-            p.tags.map((t) =>
-              holdToFavorite(
-                h('a', {
-                  class: 'htag' + (favOf(t) ? ' fav' : ''),
-                  href: '#/tag/' + enc(t),
-                  text: '#' + t,
-                  onclick: (e) => {
-                    e.preventDefault();
-                    closeViewerThen(() => nav('#/tag/' + enc(t)));
-                  }
-                }),
-                t
-              )
-            )
+            p.tags.map((t) => tagButton(t, () => closeViewerThen(() => nav('#/tag/' + enc(t)))))
           )
         : null
     );
@@ -1019,7 +1087,8 @@
     if (!viewer) return;
     viewer.current = page;
     fillPage(page, 0);
-    markSeen(page.dataset.id);
+    markSeen(page.dataset.id, page._it && page._it.post);
+    focusPost(page._it && page._it.post);
     syncViewerPlayback();
     const pages = viewer.scroller.children;
     const idx = Array.prototype.indexOf.call(pages, page);
@@ -1044,7 +1113,7 @@
           shown = vid;
         } else vid.pause();
       }
-      if (page._mini && page === viewer.current) page._mini.bind(shown && shown._real ? shown : null);
+      if (page._mini && page === viewer.current) page._mini.bind(shown || null);
     }
   }
 
@@ -1064,6 +1133,8 @@
     const p = it.post;
     const feed = v.feed;
     S.dislikes[p.id] = { at: Date.now(), post: p };
+    today().dislikes++;
+    saveStats();
     if (S.likes[p.id]) {
       delete S.likes[p.id];
       persist('likes');
@@ -1106,6 +1177,10 @@
     if (!viewer) return;
     const v = viewer;
     viewer = null;
+    stats().fsMs += Math.min(Date.now() - (v.openedAt || Date.now()), 2 * 3600000);
+    saveStats();
+    blurPost();
+    setTimeout(refocusVisible, 600);
     if (v.feed && v.onAdd) v.feed.listeners.delete(v.onAdd);
     v.near.disconnect();
     v.seen.disconnect();
@@ -1162,7 +1237,10 @@
       this.kind = o.kind; // 'pager' | 'random' | 'static'
       this.tag = o.tag || null;
       this.type = o.type || 'GOOD';
-      this.gif = !!o.gif; // solo GIF y videos (hashtag)
+      this.kinds = o.kinds || []; // hashtag: ['gif'], ['video'], ['gif','video'] o [] (todo)
+      this.memoryKey = o.memoryKey || null; // recuerda en qué post quedaste (Me gusta, Historial…)
+      this.anchorId = o.anchor || null;
+      this.pendingAnchor = o.anchor || null;
       this.user = o.user || null; // todos los posts de un usuario
       this.mediaSrc = null;
       this.mode = o.mode || 'feed';
@@ -1241,6 +1319,7 @@
         this.setStatus('error', e);
       }
       this.loading = false;
+      if (this.pendingAnchor && this.root.isConnected && this.scrollToPost(this.pendingAnchor)) this.pendingAnchor = null;
       this.checkMore();
     }
 
@@ -1250,14 +1329,14 @@
     }
 
     async fetchChunk() {
-      if (this.kind === 'pager' && this.gif) {
-        if (!this.mediaSrc) this.mediaSrc = RS.createMediaSource(this.tag, this.type, S.settings.hideNsfw);
+      if (this.kind === 'pager' && this.kinds.length) {
+        if (!this.mediaSrc) this.mediaSrc = RS.createMediaSource(this.tag, this.type, S.settings.hideNsfw, this.kinds);
         const res = await this.mediaSrc.next();
         if (res.done) {
           this.done = true;
-          if (res.capped) this.endText = 'Llegaste al límite: JoyReactor solo deja ver los ' + RS.GIF_LIMIT + ' GIF y videos más recientes de cada hashtag. Prueba con «Top» o con el orden aleatorio.';
+          if (res.capped) this.endText = 'Llegaste al límite: JoyReactor solo deja ver los ' + RS.GIF_LIMIT + ' más recientes de cada tipo por hashtag. Prueba con «Top» o con el orden aleatorio.';
         }
-        return this.add(res.posts.filter(RS.isAnimated).map((post) => ({ post })));
+        return this.add(res.posts.filter((p) => RS.matchesKinds(p, this.kinds)).map((post) => ({ post })));
       }
       if (this.kind === 'pager' && this.user) {
         const res = await RS.fetchUserPage(this.user, this.next);
@@ -1274,7 +1353,7 @@
       if (this.kind === 'random') {
         // Con tag: solo ese hashtag, en orden aleatorio (calidad según el orden elegido arriba).
         const opts = { n: 4, skip: this.ids };
-        if (this.tag) Object.assign(opts, { sources: [{ name: this.tag, kind: null, w: 1 }], type: this.type, era: 'any', noRepeat: false, gif: this.gif, hideNsfw: S.settings.hideNsfw });
+        if (this.tag) Object.assign(opts, { sources: [{ name: this.tag, kind: null, w: 1 }], type: this.type, era: 'any', noRepeat: false, mediaKinds: this.kinds, hideNsfw: S.settings.hideNsfw });
         const batch = await RS.randomBatch({ favorites: S.favorites, mix: S.mix, seenSet: S.seenSet, filter: pass }, opts);
         const n = this.add(
           batch.map((x) =>
@@ -1296,7 +1375,12 @@
         }
         return n;
       }
-      const chunk = this.staticItems.slice(this.cursor, this.cursor + 15);
+      let end = this.cursor + 15;
+      if (this.pendingAnchor) {
+        const idx = this.staticItems.findIndex((x) => x.post.id === this.pendingAnchor);
+        if (idx >= end) end = idx + 4;
+      }
+      const chunk = this.staticItems.slice(this.cursor, end);
       this.cursor += chunk.length;
       if (this.cursor >= this.staticItems.length) this.done = true;
       return this.add(chunk);
@@ -1411,13 +1495,19 @@
     }
   }
 
+  // Dónde quedaste en Me gusta / Historial / Novedades (esas listas se rehacen cuando cambian).
+  const feedMemory = new Map();
+
   function mount(nodes, feed) {
     if (current && current.feed) {
       const prev = current.feed;
       prev.scrollY = window.scrollY;
       if (!(prev.anchorHold && Date.now() < prev.anchorHold)) prev.anchorId = prev.topVisibleId();
+      if (prev.memoryKey) feedMemory.set(prev.memoryKey, prev.anchorId);
       pauseIn(prev.root);
     }
+    blurPost();
+    if (feed) setTimeout(refocusVisible, 700);
     fill(viewEl, ...[].concat(nodes));
     current = { feed: feed || null };
     updateSnap();
@@ -1433,7 +1523,10 @@
     mount(f.root, f);
     f.refresh();
     const anchor = f.anchorId;
-    if (!(anchor && f.scrollToPost(anchor))) window.scrollTo(0, f.scrollY || 0);
+    if (!(anchor && f.scrollToPost(anchor))) {
+      if (anchor) f.pendingAnchor = anchor;
+      window.scrollTo(0, f.scrollY || 0);
+    }
     // La cabecera del hashtag termina de dibujarse un momento después: vuelvo a alinear.
     if (anchor) setTimeout(() => current && current.feed === f && f.scrollToPost(anchor), 250);
     // Si saliste de la pantalla completa para ver un hashtag o un usuario, al volver se reabre.
@@ -1465,7 +1558,7 @@
     return { parts, q, key: raw };
   }
 
-  const TAB_OF = { home: 'home', tag: 'home', user: 'home', search: 'search', news: 'home', random: 'random', mix: 'random', favorites: 'favorites', settings: 'favorites', likes: 'likes', hidden: 'likes' };
+  const TAB_OF = { home: 'home', tag: 'home', user: 'home', search: 'search', news: 'home', random: 'random', mix: 'random', favorites: 'favorites', settings: 'favorites', likes: 'likes', hidden: 'likes', history: 'likes', stats: 'likes' };
   let lastNavWasBack = false;
 
   function route() {
@@ -1490,6 +1583,8 @@
     if (name === 'favorites') return routeFavorites();
     if (name === 'search') return routeSearch();
     if (name === 'likes') return routeLikes(q);
+    if (name === 'history') return routeHistory();
+    if (name === 'stats') return routeStats();
     if (name === 'hidden') return routeHidden();
     if (name === 'news') return routeNews();
     if (name === 'settings') return routeSettings();
@@ -1505,6 +1600,12 @@
     const b = (mode, ic, label) =>
       h('button', { class: feed.mode === mode ? 'on' : '', 'aria-label': label, 'aria-pressed': String(feed.mode === mode), onclick: () => feed.setMode(mode) }, icon(ic, 20));
     return h('div', { class: 'vtoggle' }, b('feed', 'feed', 'Vista feed'), b('grid', 'grid', 'Vista miniaturas'));
+  }
+
+  function viewToggleCompact(feed) {
+    const toGrid = feed.mode !== 'grid';
+    const label = toGrid ? 'Ver en miniaturas' : 'Ver un post por pantalla';
+    return h('button', { class: 'ib', 'aria-label': label, title: label, onclick: () => feed.setMode(toGrid ? 'grid' : 'feed') }, icon(toGrid ? 'grid' : 'feed', 21));
   }
 
   function fillBell(a) {
@@ -1763,40 +1864,38 @@
 
   function routeTag(name, q) {
     const type = RS.validType(q.get('sort')) || 'GOOD';
-    const random = q.get('order') !== 'recent';
-    const gif = q.get('media') === 'gif';
-    const key = 'tag:' + name.toLowerCase() + ':' + type + (random ? ':random' : '') + (gif ? ':gif' : '');
+    const order = q.get('order') || (S.settings.tagOrder === 'recent' ? 'recent' : 'random');
+    const random = order !== 'recent';
+    const defaultMedia = (S.settings.tagGif ? 'g' : '') + (S.settings.tagVideo ? 'v' : '') || 'all';
+    const media = q.get('media') || defaultMedia;
+    const showGif = media.includes('g') && media !== 'all';
+    const showVideo = media.includes('v');
+    const kinds = [showGif && 'gif', showVideo && 'video'].filter(Boolean);
+    const key = 'tag:' + name.toLowerCase() + ':' + type + ':' + order + ':' + (kinds.join('+') || 'all');
     const url = (o) => {
-      const sort = o.sort || type;
+      const g = o.gif === undefined ? showGif : o.gif;
+      const v = o.video === undefined ? showVideo : o.video;
       const rnd = o.random === undefined ? random : o.random;
-      const onlyGif = o.gif === undefined ? gif : o.gif;
-      return '#/tag/' + enc(name) + '?sort=' + sort + (rnd ? '' : '&order=recent') + (onlyGif ? '&media=gif' : '');
+      return '#/tag/' + enc(name) + '?sort=' + (o.sort || type) + '&order=' + (rnd ? 'random' : 'recent') + '&media=' + ((g ? 'g' : '') + (v ? 'v' : '') || 'all');
     };
-    const note = gif && random
-      ? 'Solo GIF y videos de #' + name + ', en orden aleatorio.'
-      : gif
-        ? 'Solo GIF y videos de #' + name + '.'
-        : random
-          ? 'Orden aleatorio: posts de #' + name + ' de cualquier época. Toca 🔀 para verlos en orden.'
-          : 'En orden: lo más reciente primero.';
+    const what = showGif && showVideo ? 'GIF y videos' : showGif ? 'Solo GIF' : showVideo ? 'Solo videos' : 'Todos los posts';
+    const emptyWhat = showGif && showVideo ? 'GIF ni videos' : showGif ? 'GIF' : 'videos';
+    const note = what + ' de #' + name + (random ? ', en orden aleatorio.' : ', lo más reciente primero.');
+    const gifLabel = showGif ? 'Quitar el filtro GIF' : 'Mostrar solo GIF';
+    const videoLabel = showVideo ? 'Quitar el filtro de videos' : 'Mostrar solo videos';
     const f = cached(key, () =>
       new Feed({
         key,
         kind: random ? 'random' : 'pager',
         tag: name,
         type,
-        gif,
+        kinds,
         back: true,
         head: (f) => [
           backBtn('/home'),
           h('h1', { text: '#' + name }),
-          h('button', {
-            class: 'ib gifbtn' + (gif ? ' active' : ''),
-            'aria-pressed': String(gif),
-            'aria-label': gif ? 'Ver todos los posts' : 'Ver solo GIF y videos',
-            title: gif ? 'Ver todos los posts' : 'Ver solo GIF y videos',
-            onclick: () => navReplace(url({ gif: !gif }))
-          }, 'GIF'),
+          h('button', { class: 'ib gifbtn' + (showGif ? ' active' : ''), 'aria-pressed': String(showGif), 'aria-label': gifLabel, title: gifLabel, onclick: () => navReplace(url({ gif: !showGif })) }, 'GIF'),
+          h('button', { class: 'ib gifbtn' + (showVideo ? ' active' : ''), 'aria-pressed': String(showVideo), 'aria-label': videoLabel, title: videoLabel, onclick: () => navReplace(url({ video: !showVideo })) }, icon('film', 20)),
           h('button', {
             class: 'ib' + (random ? ' active' : ''),
             'aria-pressed': String(random),
@@ -1807,7 +1906,7 @@
               navReplace(url({ random: !random }));
             }
           }, icon('shuffle', 22)),
-          viewToggle(f)
+          viewToggleCompact(f)
         ],
         extra: (f) => {
           const chips = sortChips(type, (t) => navReplace(url({ sort: t })));
@@ -1818,7 +1917,7 @@
             chips
           ];
         },
-        empty: gif ? () => emptyBox('play', 'Sin GIF ni videos', '#' + name + ' no tiene GIF ni videos con este orden. Prueba con «Todo».') : null
+        empty: kinds.length ? () => emptyBox('play', 'No hay ' + emptyWhat, '#' + name + ' no tiene ' + emptyWhat + ' con este orden. Prueba con «Todo» o quita el filtro.') : null
       })
     );
     showFeed(f);
@@ -1872,7 +1971,8 @@
 
   // ================================================================ Buscar
 
-  function searchBox(placeholder, autofocus, onFav, withUsers) {
+  function searchBox(placeholder, autofocus, onFav, withUsers, opts) {
+    opts = opts || {};
     const input = h('input', { type: 'search', placeholder, 'aria-label': placeholder, autocomplete: 'off', enterkeyhint: 'search' });
     const results = h('div', { class: 'results' });
     let timer = null;
@@ -1881,7 +1981,7 @@
       clearTimeout(timer);
       const q = input.value.trim().replace(/^#/, '');
       if (q.length < 2) {
-        fill(results);
+        fill(results, opts.idle ? opts.idle() : null);
         return;
       }
       timer = setTimeout(async () => {
@@ -1894,8 +1994,8 @@
           ]);
           if (my !== seq) return;
           const rows = [];
-          if (user) rows.push(userRow(user));
-          rows.push(...list.slice(0, 15).map((t) => resultRow(t, onFav)));
+          if (user) rows.push(userRow(user, opts.onPick));
+          rows.push(...list.slice(0, 15).map((t) => resultRow(t, onFav, opts.onPick)));
           fill(results, ...(rows.length ? rows : [h('div', { class: 'status', text: 'Sin resultados para «' + q + '»' })]));
         } catch (e) {
           fill(results, h('div', { class: 'status', text: errText(e) }));
@@ -1904,13 +2004,16 @@
     });
     input.addEventListener('keydown', (e) => {
       const q = input.value.trim().replace(/^#/, '');
-      if (e.key === 'Enter' && q) nav('#/tag/' + enc(q));
+      if (e.key !== 'Enter' || !q) return;
+      if (opts.onPick) opts.onPick({ type: 'tag', name: q });
+      nav('#/tag/' + enc(q));
     });
     if (autofocus) setTimeout(() => input.focus(), 60);
+    if (opts.idle) fill(results, opts.idle());
     return { el: h('div', { class: 'search' }, h('label', {}, icon('search', 20), input)), results, input };
   }
 
-  function userRow(u) {
+  function userRow(u, onPick) {
     const c = colorFor(u.name);
     const pic = h('span', { class: 'htile', style: { background: c[1], color: '#0f0e0d' } }, u.name.charAt(0).toUpperCase());
     const img = new Image();
@@ -1918,14 +2021,14 @@
     img.onload = () => fill(pic, img);
     img.src = RS.avatarUrl({ userId: u.id });
     return h('div', { class: 'result' },
-      h('a', { href: '#/user/' + enc(u.name) },
+      h('a', { href: '#/user/' + enc(u.name), onclick: () => onPick && onPick({ type: 'user', name: u.name, pic: u.id }) },
         pic,
         h('span', { class: 'rtext' }, h('span', { class: 'n', text: '@' + u.name }), h('span', { class: 'm', text: 'Usuario · ' + fmt(u.posts) + ' posts' }))
       )
     );
   }
 
-  function resultRow(t, onFav) {
+  function resultRow(t, onFav, onPick) {
     const c = colorFor(t.name);
     const star = h('button', { class: 'ib star' }, icon('star', 22));
     const paint = () => {
@@ -1943,7 +2046,7 @@
     });
     paint();
     return h('div', { class: 'result' },
-      h('a', { href: '#/tag/' + enc(t.name) },
+      h('a', { href: '#/tag/' + enc(t.name), onclick: () => onPick && onPick({ type: 'tag', name: t.name, pic: t.image ? RS.numId(t.id) : 0 }) },
         tagPic(t.name, 'htile', '#', t.image ? RS.numId(t.id) : 0),
         h('span', { class: 'rtext' },
           h('span', { class: 'n' }, t.name, t.nsfw ? h('span', { class: 'nsfw', text: 'NSFW' }) : null),
@@ -1954,13 +2057,75 @@
     );
   }
 
+  function recordSearch(entry) {
+    S.searches = [Object.assign({}, entry, { at: Date.now() })]
+      .concat((S.searches || []).filter((x) => !(x.type === entry.type && x.name.toLowerCase() === entry.name.toLowerCase())))
+      .slice(0, 30);
+    persist('searches');
+    stats().searches++;
+    saveStats();
+  }
+
+  // Búsquedas recientes, como en Instagram: tocar abre, la ✕ quita una, «Borrar todo» las limpia.
+  function recentSearches(redraw) {
+    const list = S.searches || [];
+    if (!list.length) return h('p', { class: 'foot-note', text: 'Aquí verás lo que buscaste. Escribe un hashtag, una categoría o el nombre de un usuario.' });
+    const rows = list.map((x) => {
+      const href = x.type === 'user' ? '#/user/' + enc(x.name) : '#/tag/' + enc(x.name);
+      let pic;
+      if (x.type === 'user') {
+        const c = colorFor(x.name);
+        pic = h('span', { class: 'htile', style: { background: c[1], color: '#0f0e0d' } }, x.name.charAt(0).toUpperCase());
+        if (x.pic) {
+          const img = new Image();
+          img.alt = '';
+          img.onload = () => fill(pic, img);
+          img.src = RS.avatarUrl({ userId: x.pic });
+        }
+      } else pic = tagPic(x.name, 'htile', '#', x.pic === undefined ? undefined : x.pic);
+      return h('div', { class: 'result' },
+        h('a', { href, onclick: () => recordSearch(x) },
+          pic,
+          h('span', { class: 'rtext' },
+            h('span', { class: 'n', text: (x.type === 'user' ? '@' : '#') + x.name }),
+            h('span', { class: 'm', text: (x.type === 'user' ? 'Usuario' : 'Hashtag') + ' · ' + ago(x.at) })
+          )
+        ),
+        h('button', {
+          class: 'ib',
+          'aria-label': 'Quitar ' + x.name + ' de las recientes',
+          onclick: () => {
+            S.searches = list.filter((y) => y !== x);
+            persist('searches');
+            redraw();
+          }
+        }, icon('x', 20))
+      );
+    });
+    return h('div', {},
+      h('div', { class: 'secline' },
+        h('h2', { class: 'grow section-label', text: 'Recientes' }),
+        h('button', {
+          class: 'link-btn',
+          onclick: () => {
+            S.searches = [];
+            persist('searches');
+            redraw();
+          }
+        }, 'Borrar todo')
+      ),
+      rows
+    );
+  }
+
   function routeSearch() {
-    const sb = searchBox('Buscar hashtag o @usuario', true, null, true);
+    let sb = null;
+    const idle = () => recentSearches(() => fill(sb.results, idle()));
+    sb = searchBox('Buscar hashtag o @usuario', true, null, true, { onPick: recordSearch, idle });
     mount([
       h('header', { class: 'top' }, h('h1', { text: 'Buscar' })),
       sb.el,
-      sb.results,
-      h('p', { class: 'foot-note', text: 'Escribe un hashtag, una categoría o el nombre de un usuario. Mantén presionado un hashtag en cualquier post 3 segundos para guardarlo en Favoritos.' })
+      sb.results
     ]);
   }
 
@@ -2254,13 +2419,16 @@
   // ================================================================ Mis posts: me gusta / no me gusta
 
   function myTabs(active) {
-    const nLikes = Object.keys(S.likes).length;
-    const nDis = Object.keys(S.dislikes).length;
-    return h('nav', { class: 'tabs2', 'aria-label': 'Historial' },
-      h('a', { class: active === 'likes' ? 'on' : '', href: '#/likes', 'aria-current': active === 'likes' ? 'page' : null }, icon('heart', 19), 'Me gusta (' + nLikes + ')'),
-      h('a', { class: active === 'hidden' ? 'on' : '', href: '#/hidden', 'aria-current': active === 'hidden' ? 'page' : null }, icon('down', 19), 'No me gusta (' + nDis + ')')
+    const tab = (id, ic, label, n) =>
+      h('a', { class: active === id ? 'on' : '', href: '#/' + id, 'aria-current': active === id ? 'page' : null }, icon(ic, 18), label, h('span', { class: 'tcount', text: String(n) }));
+    return h('nav', { class: 'tabs2', 'aria-label': 'Mis posts' },
+      tab('likes', 'heart', 'Me gusta', Object.keys(S.likes).length),
+      tab('hidden', 'down', 'Ocultos', Object.keys(S.dislikes).length),
+      tab('history', 'clock', 'Historial', (S.history || []).length)
     );
   }
+
+  const statsLink = () => iconLink('chart', 'Tus estadísticas', '#/stats');
 
   function routeLikes(q) {
     const filter = q.get('tag') || '';
@@ -2273,15 +2441,19 @@
       .map(([t]) => t);
     if (filter && !top.includes(filter)) top.unshift(filter);
     const items = all.filter((x) => !filter || x.post.tags.includes(filter)).map((x) => ({ post: x.post }));
+    const memKey = 'likes:' + filter;
+    const sig = all.length + '|' + (all[0] ? all[0].at : 0);
 
-    const f = new Feed({
+    const f = cached('likes:' + filter + ':' + sig, () => new Feed({
       key: 'likes',
       kind: 'static',
       source: 'likes',
       items,
+      memoryKey: memKey,
+      anchor: feedMemory.get(memKey),
       mode: S.ui.likesMode,
       onMode: (m) => (S.ui.likesMode = m),
-      head: (f) => [h('h1', { text: 'Mis posts' }), iconLink('download', 'Respaldo', '#/settings'), viewToggle(f)],
+      head: (f) => [h('h1', { text: 'Mis posts' }), statsLink(), viewToggle(f)],
       extra: () => [
         myTabs('likes'),
         all.length
@@ -2292,8 +2464,47 @@
           : null,
         all.length ? h('p', { class: 'countline', text: items.length + (items.length === 1 ? ' post te gustó' : ' posts te gustaron') + (filter ? ' con #' + filter : '') }) : null
       ],
-      empty: () => emptyBox('heart', 'Todavía no tienes me gusta', 'Toca el corazón o da dos toques en la imagen de cualquier post.')
-    });
+      empty: () => emptyBox('heart', 'Todavía no tienes me gusta', 'Toca el corazón en cualquier post.')
+    }));
+    showFeed(f);
+  }
+
+  // ================================================================ Historial (vistos más de 10 s)
+
+  function routeHistory() {
+    const list = S.history || [];
+    const max = Number(S.settings.historyMax) || 100;
+    const sig = list.length + '|' + (list[0] ? list[0].at : 0);
+    const items = list.map((x) => ({ post: x.post, label: 'Visto ' + ago(x.at), icon: 'clock', color: 'var(--text-2)' }));
+    const f = cached('history:' + sig, () => new Feed({
+      key: 'history',
+      kind: 'static',
+      source: 'history',
+      items,
+      memoryKey: 'history',
+      anchor: feedMemory.get('history'),
+      mode: S.ui.historyMode || 'grid',
+      onMode: (m) => (S.ui.historyMode = m),
+      head: (f) => [h('h1', { text: 'Mis posts' }), statsLink(), viewToggle(f)],
+      extra: () => [
+        myTabs('history'),
+        list.length
+          ? h('div', { class: 'countline', style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+              h('span', { class: 'grow', text: list.length + ' de ' + max + ' · los que miraste más de 10 segundos' }),
+              h('button', {
+                class: 'link-btn',
+                onclick: () => {
+                  if (!confirm('¿Borrar todo el historial?')) return;
+                  S.history = [];
+                  persist('history', 0);
+                  routeHistory();
+                }
+              }, 'Borrar')
+            )
+          : null
+      ],
+      empty: () => emptyBox('clock', 'Tu historial está vacío', 'Aquí se guardan los posts que miras más de 10 segundos (hasta ' + max + '; los más viejos se van borrando).')
+    }));
     showFeed(f);
   }
 
@@ -2365,7 +2576,7 @@
     });
 
     mount([
-      h('header', { class: 'top' }, h('h1', { text: 'Mis posts' }), iconLink('download', 'Respaldo', '#/settings')),
+      h('header', { class: 'top' }, h('h1', { text: 'Mis posts' }), statsLink()),
       myTabs('hidden'),
       sugBox,
       list.length
@@ -2398,10 +2609,13 @@
       fill(checkBtn, icon('refresh', 22));
     });
 
-    const f = new Feed({
+    const sig = items.length + '|' + (items[0] ? items[0].post.id : '');
+    const f = cached('news:' + sig, () => new Feed({
       key: 'news',
       kind: 'static',
       items,
+      memoryKey: 'news',
+      anchor: feedMemory.get('news'),
       back: true,
       head: (f) => [backBtn('/home'), h('h1', { text: 'Novedades' }), checkBtn, viewToggle(f)],
       extra: () =>
@@ -2416,7 +2630,7 @@
               h('div', { class: 'row-btns' }, h('a', { class: 'btn blue', href: '#/favorites' }, icon('bell', 18), 'Ir a Favoritos'))
             ),
       empty: () => emptyBox('bell', 'Sin novedades por ahora', watching.length ? 'Cuando salgan posts nuevos en lo que vigilas aparecerán aquí.' : null)
-    });
+    }));
     showFeed(f);
   }
 
@@ -2546,6 +2760,47 @@
         )
       ),
       h('div', { class: 'setgroup' },
+        h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Al abrir un hashtag' }),
+        h('div', { class: 'line' },
+          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Filtro GIF' }), h('span', { class: 'smeta', text: 'Activado: muestra los GIF del hashtag.' })),
+          switchBtn(st.tagGif, 'Filtro GIF activado al abrir un hashtag', (on) => {
+            st.tagGif = on;
+            save();
+          })
+        ),
+        h('div', { class: 'line' },
+          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Filtro Video' }), h('span', { class: 'smeta', text: 'Activado: muestra los videos del hashtag. Con los dos filtros apagados se ven todos los posts, también las imágenes.' })),
+          switchBtn(st.tagVideo, 'Filtro Video activado al abrir un hashtag', (on) => {
+            st.tagVideo = on;
+            save();
+          })
+        ),
+        h('div', { class: 'field' },
+          h('span', { class: 't', text: 'Orden' }),
+          seg([['random', 'Aleatorio'], ['recent', 'Lo más reciente']], st.tagOrder === 'recent' ? 'recent' : 'random', (v) => {
+            st.tagOrder = v;
+            save();
+          })
+        )
+      ),
+      h('div', { class: 'setgroup' },
+        h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Historial y estadísticas' }),
+        h('div', { class: 'field' },
+          h('span', { class: 't', text: 'Historial: guardar hasta' }),
+          h('span', { class: 'd', text: 'Los posts que miras más de 10 segundos. Al llenarse se borran los más viejos.' }),
+          seg([[50, '50'], [100, '100'], [200, '200'], [500, '500']], Number(st.historyMax) || 100, (v) => {
+            st.historyMax = v;
+            S.history = (S.history || []).slice(0, v);
+            persist('history');
+            save();
+          })
+        ),
+        h('div', { class: 'line' },
+          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Tus estadísticas' }), h('span', { class: 'smeta', text: 'Cuánto y cómo usas la app (solo en este teléfono).' })),
+          h('a', { class: 'small-btn', href: '#/stats' }, icon('chart', 16), 'Ver')
+        )
+      ),
+      h('div', { class: 'setgroup' },
         h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Contenido' }),
         h('div', { class: 'line' },
           h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Ocultar posts NSFW' }), h('span', { class: 'smeta', text: 'Se aplica a todos los feeds y a los avisos.' })),
@@ -2579,6 +2834,259 @@
         )
       ),
       h('p', { class: 'about', text: 'Lee JoyReactor con su API pública; no publica nada ni guarda tus datos fuera del teléfono.' })
+    ]);
+  }
+
+  // ================================================================ Estadísticas de uso (solo en este teléfono)
+
+  function dayKey(t) {
+    const d = new Date(t);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  function stats() {
+    const st = S.stats || (S.stats = {});
+    if (!st.since) st.since = Date.now();
+    st.days = st.days || {};
+    st.hours = st.hours || Array(24).fill(0);
+    st.tags = st.tags || {};
+    st.users = st.users || {};
+    st.kinds = st.kinds || { image: 0, gif: 0, video: 0 };
+    st.sections = st.sections || {};
+    for (const k of ['sessions', 'fsOpens', 'fsMs', 'searches']) st[k] = st[k] || 0;
+    return st;
+  }
+
+  function today() {
+    const st = stats();
+    const k = dayKey(Date.now());
+    return st.days[k] || (st.days[k] = { ms: 0, posts: 0, likes: 0, dislikes: 0 });
+  }
+
+  function saveStats() {
+    persist('stats', 4000);
+  }
+
+  // Deja solo los más usados cuando la lista crece mucho.
+  function pruneCounts(obj, max) {
+    const keys = Object.keys(obj);
+    if (keys.length <= max) return;
+    keys
+      .sort((a, b) => obj[b] - obj[a])
+      .slice(Math.floor(max * 0.7))
+      .forEach((k) => delete obj[k]);
+  }
+
+  function recordView(p) {
+    const st = stats();
+    today().posts++;
+    const section = parseHash().parts[0] || 'home';
+    st.sections[section] = (st.sections[section] || 0) + 1;
+    for (const t of p.tags) st.tags[t] = (st.tags[t] || 0) + 1;
+    if (p.user) st.users[p.user] = (st.users[p.user] || 0) + 1;
+    st.kinds[RS.isRealVideo(p) ? 'video' : RS.isGifPost(p) ? 'gif' : 'image']++;
+    pruneCounts(st.tags, 600);
+    pruneCounts(st.users, 300);
+    saveStats();
+  }
+
+  // Tiempo con la app abierta y a la vista: se suma cada 15 s (por día y por hora).
+  let activeFrom = null;
+  let hiddenAt = 0;
+  function tickTime() {
+    if (activeFrom == null) return;
+    const now = Date.now();
+    const ms = now - activeFrom;
+    activeFrom = now;
+    if (ms <= 0 || ms > 60000) return; // el teléfono estuvo dormido: no cuenta
+    const st = stats();
+    today().ms += ms;
+    st.hours[new Date(now).getHours()] += ms;
+    saveStats();
+  }
+
+  function startUsageClock() {
+    const st = stats();
+    // Guarda solo los últimos 120 días.
+    const cutoff = dayKey(Date.now() - 120 * 86400000);
+    for (const k of Object.keys(st.days)) if (k < cutoff) delete st.days[k];
+    st.sessions++;
+    activeFrom = document.hidden ? null : Date.now();
+    setInterval(tickTime, 15000);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        tickTime();
+        activeFrom = null;
+        hiddenAt = Date.now();
+        blurPost();
+      } else {
+        if (hiddenAt && Date.now() - hiddenAt > 30 * 60000) stats().sessions++;
+        activeFrom = Date.now();
+        refocusVisible();
+      }
+    });
+    saveStats();
+  }
+
+  function fmtDur(ms) {
+    const min = Math.round(ms / 60000);
+    if (min < 1) return ms > 0 ? 'menos de 1 min' : '0 min';
+    if (min < 60) return min + ' min';
+    const hrs = Math.floor(min / 60);
+    const rest = min % 60;
+    return hrs + ' h' + (rest ? ' ' + rest + ' min' : '');
+  }
+
+  const SECTION_NAMES = { home: 'Inicio', tag: 'Hashtags', random: 'Aleatorio', user: 'Perfiles', likes: 'Me gusta', history: 'Historial', news: 'Novedades', search: 'Buscar' };
+  // Colores por tipo de contenido (paleta validada para fondo oscuro: azul, naranja, aguamarina).
+  const KIND_COLORS = { image: '#3987e5', gif: '#d95926', video: '#199e70' };
+  const KIND_NAMES = { image: 'Imágenes', gif: 'GIF', video: 'Videos' };
+
+  // Barras verticales de una sola serie. Tocar una barra muestra su valor arriba.
+  function columnChart(title, points, fmtValue, emptyText) {
+    const max = Math.max(1, ...points.map((pt) => pt.value));
+    const total = points.reduce((a, pt) => a + pt.value, 0);
+    const readout = h('p', { class: 'chart-readout', text: total ? 'Toca una barra para ver el detalle' : emptyText });
+    const bars = h('div', { class: 'cols', role: 'list' },
+      points.map((pt) => {
+        const b = h('button', {
+          class: 'col',
+          role: 'listitem',
+          'aria-label': pt.long + ': ' + fmtValue(pt.value),
+          onclick: () => {
+            bars.querySelectorAll('.col.on').forEach((x) => x.classList.remove('on'));
+            b.classList.add('on');
+            readout.textContent = pt.long + ': ' + fmtValue(pt.value);
+          }
+        }, h('span', { class: 'col-bar', style: { height: Math.max(pt.value ? 3 : 0, (pt.value / max) * 100) + '%' } }));
+        return b;
+      })
+    );
+    const axis = h('div', { class: 'cols-axis' }, points.map((pt) => h('span', { text: pt.short || '' })));
+    return h('section', { class: 'stat-card' }, h('h2', { class: 'stat-title', text: title }), readout, bars, axis);
+  }
+
+  // Lista de barras horizontales (ranking): nombre, valor y barra proporcional.
+  function rankList(title, rows, fmtValue, emptyText, hrefOf) {
+    const max = Math.max(1, ...rows.map((r) => r.value));
+    return h('section', { class: 'stat-card' },
+      h('h2', { class: 'stat-title', text: title }),
+      rows.length
+        ? h('ol', { class: 'rank' },
+            rows.map((r) => {
+              const label = hrefOf ? h('a', { class: 'rank-name', href: hrefOf(r), text: r.label }) : h('span', { class: 'rank-name', text: r.label });
+              return h('li', {},
+                h('div', { class: 'rank-top' }, label, h('span', { class: 'rank-val', text: fmtValue(r.value) })),
+                h('span', { class: 'rank-bar' }, h('span', { style: { width: (r.value / max) * 100 + '%' } }))
+              );
+            })
+          )
+        : h('p', { class: 'chart-readout', text: emptyText })
+    );
+  }
+
+  function routeStats() {
+    tickTime();
+    const st = stats();
+    const todayStats = today();
+    const dayList = [];
+    for (let i = 13; i >= 0; i--) {
+      const t = Date.now() - i * 86400000;
+      const d = st.days[dayKey(t)] || { ms: 0, posts: 0, likes: 0, dislikes: 0 };
+      const date = new Date(t);
+      dayList.push({
+        ms: d.ms,
+        posts: d.posts,
+        long: date.toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'short' }),
+        short: i === 0 ? 'hoy' : i === 13 || i === 7 ? date.toLocaleDateString('es', { day: 'numeric', month: 'short' }) : ''
+      });
+    }
+    const last7 = dayList.slice(-7);
+    const ms7 = last7.reduce((a, d) => a + d.ms, 0);
+    const allDays = Object.values(st.days);
+    const totalMs = allDays.reduce((a, d) => a + d.ms, 0);
+    const totalPosts = allDays.reduce((a, d) => a + d.posts, 0);
+    const totalLikes = allDays.reduce((a, d) => a + d.likes, 0);
+    const totalDis = allDays.reduce((a, d) => a + d.dislikes, 0);
+    const likeRate = totalPosts ? Math.min(100, (totalLikes / totalPosts) * 100).toLocaleString('es', { maximumFractionDigits: 1 }) + ' %' : '—';
+
+    const tile = (label, value, sub) => h('div', { class: 'stat-tile' }, h('span', { class: 'tile-label', text: label }), h('strong', { class: 'tile-value', text: value }), sub ? h('span', { class: 'tile-sub', text: sub }) : null);
+
+    const kinds = st.kinds;
+    const kindTotal = kinds.image + kinds.gif + kinds.video;
+    const kindKeys = ['image', 'gif', 'video'];
+    const pct = (n) => (kindTotal ? Math.round((n / kindTotal) * 100) : 0);
+
+    const top = (obj, n) =>
+      Object.entries(obj)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, n)
+        .map(([label, value]) => ({ label, value }));
+    const likedTags = {};
+    for (const x of Object.values(S.likes)) for (const t of x.post.tags) likedTags[t] = (likedTags[t] || 0) + 1;
+
+    const n = (v) => fmt(v);
+    const postsFmt = (v) => fmt(v) + (v === 1 ? ' post' : ' posts');
+
+    mount([
+      h('header', { class: 'top has-back' }, backBtn('/likes'), h('h1', { text: 'Tus estadísticas' })),
+      h('div', { class: 'stats-page' },
+        h('div', { class: 'tiles-2' },
+          tile('Hoy', fmtDur(todayStats.ms), fmt(todayStats.posts) + (todayStats.posts === 1 ? ' post visto' : ' posts vistos')),
+          tile('Últimos 7 días', fmtDur(ms7), 'promedio ' + fmtDur(ms7 / 7) + ' por día'),
+          tile('Posts vistos', fmt(totalPosts), 'en total'),
+          tile('Me gusta', fmt(totalLikes), totalPosts ? 'te gusta el ' + likeRate + ' de lo que ves' : 'desde que se activaron las estadísticas'),
+          tile('No me gusta', fmt(totalDis), 'posts ocultados'),
+          tile('Pantalla completa', fmt(st.fsOpens) + (st.fsOpens === 1 ? ' vez' : ' veces'), fmtDur(st.fsMs) + ' en total')
+        ),
+        columnChart('Tiempo de uso por día', dayList.map((d) => ({ value: d.ms, long: d.long, short: d.short })), (v) => fmtDur(v), 'Todavía no hay datos de estos días.'),
+        columnChart(
+          '¿A qué hora usas la app?',
+          st.hours.map((ms, hr) => ({ value: ms, long: 'De ' + hr + ':00 a ' + (hr + 1) + ':00', short: hr % 6 === 0 ? hr + 'h' : '' })),
+          (v) => fmtDur(v),
+          'Todavía no hay datos.'
+        ),
+        h('section', { class: 'stat-card' },
+          h('h2', { class: 'stat-title', text: 'Qué tipo de posts ves' }),
+          kindTotal
+            ? [
+                h('div', { class: 'stack', role: 'img', 'aria-label': kindKeys.map((k) => KIND_NAMES[k] + ' ' + pct(kinds[k]) + '%').join(', ') },
+                  kindKeys.filter((k) => kinds[k]).map((k) => h('span', { style: { width: (kinds[k] / kindTotal) * 100 + '%', background: KIND_COLORS[k] } }))
+                ),
+                h('ul', { class: 'legend2' },
+                  kindKeys.map((k) => h('li', {}, h('i', { style: { background: KIND_COLORS[k] } }), KIND_NAMES[k], h('span', { class: 'rank-val', text: pct(kinds[k]) + ' % · ' + n(kinds[k]) })))
+                )
+              ]
+            : h('p', { class: 'chart-readout', text: 'Todavía no hay datos.' })
+        ),
+        rankList('Hashtags que más ves', top(st.tags, 10), postsFmt, 'Todavía no hay datos.', (r) => '#/tag/' + enc(r.label)),
+        rankList('Hashtags de tus me gusta', top(likedTags, 5), (v) => fmt(v) + (v === 1 ? ' me gusta' : ' me gusta'), 'Todavía no le diste me gusta a nada.', (r) => '#/tag/' + enc(r.label)),
+        rankList('Usuarios que más ves', top(st.users, 5), postsFmt, 'Todavía no hay datos.', (r) => '#/user/' + enc(r.label)),
+        rankList('Dónde navegas', top(st.sections, 8).map((r) => ({ label: SECTION_NAMES[r.label] || r.label, value: r.value })), postsFmt, 'Todavía no hay datos.'),
+        h('section', { class: 'stat-card' },
+          h('h2', { class: 'stat-title', text: 'Más datos' }),
+          h('ul', { class: 'facts' },
+            h('li', {}, 'Veces que abriste la app', h('span', { class: 'rank-val', text: fmt(st.sessions) })),
+            h('li', {}, 'Búsquedas', h('span', { class: 'rank-val', text: fmt(st.searches) })),
+            h('li', {}, 'Tiempo total', h('span', { class: 'rank-val', text: fmtDur(totalMs) })),
+            h('li', {}, 'Favoritos guardados', h('span', { class: 'rank-val', text: fmt(Object.keys(S.favorites).length) })),
+            h('li', {}, 'En tu historial', h('span', { class: 'rank-val', text: fmt((S.history || []).length) }))
+          )
+        ),
+        h('p', { class: 'foot-note' },
+          'Desde el ' + new Date(st.since).toLocaleDateString('es', { day: 'numeric', month: 'long', year: 'numeric' }) + ' · solo en este teléfono. ',
+          h('button', {
+            class: 'link-btn',
+            onclick: () => {
+              if (!confirm('¿Reiniciar todas las estadísticas?')) return;
+              S.stats = {};
+              stats();
+              persist('stats', 0);
+              routeStats();
+            }
+          }, 'Reiniciar')
+        )
+      )
     ]);
   }
 
@@ -2647,6 +3155,7 @@
     }
     Object.assign(S, await RS.load(RS.KEYS.filter((k) => k !== 'eraCache')));
     S.seenSet = new Set(S.seen);
+    startUsageClock();
     refreshFilter();
     refreshFavIndex();
     if (RS.android) {

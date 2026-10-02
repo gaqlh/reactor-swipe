@@ -149,9 +149,13 @@
     return txt.length > 700 ? txt.slice(0, 700) + '…' : txt;
   }
 
+  // Un GIF y un video llegan con el mismo formato; se distinguen por las etiquetas del post
+  // (y, al reproducirlo, si tiene sonido: ver app.js).
+  const VIDEO_TAGS = new Set(['video', 'videos', 'video with sound', 'with sound', 'sound', 'webm', 'coub', 'youtube', 'видео', 'со звуком', 'звук', 'видео со звуком']);
+
   RS.normalizePost = function (p) {
     const media = [];
-    const isVideoPost = (p.tags || []).some((t) => String(t.name).toLowerCase() === 'video');
+    const isVideoPost = (p.tags || []).some((t) => VIDEO_TAGS.has(String(t.name).toLowerCase()));
     for (const a of p.attributes || []) {
       const im = a.image || {};
       const id = numId(a.id);
@@ -222,6 +226,13 @@
   RS.GIF_LIMIT = 1000;
 
   RS.isAnimated = (p) => p.media.some((m) => m.kind === 'video' || m.kind === 'embed' || m.ext === 'gif');
+  RS.isRealVideo = (p) => p.media.some((m) => (m.kind === 'video' && m.real) || m.kind === 'embed');
+  RS.isGifPost = (p) => p.media.some((m) => (m.kind === 'video' && !m.real) || m.ext === 'gif');
+  /** kinds = ['gif'], ['video'] o ['gif','video']: ¿el post entra en ese filtro? */
+  RS.matchesKinds = (p, kinds) =>
+    (kinds.includes('gif') && kinds.includes('video') && RS.isAnimated(p)) ||
+    (kinds.length === 1 && kinds[0] === 'gif' && RS.isGifPost(p) && !RS.isRealVideo(p)) ||
+    (kinds.length === 1 && kinds[0] === 'video' && RS.isRealVideo(p));
 
   async function canonicalTag(tag) {
     const info = await RS.fetchTagInfo(tag).catch(() => null);
@@ -261,10 +272,10 @@
    * Listado ordenado de GIF + videos de un hashtag: va pidiendo páginas de ambas búsquedas y
    * las intercala por fecha (o por rating en Top). next() devuelve el siguiente lote.
    */
-  RS.createMediaSource = function (tag, type, hideNsfw) {
+  RS.createMediaSource = function (tag, type, hideNsfw, kinds) {
     const byRating = type === 'BEST';
     const key = (p) => (byRating ? p.rating : p.time);
-    const subs = RS.MEDIA_KINDS.map((kind) => ({ kind, page: 0, last: Infinity, buf: [], done: false, capped: false }));
+    const subs = (kinds && kinds.length ? kinds : RS.MEDIA_KINDS).map((kind) => ({ kind, page: 0, last: Infinity, buf: [], done: false, capped: false }));
     const refill = async (s) => {
       s.page += 1;
       if (s.page > s.last) {
@@ -360,9 +371,12 @@
     favorites: {}, // nombre -> { name, kind, notify, addedAt }
     mix: { sources: {}, quality: 'GOOD', era: 'any', noRepeat: true, exclude: [] },
     seen: [],
-    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD' },
+    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100 },
     news: { items: [], known: {}, unread: 0, lastCheck: 0 },
     dismissed: [],
+    history: [], // posts vistos más de 10 s: [{ id, at, post }], el más nuevo primero
+    searches: [], // búsquedas recientes: [{ type: 'tag' | 'user', name, pic?, at }]
+    stats: {}, // métricas de uso (ver app.js)
     eraCache: {}
   };
   RS.KEYS = Object.keys(DEFAULTS);
@@ -559,9 +573,10 @@
 
     const one = async (src) => {
       let res;
-      if (opts.gif) {
-        // Solo GIF/videos: elige «gif» o «video» según cuántos hay y salta a una página al azar.
-        const counts = await Promise.all(RS.MEDIA_KINDS.map((k) => RS.mediaCount(src.name, k, type, opts.hideNsfw)));
+      const kinds = opts.mediaKinds && opts.mediaKinds.length ? opts.mediaKinds : null;
+      if (kinds) {
+        // Solo GIF y/o videos: elige el tipo según cuántos hay y salta a una página al azar.
+        const counts = await Promise.all(kinds.map((k) => RS.mediaCount(src.name, k, type, opts.hideNsfw)));
         const capped = counts.map((c) => Math.min(c, RS.GIF_LIMIT));
         const totalMedia = capped.reduce((a, b) => a + b, 0);
         if (!totalMedia) return [];
@@ -569,7 +584,7 @@
         let ki = 0;
         while (ki < capped.length - 1 && (r -= capped[ki]) >= 0) ki++;
         const lastPage = Math.max(1, Math.ceil(capped[ki] / PAGE_SIZE));
-        res = await RS.fetchMediaPage(src.name, RS.MEDIA_KINDS[ki], type, randInt(1, lastPage), opts.hideNsfw);
+        res = await RS.fetchMediaPage(src.name, kinds[ki], type, randInt(1, lastPage), opts.hideNsfw);
       } else {
         const count = await pagerCount(src.name, type);
         const last = Math.max(1, Math.ceil(count / PAGE_SIZE));
@@ -582,7 +597,7 @@
           st.filter(p) &&
           !(noRepeat && st.seenSet && st.seenSet.has(p.id)) &&
           p.media.length &&
-          (!opts.gif || RS.isAnimated(p))
+          (!kinds || RS.matchesKinds(p, kinds))
       );
       return shuffle(ok)
         .slice(0, 2)
