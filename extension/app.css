@@ -534,30 +534,77 @@ html.snap .list.cards .card { scroll-snap-stop: always; }
 .setgroup + .setgroup { border-top: 1px solid var(--line); }
 .about { padding: 18px 16px 30px; font-size: 13px; line-height: 1.5; color: var(--text-2); }
 
-/* ---------- Pantalla completa ---------- */
-.viewer { position: fixed; inset: 0; z-index: 100; background: #000; }
-.vw-track { display: flex; width: 100%; height: 100%; overflow-x: auto; scroll-snap-type: x mandatory; overscroll-behavior: contain; scrollbar-width: none; }
+/* ---------- Pantalla completa (como Reels) ---------- */
+.viewer { position: fixed; inset: 0; z-index: 100; background: #000; color: #fff; }
+.vw-feed { position: absolute; inset: 0; overflow-y: auto; scroll-snap-type: y mandatory; overscroll-behavior-y: contain; scrollbar-width: none; }
+.vw-feed::-webkit-scrollbar { display: none; }
+.vw-page { position: relative; height: 100%; scroll-snap-align: start; scroll-snap-stop: always; overflow: hidden; background: #000; }
+.vw-media { position: absolute; inset: 0; }
+.vw-track { display: flex; width: 100%; height: 100%; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none; }
 .vw-track::-webkit-scrollbar { display: none; }
-.vw-slide { position: relative; flex: 0 0 100%; height: 100%; scroll-snap-align: start; scroll-snap-stop: always; display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: manipulation; }
+.vw-slide { position: relative; flex: 0 0 100%; width: 100%; height: 100%; scroll-snap-align: start; scroll-snap-stop: always; display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: manipulation; }
 .vw-slide img,
 .vw-slide video { width: 100%; height: 100%; object-fit: contain; }
+/* Imagen más larga que la pantalla (cómic): se lee bajando y, al terminar, sigue al próximo post. */
 .vw-slide.tall { overflow-y: auto; align-items: flex-start; }
 .vw-slide.tall img { height: auto; }
 .vw-slide .embed { width: 100%; }
-.viewer .sound { bottom: max(16px, env(safe-area-inset-bottom)); }
-.vw-bar {
+.vw-media.text { display: flex; align-items: center; padding: 80px 76px 130px 20px; overflow-y: auto; font-size: 18px; line-height: 1.5; white-space: pre-line; color: #f3efe9; }
+.vw-count {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  top: max(16px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 14px;
+  background: rgba(36, 33, 30, 0.8);
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: max(8px, env(safe-area-inset-top)) 10px 18px;
-  background: linear-gradient(rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0));
+  font-size: 13px;
+  font-weight: 700;
   pointer-events: none;
 }
-.vw-bar > * { pointer-events: auto; }
+.vw-side { position: absolute; right: 4px; bottom: 132px; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.vw-act {
+  width: 54px;
+  min-height: 54px;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-size: 12.5px;
+  font-weight: 700;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+.vw-act .i { filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.75)); }
+.vw-act.like.on .i { fill: var(--like); stroke: var(--like); }
+.vw-info {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 48px 70px max(18px, env(safe-area-inset-bottom)) 14px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0));
+  pointer-events: none;
+}
+.vw-info > * { pointer-events: auto; }
+.vw-src { font-size: 12.5px; font-weight: 700; color: var(--accent); align-self: flex-start; }
+.vw-who { font-size: 14px; color: #f3efe9; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vw-rating { color: var(--accent); font-family: ui-monospace, Menlo, monospace; display: inline-flex; align-items: center; gap: 2px; }
+.vw-tags { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.vw-tags::-webkit-scrollbar { display: none; }
+.vw-tags .tag { height: 30px; border: 0; background: rgba(36, 33, 30, 0.8); font: inherit; font-size: 13.5px; font-weight: 600; }
+.vw-tags .tag.fav { background: rgba(42, 33, 19, 0.92); }
+.vw-bar { position: absolute; top: 0; left: 0; z-index: 3; padding: max(8px, env(safe-area-inset-top)) 10px 0; }
 .vw-btn {
   height: 44px;
   min-width: 44px;
@@ -569,19 +616,14 @@ html.snap .list.cards .card { scroll-snap-stop: always; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  font-size: 14px;
-  font-weight: 700;
 }
-.vw-btn.wide { padding: 0 14px; }
-.vw-count { pointer-events: none; height: 28px; padding: 0 10px; border-radius: 14px; background: rgba(36, 33, 30, 0.8); display: flex; align-items: center; font-size: 13px; font-weight: 700; }
 
 /* ---------- Aviso flotante ---------- */
 #toast {
   position: fixed;
   left: 50%;
   bottom: calc(var(--tabs-h) + env(safe-area-inset-bottom) + 12px);
-  z-index: 60;
+  z-index: 110;
   width: max-content;
   max-width: calc(100% - 32px);
   transform: translate(-50%, 20px);

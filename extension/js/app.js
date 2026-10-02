@@ -507,18 +507,18 @@
     );
   }
 
-  function slide(m, p, i) {
+  function slide(m, p, i, feed) {
     const box = h('div', { class: 'slide' });
     if (m.kind === 'image') {
       box.append(h('img', { src: RS.imageUrl(m), alt: '', loading: 'lazy', decoding: 'async', width: m.w, height: m.h }));
       if (m.ext === 'gif') box.append(h('span', { class: 'mbadge', text: 'GIF' }));
-      if (isTall(m)) box.append(h('button', { class: 'more', onclick: () => openViewer(p, i) }, icon('expand', 18), 'Ver completa'));
-      onTaps(box, () => openViewer(p, i));
+      if (isTall(m)) box.append(h('button', { class: 'more', onclick: () => openViewer(feed, p, i) }, icon('expand', 18), 'Ver completa'));
+      onTaps(box, () => openViewer(feed, p, i));
     } else if (m.kind === 'video') {
       const v = makeVideo(m);
       const snd = soundBtn(v);
       box.append(v, h('span', { class: 'mbadge', text: 'GIF' }), snd);
-      onTaps(box, () => openViewer(p, i), () => snd.click());
+      onTaps(box, () => openViewer(feed, p, i), () => snd.click());
     } else {
       box.append(embedLink(m, p));
     }
@@ -546,11 +546,11 @@
   }
 
   // Una imagen ocupa todo el espacio; varias van en carrusel (se deslizan hacia los lados).
-  function buildMedia(p) {
+  function buildMedia(p, feed) {
     const ms = p.media;
     if (!ms.length) return null;
-    if (ms.length === 1) return h('div', { class: 'media single' }, slide(ms[0], p, 0));
-    const c = carousel(ms.map((m, i) => slide(m, p, i)));
+    if (ms.length === 1) return h('div', { class: 'media single' }, slide(ms[0], p, 0, feed));
+    const c = carousel(ms.map((m, i) => slide(m, p, i, feed)));
     return h('div', { class: 'media carousel' }, c.track, c.counter, c.dots);
   }
 
@@ -571,7 +571,7 @@
         h('span', { class: 'rating' + (p.rating < 0 ? ' neg' : ''), title: 'Rating en JoyReactor' }, icon('up', 14), String(p.rating).replace('.', ','))
       )
     );
-    const media = buildMedia(p);
+    const media = buildMedia(p, feed);
     if (media) card.append(media);
     else card.classList.add('textonly');
 
@@ -582,7 +582,7 @@
         h('button', { class: 'act', 'aria-label': 'No me gusta: ocultar para siempre', onclick: () => dislike(it, card, feed) }, icon('down', 25)),
         h('a', { class: 'act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': p.comments + ' comentarios en JoyReactor' }, icon('comment', 24), fmt(p.comments)),
         h('span', { class: 'grow' }),
-        media ? h('button', { class: 'act dim', 'aria-label': 'Pantalla completa', onclick: () => openViewer(p, currentIndex(card)) }, icon('expand', 21)) : null,
+        media ? h('button', { class: 'act dim', 'aria-label': 'Pantalla completa', onclick: () => openViewer(feed, p, currentIndex(card)) }, icon('expand', 21)) : null,
         h('a', { class: 'act dim', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': 'Abrir el post original en JoyReactor' }, icon('external', 20))
       )
     );
@@ -642,8 +642,12 @@
   }
 
   // ================================================================ Pantalla completa (doble toque)
+  //
+  // Funciona como Reels: arriba/abajo pasa de post (sigue el mismo feed y carga más solo),
+  // a los lados recorre las imágenes del post. Doble toque o «atrás» para salir.
 
   let viewer = null;
+  let afterViewerClose = null;
 
   function setFullscreen(on) {
     if (RS.android && RS.android.setFullscreen) {
@@ -662,59 +666,263 @@
     }
   }
 
-  function openViewer(p, index) {
+  function openViewer(feed, p, mediaIndex) {
     closeViewer();
+    let items = feed ? feed.items.filter((it) => !S.dislikes[it.post.id]) : [];
+    if (!items.some((it) => it.post.id === p.id)) {
+      items = [{ post: p }];
+      feed = null;
+    }
+    const scroller = h('div', { class: 'vw-feed' });
+    const v = { feed, scroller, current: null, muted: false, onAdd: null };
+    viewer = v;
+    v.el = h('div', { class: 'viewer', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Pantalla completa' },
+      scroller,
+      h('div', { class: 'vw-bar' }, h('button', { class: 'vw-btn', 'aria-label': 'Salir de pantalla completa', onclick: () => history.back() }, icon('x', 24)))
+    );
+    // Solo se cargan los posts cercanos; los lejanos se vacían para no gastar memoria.
+    v.near = new IntersectionObserver(
+      (es) => es.forEach((e) => (e.isIntersecting ? fillPage(e.target, 0) : emptyPage(e.target))),
+      { root: scroller, rootMargin: '200% 0px' }
+    );
+    v.seen = new IntersectionObserver(
+      (es) => es.forEach((e) => {
+        if (e.isIntersecting) setCurrentPage(e.target);
+      }),
+      { root: scroller, threshold: 0.6 }
+    );
+    items.forEach((it) => scroller.append(makePage(it)));
+    if (feed) {
+      v.onAdd = (added) => {
+        if (viewer === v) added.forEach((it) => scroller.append(makePage(it)));
+      };
+      feed.listeners.add(v.onAdd);
+    }
+
+    document.querySelectorAll('#view video').forEach((x) => x.pause());
+    document.body.append(v.el);
+    document.body.classList.add('noscroll');
+    history.pushState({ rsViewer: true }, '');
+    setFullscreen(true);
+
+    const start = scroller.querySelector('[data-id="' + CSS.escape(p.id) + '"]') || scroller.firstElementChild;
+    if (start) {
+      fillPage(start, mediaIndex || 0);
+      scroller.scrollTop = start.offsetTop;
+      setCurrentPage(start);
+    }
+  }
+
+  function makePage(it) {
+    const page = h('section', { class: 'vw-page', 'data-id': it.post.id });
+    page._it = it;
+    viewer.near.observe(page);
+    viewer.seen.observe(page);
+    return page;
+  }
+
+  function fillPage(page, mediaIndex) {
+    if (!viewer || page.dataset.filled) return;
+    const it = page._it;
+    const p = it.post;
     const videos = [];
     const slides = p.media.map((m) => {
       const s = h('div', { class: 'vw-slide' });
       if (m.kind === 'image') {
         if (m.w && m.h / m.w > window.innerHeight / Math.max(1, window.innerWidth)) s.classList.add('tall');
-        s.append(h('img', { src: RS.imageUrl(m, true), alt: '' }));
+        s.append(h('img', { src: RS.imageUrl(m, true), alt: '', decoding: 'async' }));
         onTaps(s, () => history.back());
       } else if (m.kind === 'video') {
-        const v = h('video', { src: RS.videoUrl(m), loop: true, playsinline: true, poster: RS.posterUrl(m) });
-        const snd = soundBtn(v);
-        videos.push(v);
-        s.append(v, snd);
-        onTaps(s, () => history.back(), () => snd.click());
+        const vid = h('video', { src: RS.videoUrl(m), loop: true, playsinline: true, poster: RS.posterUrl(m), preload: 'auto' });
+        vid.muted = viewer.muted;
+        videos.push(vid);
+        s.append(vid);
+        onTaps(s, () => history.back(), toggleViewerSound);
       } else {
         s.append(embedLink(m, p));
       }
       return s;
     });
-    const playAt = (i) => videos.forEach((v) => (v.parentNode === slides[i] ? v.play().catch(() => {}) : v.pause()));
-    const c = carousel(slides, playAt);
-    c.track.className = 'vw-track';
 
-    viewer = h('div', { class: 'viewer', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Pantalla completa' },
-      c.track,
-      h('div', { class: 'vw-bar' },
-        h('button', { class: 'vw-btn', 'aria-label': 'Salir de pantalla completa', onclick: () => history.back() }, icon('x', 24)),
-        slides.length > 1 ? c.counter : null,
-        h('span', { class: 'grow' }),
-        h('a', { class: 'vw-btn wide', href: RS.postUrl(p), target: '_blank', rel: 'noopener' }, icon('external', 18), 'Original')
-      )
+    let media;
+    if (slides.length > 1) {
+      const c = carousel(slides, syncViewerPlayback);
+      c.track.className = 'vw-track';
+      c.counter.className = 'vw-count';
+      media = h('div', { class: 'vw-media' }, c.track, c.counter);
+      page._track = c.track;
+      page._counter = c.counter;
+    } else if (slides.length) {
+      media = h('div', { class: 'vw-media' }, slides[0]);
+    } else {
+      media = h('div', { class: 'vw-media text' }, h('p', { text: p.text || '' }));
+      onTaps(media, () => history.back());
+    }
+
+    const liked = !!S.likes[p.id];
+    const side = h('div', { class: 'vw-side' },
+      h('button', { class: 'vw-act like' + (liked ? ' on' : ''), 'aria-label': 'Me gusta', 'aria-pressed': String(liked), onclick: () => toggleLike(p) }, icon('heart', 31)),
+      h('button', { class: 'vw-act', 'aria-label': 'No me gusta: ocultar para siempre', onclick: () => dislikeInViewer(page) }, icon('down', 29)),
+      h('a', { class: 'vw-act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': p.comments + ' comentarios en JoyReactor' }, icon('comment', 29), h('span', { text: fmt(p.comments) })),
+      videos.length ? h('button', { class: 'vw-act vw-sound', 'aria-label': viewer.muted ? 'Activar sonido' : 'Silenciar', onclick: toggleViewerSound }, icon(viewer.muted ? 'muted' : 'sound', 27)) : null,
+      h('a', { class: 'vw-act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': 'Abrir el post original en JoyReactor' }, icon('external', 25))
     );
-    c.counter.className = 'vw-count';
-    document.querySelectorAll('#view video').forEach((v) => v.pause());
-    document.body.append(viewer);
-    document.body.classList.add('noscroll');
-    history.pushState({ rsViewer: true }, '');
-    setFullscreen(true);
-    c.track.scrollLeft = index * c.track.clientWidth;
-    c.counter.textContent = index + 1 + '/' + slides.length;
-    playAt(index);
+    const info = h('div', { class: 'vw-info' },
+      it.label ? h('span', { class: 'vw-src', text: it.label }) : null,
+      h('div', { class: 'vw-who' },
+        h('strong', { text: p.user || 'anónimo' }),
+        h('span', { text: ' · ' + ago(p.time) + ' · ' }),
+        h('span', { class: 'vw-rating' }, icon('up', 13), String(p.rating).replace('.', ','))
+      ),
+      p.tags.length
+        ? h('div', { class: 'vw-tags' },
+            p.tags.map((t) => h('button', { class: 'tag' + (favOf(t) ? ' fav' : ''), onclick: () => closeViewerThen(() => nav('#/tag/' + enc(t))) }, '#' + t))
+          )
+        : null
+    );
+
+    fill(page, media, side, info);
+    page.dataset.filled = '1';
+    page._videos = videos;
+    if (mediaIndex && page._track) {
+      page._track.scrollLeft = mediaIndex * page._track.clientWidth;
+      page._counter.textContent = mediaIndex + 1 + '/' + slides.length;
+    }
+    if (viewer.current === page) syncViewerPlayback();
+  }
+
+  function emptyPage(page) {
+    if (!page.dataset.filled || (viewer && viewer.current === page)) return;
+    page.querySelectorAll('video').forEach((x) => {
+      x.pause();
+      x.removeAttribute('src');
+      x.load();
+    });
+    fill(page);
+    delete page.dataset.filled;
+    page._track = null;
+    page._videos = [];
+  }
+
+  function setCurrentPage(page) {
+    if (!viewer) return;
+    viewer.current = page;
+    fillPage(page, 0);
+    markSeen(page.dataset.id);
+    syncViewerPlayback();
+    const pages = viewer.scroller.children;
+    const idx = Array.prototype.indexOf.call(pages, page);
+    if (viewer.feed && idx >= pages.length - 3) viewer.feed.loadMore();
+  }
+
+  // Solo suena el video que está a la vista (post actual y, si es carrusel, imagen actual).
+  function syncViewerPlayback() {
+    if (!viewer) return;
+    for (const page of viewer.scroller.children) {
+      const vids = page._videos || [];
+      if (!vids.length) continue;
+      let visibleSlide = null;
+      if (page === viewer.current) {
+        if (page._track) visibleSlide = page._track.children[Math.round(page._track.scrollLeft / Math.max(1, page._track.clientWidth))];
+        else visibleSlide = page.querySelector('.vw-slide');
+      }
+      for (const vid of vids) {
+        if (visibleSlide && vid.parentNode === visibleSlide) vid.play().catch(() => {});
+        else vid.pause();
+      }
+    }
+  }
+
+  function toggleViewerSound() {
+    if (!viewer) return;
+    viewer.muted = !viewer.muted;
+    viewer.el.querySelectorAll('video').forEach((x) => (x.muted = viewer.muted));
+    viewer.el.querySelectorAll('.vw-sound').forEach((b) => {
+      fill(b, icon(viewer.muted ? 'muted' : 'sound', 27));
+      b.setAttribute('aria-label', viewer.muted ? 'Activar sonido' : 'Silenciar');
+    });
+  }
+
+  function dislikeInViewer(page) {
+    const v = viewer;
+    const it = page._it;
+    const p = it.post;
+    const feed = v.feed;
+    S.dislikes[p.id] = { at: Date.now(), post: p };
+    if (S.likes[p.id]) {
+      delete S.likes[p.id];
+      persist('likes');
+    }
+    persist('dislikes');
+    refreshFilter();
+
+    const listEl = feed && feed.list.querySelector('[data-id="' + CSS.escape(p.id) + '"]');
+    const listParent = listEl && listEl.parentNode;
+    const listNext = listEl && listEl.nextSibling;
+    if (listEl) listEl.remove();
+
+    const next = page.nextElementSibling || page.previousElementSibling;
+    const after = page.nextSibling;
+    page.querySelectorAll('video').forEach((x) => x.pause());
+    v.near.unobserve(page);
+    v.seen.unobserve(page);
+    page.remove();
+    if (next) setCurrentPage(next);
+    else history.back();
+
+    toast('Post ocultado: no volverá a aparecer', 'Deshacer', () => {
+      delete S.dislikes[p.id];
+      persist('dislikes');
+      refreshFilter();
+      if (listParent) {
+        const again = feed.mode === 'grid' ? buildThumb(it, feed) : buildCard(it, feed);
+        listParent.insertBefore(again, listNext && listNext.parentNode === listParent ? listNext : null);
+      }
+      if (viewer === v) {
+        const pg = makePage(it);
+        v.scroller.insertBefore(pg, after && after.parentNode === v.scroller ? after : null);
+        fillPage(pg, 0);
+        v.scroller.scrollTop = pg.offsetTop;
+      }
+    });
   }
 
   function closeViewer() {
     if (!viewer) return;
-    viewer.querySelectorAll('video').forEach((v) => v.pause());
-    viewer.remove();
+    const v = viewer;
     viewer = null;
+    if (v.feed && v.onAdd) v.feed.listeners.delete(v.onAdd);
+    v.near.disconnect();
+    v.seen.disconnect();
+    v.el.querySelectorAll('video').forEach((x) => x.pause());
+    v.el.remove();
     document.body.classList.remove('noscroll');
     setFullscreen(false);
+
+    // Al salir, el feed de abajo queda en el post que estabas viendo.
+    const id = v.current && v.current.dataset.id;
+    const feed = v.feed;
+    if (id && feed && current && current.feed === feed) {
+      setTimeout(() => {
+        const target = feed.list.querySelector('[data-id="' + CSS.escape(id) + '"]');
+        if (!target) return;
+        if (feed.mode === 'grid') target.scrollIntoView({ block: 'center' });
+        else window.scrollTo(0, target.getBoundingClientRect().top + window.scrollY - feed.headEl.offsetHeight);
+      }, 150);
+    }
   }
-  window.addEventListener('popstate', closeViewer);
+
+  function closeViewerThen(fn) {
+    afterViewerClose = fn;
+    history.back();
+  }
+
+  window.addEventListener('popstate', () => {
+    const fn = afterViewerClose;
+    afterViewerClose = null;
+    closeViewer();
+    if (fn) fn();
+  });
 
   // ================================================================ Feed (scroll infinito)
 
@@ -741,6 +949,7 @@
       this.scrollY = 0;
       this.emptyStreak = 0;
       this.endText = '';
+      this.listeners = new Set();
 
       this.headEl = h('header', { class: 'top' + (o.back ? ' has-back' : '') });
       this.extraEl = h('div', { class: 'feed-extra' });
@@ -837,7 +1046,7 @@
     }
 
     add(items) {
-      let n = 0;
+      const added = [];
       const frag = document.createDocumentFragment();
       for (const it of items) {
         const p = it.post;
@@ -846,10 +1055,11 @@
         this.ids.add(p.id);
         this.items.push(it);
         frag.append(this.mode === 'grid' ? buildThumb(it, this) : buildCard(it, this));
-        n++;
+        added.push(it);
       }
       this.list.append(frag);
-      return n;
+      if (added.length) for (const fn of this.listeners) fn(added);
+      return added.length;
     }
 
     topVisibleId() {
