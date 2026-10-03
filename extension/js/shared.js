@@ -156,7 +156,9 @@
   /** Números del autor que sirven para su reputación (o null si el post no los trae). */
   function authorStats(u) {
     if (!u || u.postNum == null) return null;
-    return { rating: Math.round((u.rating || 0) * 10) / 10, week: Math.round((u.ratingWeek || 0) * 10) / 10, posts: u.postNum || 0, good: u.goodPostNum || 0, best: u.bestPostNum || 0 };
+    // Algunas cuentas (p. ej. «anon») traen números negativos de posts buenos: cuentan como cero.
+    const n = (v) => Math.max(0, v || 0);
+    return { rating: Math.round((u.rating || 0) * 10) / 10, week: Math.round((u.ratingWeek || 0) * 10) / 10, posts: n(u.postNum), good: n(u.goodPostNum), best: n(u.bestPostNum) };
   }
 
   // ---- Reputación de un usuario: de 1 a 5 estrellas, de a media estrella.
@@ -167,9 +169,12 @@
   RS.REP_WEIGHTS = { quality: 0.4, career: 0.45, activity: 0.15 };
   const clampStars = (x) => Math.max(1, Math.min(5, x));
   RS.reputation = function (a) {
-    if (!a || !a.posts) return null;
-    const quality = clampStars(1 + a.good / a.posts / 0.2);
-    const career = clampStars(1 + Math.log10(1 + a.good + a.best));
+    if (!a || !(a.posts > 0)) return null;
+    // Posts guardados antes de la 1.0.9 pueden traer números negativos (ver authorStats).
+    const good = Math.max(0, a.good || 0);
+    const best = Math.max(0, a.best || 0);
+    const quality = clampStars(1 + good / a.posts / 0.2);
+    const career = clampStars(1 + Math.log10(1 + good + best));
     const activity = clampStars(1 + Math.log10(1 + Math.max(0, a.week)));
     const W = RS.REP_WEIGHTS;
     const raw = W.quality * quality + W.career * career + W.activity * activity;
@@ -252,6 +257,8 @@
   RS.isAnimated = (p) => p.media.some((m) => m.kind === 'video' || m.kind === 'embed' || m.ext === 'gif');
   RS.isRealVideo = (p) => p.media.some((m) => (m.kind === 'video' && m.real) || m.kind === 'embed');
   RS.isGifPost = (p) => p.media.some((m) => (m.kind === 'video' && !m.real) || m.ext === 'gif');
+  /** Post solo de imágenes fijas (sin GIF ni video): pestaña «Imágenes» del perfil. */
+  RS.isStillPost = (p) => p.media.length > 0 && !RS.isAnimated(p);
   /** kinds = ['gif'], ['video'] o ['gif','video']: ¿el post entra en ese filtro? */
   RS.matchesKinds = (p, kinds) =>
     (kinds.includes('gif') && kinds.includes('video') && RS.isAnimated(p)) ||
@@ -349,6 +356,42 @@
     };
   };
 
+  /**
+   * Todos los posts de un usuario, de lo más nuevo a lo más viejo, pedidos de a varias páginas
+   * en paralelo. Las pestañas del perfil (Todo, Imágenes, GIF y video) filtran esta misma lista,
+   * así que al cambiar de pestaña no se vuelve a pedir nada.
+   */
+  RS.createUserSource = function (username) {
+    const src = { posts: [], count: 0, done: false, next: null, busy: null };
+    const ids = new Set();
+    const add = (res) => {
+      for (const p of res.posts) {
+        if (ids.has(p.id)) continue;
+        ids.add(p.id);
+        src.posts.push(p);
+      }
+    };
+    src.more = (pages) => {
+      if (src.busy) return src.busy;
+      src.busy = (async () => {
+        if (src.next == null) {
+          const res = await RS.fetchUserPage(username, null);
+          src.count = res.count;
+          add(res);
+          src.next = res.lastPage - 1;
+        } else {
+          const list = [];
+          for (let i = 0; i < (pages || 1) && src.next - i >= 1; i++) list.push(src.next - i);
+          (await Promise.all(list.map((pg) => RS.fetchUserPage(username, pg)))).forEach(add);
+          src.next -= list.length;
+        }
+        if (src.next < 1) src.done = true;
+      })().finally(() => (src.busy = null));
+      return src.busy;
+    };
+    return src;
+  };
+
   const userCache = new Map();
   RS.fetchUserInfo = function (username) {
     const key = String(username).toLowerCase();
@@ -401,6 +444,7 @@
     favorites: {}, // nombre -> { name, kind, notify, addedAt }
     mix: { sources: {}, quality: 'GOOD', era: 'any', noRepeat: true, exclude: [] },
     seen: [],
+    // tagGif, tagVideo y tagOrder ya no se usan: desde la 1.0.9 un hashtag abre siempre con todos sus posts.
     settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100 },
     news: { items: [], known: {}, unread: 0, lastCheck: 0 },
     dismissed: [],

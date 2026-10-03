@@ -413,6 +413,30 @@ html.snap .list.cards .card { scroll-snap-stop: always; }
 .hero h2 { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; overflow-wrap: anywhere; }
 .hero .meta { font-size: 13.5px; color: var(--text-2); }
 .hero-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+
+/* ---------- Pestañas del perfil (Todo, Imágenes, GIF y video): quedan fijas bajo la cabecera ---------- */
+.feed-sub { position: sticky; top: var(--top-h); z-index: 15; background: var(--bg); }
+.feed-sub:not(:empty) { margin-top: 12px; }
+html.snap .feed-sub { position: static; }
+.ptabs { display: flex; border-bottom: 1px solid var(--line); }
+.ptab {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 46px;
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.ptab.on { color: var(--text); border-bottom-color: var(--accent); }
 .hbtn {
   height: 44px;
   padding: 0 8px;

@@ -31,6 +31,7 @@
     up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
     multi: '<rect x="7" y="7" width="13" height="13" rx="2"/><path d="M4 16V6a2 2 0 0 1 2-2h10"/>',
     play: '<path d="M8 5l11 7-11 7z"/>',
+    image: '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="M20.5 16l-5-5-9 8.5"/>',
     bell: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
     belloff: '<path d="M6 16v-5a6 6 0 0 1 9.3-5"/><path d="M18 11v5l1.5 2H8"/><path d="M10 20.5a2 2 0 0 0 4 0"/><path d="M3 3l18 18"/>',
     gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/>',
@@ -1043,6 +1044,7 @@
     else open.append(h('span', { class: 'ttext', text: (p.text || (m ? PROVIDERS[m.provider] || 'Video' : 'Post de texto')).slice(0, 90) }));
     cell.append(open);
     if (p.media.length > 1) cell.append(h('span', { class: 'tb' }, icon('multi', 15)));
+    else if (m && (m.kind === 'embed' || (m.kind === 'video' && m.real))) cell.append(h('span', { class: 'tb' }, icon('play', 14)));
     else if (m && (m.kind === 'video' || m.ext === 'gif')) cell.append(h('span', { class: 'tb', text: 'GIF' }));
 
     const liked = !!S.likes[p.id];
@@ -1423,6 +1425,10 @@
 
   // ================================================================ Feed (scroll infinito)
 
+  // Pestañas del perfil de un usuario.
+  const SHOW_TEST = { all: () => true, image: RS.isStillPost, anim: RS.isAnimated };
+  const SHOW_TEXT = { all: 'posts', image: 'imágenes', anim: 'GIF y videos' };
+
   class Feed {
     constructor(o) {
       this.key = o.key;
@@ -1434,12 +1440,15 @@
       this.anchorId = o.anchor || null;
       this.pendingAnchor = o.anchor || null;
       this.user = o.user || null; // todos los posts de un usuario
+      this.show = o.show || 'all'; // perfil: 'all' | 'image' | 'anim' (pestañas Todo, Imágenes, GIF y video)
+      this.userSrc = null;
       this.mediaSrc = null;
       this.mode = o.mode || 'feed';
       this.source = o.source || '';
       this.staticItems = o.items || [];
       this.renderHead = o.head;
       this.renderExtra = o.extra;
+      this.renderSub = o.sub;
       this.renderEmpty = o.empty;
       this.onMode = o.onMode;
       this.items = [];
@@ -1456,10 +1465,12 @@
 
       this.headEl = h('header', { class: 'top' + (o.back ? ' has-back' : '') });
       this.extraEl = h('div', { class: 'feed-extra' });
+      // Barra que queda fija bajo la cabecera al bajar (pestañas del perfil).
+      this.subEl = h('div', { class: 'feed-sub' });
       this.list = h('div', { class: 'list' });
       this.statusEl = h('div', { class: 'status' });
       this.sentinel = h('div', { class: 'sentinel' });
-      this.root = h('div', { class: 'feed' }, this.headEl, this.extraEl, this.list, this.statusEl, this.sentinel);
+      this.root = h('div', { class: 'feed' }, this.headEl, this.extraEl, this.subEl, this.list, this.statusEl, this.sentinel);
       this.io = new IntersectionObserver((es) => {
         if (es.some((e) => e.isIntersecting)) this.loadMore();
       }, { rootMargin: '0px 0px 1600px 0px' });
@@ -1473,6 +1484,7 @@
     refresh() {
       this.refreshHead();
       fill(this.extraEl, ...[].concat(this.renderExtra ? this.renderExtra(this) : []));
+      fill(this.subEl, ...[].concat(this.renderSub ? this.renderSub(this) : []));
     }
     applyMode() {
       this.list.className = 'list ' + (this.mode === 'grid' ? 'grid' : 'cards');
@@ -1481,7 +1493,13 @@
     setStatus(kind, err) {
       const s = this.statusEl;
       if (kind === 'loading') {
-        fill(s, icon('spinner', 20, 'spin'), this.kind === 'random' ? 'Sorteando posts de tu mezcla…' : 'Cargando más posts…');
+        const src = this.userSrc;
+        const text = this.kind === 'random'
+          ? 'Sorteando posts de tu mezcla…'
+          : this.show !== 'all' && src && src.count
+            ? 'Buscando ' + SHOW_TEXT[this.show] + '… revisé ' + fmt(src.posts.length) + ' de ' + fmt(src.count) + ' posts'
+            : 'Cargando más posts…';
+        fill(s, icon('spinner', 20, 'spin'), text);
       } else if (kind === 'error') {
         fill(s,
           emptyBox('alert', 'No se pudo cargar', errText(err), h('button', {
@@ -1494,7 +1512,7 @@
         );
       } else if (kind === 'end') {
         if (this.items.length) fill(s, h('span', { text: this.endText || 'No hay más posts.' }));
-        else fill(s, this.renderEmpty ? this.renderEmpty() : emptyBox('hash', 'No hay posts aquí', this.endText));
+        else fill(s, this.renderEmpty ? this.renderEmpty(this) : emptyBox('hash', 'No hay posts aquí', this.endText));
       } else fill(s);
     }
 
@@ -1504,7 +1522,10 @@
       this.setStatus('loading');
       try {
         let added = 0;
-        for (let guard = 0; !added && !this.done && guard < 5; guard++) added += await this.fetchChunk();
+        for (let guard = 0; !added && !this.done && guard < 5; guard++) {
+          added += await this.fetchChunk();
+          if (!added && !this.done) this.setStatus('loading');
+        }
         this.setStatus(this.done ? 'end' : '');
       } catch (e) {
         this.failed = true;
@@ -1526,15 +1547,24 @@
         const res = await this.mediaSrc.next();
         if (res.done) {
           this.done = true;
-          if (res.capped) this.endText = 'Llegaste al límite: JoyReactor solo deja ver los ' + RS.GIF_LIMIT + ' más recientes de cada tipo por hashtag. Prueba con «Top» o con el orden aleatorio.';
+          if (res.capped) this.endText = 'Llegaste al límite: JoyReactor solo deja ver los ' + RS.GIF_LIMIT + ' más recientes de cada tipo por hashtag. Prueba con «Barajar».';
+          else this.endText = 'No hay más ' + (this.kinds.length > 1 ? 'GIF ni videos' : this.kinds[0] === 'gif' ? 'GIF' : 'videos') + '. Quita el filtro de arriba para ver todos los posts.';
         }
         return this.add(res.posts.filter((p) => RS.matchesKinds(p, this.kinds)).map((post) => ({ post })));
       }
       if (this.kind === 'pager' && this.user) {
-        const res = await RS.fetchUserPage(this.user, this.next);
-        this.next = this.next == null ? res.lastPage - 1 : this.next - 1;
-        if (this.next < 1) this.done = true;
-        return this.add(res.posts.map((post) => ({ post })));
+        // Las pestañas filtran la misma lista de posts; si una pestaña tiene pocos, se piden varias páginas a la vez.
+        if (!this.userSrc) this.userSrc = RS.createUserSource(this.user);
+        const src = this.userSrc;
+        if (this.cursor >= src.posts.length && !src.done) await src.more(this.show === 'all' ? 1 : 4);
+        // De a 30 por vez: lo ya cargado de otra pestaña puede ser mucho.
+        const out = [];
+        while (this.cursor < src.posts.length && out.length < 30) {
+          const post = src.posts[this.cursor++];
+          if (SHOW_TEST[this.show](post)) out.push({ post });
+        }
+        if (src.done && this.cursor >= src.posts.length) this.done = true;
+        return this.add(out);
       }
       if (this.kind === 'pager') {
         const res = await RS.fetchPage(this.tag, this.type, this.next);
@@ -1612,6 +1642,8 @@
     setMode(mode, anchorId) {
       if (mode === this.mode && !anchorId) return;
       const anchor = anchorId || this.topVisibleId();
+      // Si abriste un post tocando su miniatura, «atrás» vuelve a las miniaturas (ver backToGrid).
+      this.backToGrid = mode === 'feed' && this.mode === 'grid' && !!anchorId;
       pauseIn(this.list);
       this.mode = mode;
       this.applyMode();
@@ -1619,12 +1651,33 @@
       fill(this.list, ...this.items.filter((it) => !S.dislikes[it.post.id]).map((it) => (mode === 'grid' ? buildThumb(it, this) : buildCard(it, this))));
       this.refreshHead();
       if (this.onMode) this.onMode(mode);
-      requestAnimationFrame(() => {
-        const el = anchor && this.list.querySelector('[data-id="' + CSS.escape(anchor) + '"]');
-        if (el) window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - this.headEl.offsetHeight);
-        else window.scrollTo(0, 0);
-        this.checkMore();
-      });
+      // Se alinea en el acto (sin esperar a requestAnimationFrame, que se congela si la página no se ve).
+      const el = anchor && this.list.querySelector('[data-id="' + CSS.escape(anchor) + '"]');
+      if (el && mode === 'grid') el.scrollIntoView({ block: 'center' });
+      else if (el) window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - this.headEl.offsetHeight);
+      else window.scrollTo(0, 0);
+      this.checkMore();
+    }
+
+    // Cambia de pestaña en el perfil: se vuelve a filtrar lo que ya se cargó, sin pedirlo otra vez.
+    setShow(show) {
+      if (show === this.show) return;
+      // Si ya bajaste más allá de las pestañas, quedan arriba; si no, la página no se mueve.
+      const tabsY = this.extraEl.getBoundingClientRect().bottom + window.scrollY - this.headEl.offsetHeight;
+      pauseIn(this.list);
+      this.show = show;
+      this.items = [];
+      this.ids.clear();
+      this.cursor = 0;
+      this.done = false;
+      this.failed = false;
+      this.backToGrid = false;
+      fill(this.list);
+      // Alto mínimo para que, mientras carga, la página no se encoja y las pestañas sigan arriba.
+      this.list.style.minHeight = '100vh';
+      fill(this.subEl, ...[].concat(this.renderSub ? this.renderSub(this) : []));
+      if (window.scrollY > tabsY) window.scrollTo(0, tabsY);
+      this.loadMore();
     }
 
     reset() {
@@ -1674,6 +1727,13 @@
   function goBack(fallback) {
     if (stack.length > 1) navBack();
     else navReplace(fallback);
+  }
+  // Abriste un post tocando su miniatura: «atrás» vuelve a las miniaturas, donde estabas.
+  function backToGrid() {
+    const f = current && current.feed;
+    if (!f || !f.backToGrid || f.mode !== 'feed') return false;
+    f.setMode('grid', f.topVisibleId());
+    return true;
   }
 
   function cached(key, make) {
@@ -1805,7 +1865,7 @@
 
   // ================================================================ Piezas comunes
 
-  const backBtn = (fallback) => h('button', { class: 'ib', 'aria-label': 'Volver', onclick: () => goBack('#' + fallback) }, icon('back', 24));
+  const backBtn = (fallback) => h('button', { class: 'ib', 'aria-label': 'Volver', onclick: () => backToGrid() || goBack('#' + fallback) }, icon('back', 24));
   const iconLink = (ic, label, href) => h('a', { class: 'ib', href, 'aria-label': label, title: label }, icon(ic, 22));
 
   function viewToggle(feed) {
@@ -2116,11 +2176,12 @@
       ]);
       return;
     }
-    const type = RS.validType(q.get('sort')) || 'GOOD';
-    const order = q.get('order') || (S.settings.tagOrder === 'recent' ? 'recent' : 'random');
-    const random = order !== 'recent';
-    const defaultMedia = (S.settings.tagGif ? 'g' : '') + (S.settings.tagVideo ? 'v' : '') || 'all';
-    const media = q.get('media') || defaultMedia;
+    // Un hashtag abre siempre con todos sus posts, lo más reciente primero. «Barajar» los pone en
+    // orden aleatorio y los botones GIF y video de arriba son filtros que hay que tocar a propósito.
+    const type = 'ALL';
+    const random = q.get('order') === 'random';
+    const order = random ? 'random' : 'recent';
+    const media = q.get('media') || 'all';
     const showGif = media.includes('g') && media !== 'all';
     const showVideo = media.includes('v');
     const kinds = [showGif && 'gif', showVideo && 'video'].filter(Boolean);
@@ -2129,7 +2190,7 @@
       const g = o.gif === undefined ? showGif : o.gif;
       const v = o.video === undefined ? showVideo : o.video;
       const rnd = o.random === undefined ? random : o.random;
-      return '#/tag/' + enc(name) + '?sort=' + (o.sort || type) + '&order=' + (rnd ? 'random' : 'recent') + '&media=' + ((g ? 'g' : '') + (v ? 'v' : '') || 'all');
+      return '#/tag/' + enc(name) + '?order=' + (rnd ? 'random' : 'recent') + '&media=' + ((g ? 'g' : '') + (v ? 'v' : '') || 'all');
     };
     const what = showGif && showVideo ? 'GIF y videos' : showGif ? 'Solo GIF' : showVideo ? 'Solo videos' : 'Todos los posts';
     const emptyWhat = showGif && showVideo ? 'GIF ni videos' : showGif ? 'GIF' : 'videos';
@@ -2149,21 +2210,22 @@
           h('h1', { text: '#' + name }),
           h('button', { class: 'ib gifbtn' + (showGif ? ' active' : ''), 'aria-pressed': String(showGif), 'aria-label': gifLabel, title: gifLabel, onclick: () => navReplace(url({ gif: !showGif })) }, 'GIF'),
           h('button', { class: 'ib gifbtn' + (showVideo ? ' active' : ''), 'aria-pressed': String(showVideo), 'aria-label': videoLabel, title: videoLabel, onclick: () => navReplace(url({ video: !showVideo })) }, icon('film', 20)),
-          h('button', {
-            class: 'ib' + (random ? ' active' : ''),
-            'aria-pressed': String(random),
-            'aria-label': random ? 'Ver en orden (más recientes primero)' : 'Ver en orden aleatorio',
-            title: random ? 'Ver en orden (más recientes primero)' : 'Ver en orden aleatorio',
-            onclick: () => {
-              toast(random ? 'En orden: lo más reciente primero' : 'Orden aleatorio');
-              navReplace(url({ random: !random }));
-            }
-          }, icon('shuffle', 22)),
           viewToggleCompact(f)
         ],
         extra: (f) => {
-          const chips = sortChips(type, (t) => navReplace(url({ sort: t })));
-          if (random) chips.append(h('button', { class: 'chip soft', onclick: () => f.reset() }, icon('refresh', 16), 'Barajar'));
+          // «Todo» (lo más reciente primero) o «Barajar». Con «Barajar» puesto, tocarlo otra vez vuelve a mezclar.
+          const chips = h('nav', { class: 'chips', 'aria-label': 'Orden' },
+            h('button', { class: 'chip' + (random ? '' : ' on'), 'aria-pressed': String(!random), onclick: () => random && navReplace(url({ random: false })) }, 'Todo'),
+            h('button', {
+              class: 'chip' + (random ? ' on' : ''),
+              'aria-pressed': String(random),
+              onclick: () => {
+                if (!random) return navReplace(url({ random: true }));
+                toast('Barajado otra vez');
+                f.reset();
+              }
+            }, icon('shuffle', 16), 'Barajar')
+          );
           // Bloquear #gif (o #video…) esconde casi todos los GIF y videos: se avisa arriba.
           const fmtBlocked = kinds.length ? S.mix.exclude.filter(RS.isFormatTag) : [];
           const warn = fmtBlocked.length
@@ -2270,19 +2332,34 @@
     return el;
   }
 
+  // Pestañas del perfil, como en Instagram: todo, solo imágenes o solo GIF y videos.
+  function profileTabs(f) {
+    const tab = (show, ic, label) =>
+      h('button', { class: 'ptab' + (f.show === show ? ' on' : ''), role: 'tab', 'aria-selected': String(f.show === show), onclick: () => f.setShow(show) }, icon(ic, 20), label);
+    return h('div', { class: 'ptabs', role: 'tablist', 'aria-label': 'Qué posts ver' }, tab('all', 'grid', 'Todo'), tab('image', 'image', 'Imágenes'), tab('anim', 'film', 'GIF y video'));
+  }
+
   function routeUser(name) {
     const key = 'user:' + name.toLowerCase();
-    const f = cached(key, () =>
-      new Feed({
+    const f = cached(key, () => {
+      const hero = userHero(name);
+      return new Feed({
         key,
         kind: 'pager',
         user: name,
+        mode: 'grid',
         back: true,
         head: (f) => [backBtn('/home'), h('h1', { text: '@' + name }), viewToggle(f)],
-        extra: () => [userHero(name), h('p', { class: 'countline', style: { padding: '10px 16px 4px' }, text: 'Todos sus posts, lo más reciente primero.' })],
-        empty: () => emptyBox('user', 'Sin posts', name + ' todavía no publicó nada.')
-      })
-    );
+        extra: () => [hero],
+        sub: profileTabs,
+        empty: (f) =>
+          f.show === 'anim'
+            ? emptyBox('film', 'Sin GIF ni videos', name + ' no publicó GIF ni videos.')
+            : f.show === 'image'
+              ? emptyBox('image', 'Sin imágenes', 'Todo lo que publicó ' + name + ' son GIF o videos.')
+              : emptyBox('user', 'Sin posts', name + ' todavía no publicó nada.')
+      });
+    });
     showFeed(f);
   }
 
@@ -3151,30 +3228,6 @@
         )
       ),
       h('div', { class: 'setgroup' },
-        h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Al abrir un hashtag' }),
-        h('div', { class: 'line' },
-          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Filtro GIF' }), h('span', { class: 'smeta', text: 'Activado: muestra los GIF del hashtag.' })),
-          switchBtn(st.tagGif, 'Filtro GIF activado al abrir un hashtag', (on) => {
-            st.tagGif = on;
-            save();
-          })
-        ),
-        h('div', { class: 'line' },
-          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Filtro Video' }), h('span', { class: 'smeta', text: 'Activado: muestra los videos del hashtag. Con los dos filtros apagados se ven todos los posts, también las imágenes.' })),
-          switchBtn(st.tagVideo, 'Filtro Video activado al abrir un hashtag', (on) => {
-            st.tagVideo = on;
-            save();
-          })
-        ),
-        h('div', { class: 'field' },
-          h('span', { class: 't', text: 'Orden' }),
-          seg([['random', 'Aleatorio'], ['recent', 'Lo más reciente']], st.tagOrder === 'recent' ? 'recent' : 'random', (v) => {
-            st.tagOrder = v;
-            save();
-          })
-        )
-      ),
-      h('div', { class: 'setgroup' },
         h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Historial y estadísticas' }),
         h('div', { class: 'field' },
           h('span', { class: 't', text: 'Historial: guardar hasta' }),
@@ -3494,13 +3547,15 @@
       if (location.hash === hash) route();
       else location.hash = hash;
     },
-    // Botón «atrás» de Android: 1) cierra la pantalla completa, 2) vuelve a la página anterior,
-    // 3) desde otra sección vuelve a Inicio, 4) desde Inicio sale de la app.
+    // Botón «atrás» de Android: 1) cierra la pantalla completa, 2) vuelve a las miniaturas si abriste
+    // un post desde ahí, 3) vuelve a la página anterior, 4) desde otra sección vuelve a Inicio,
+    // 5) desde Inicio sale de la app.
     handleBack() {
       if (viewer) {
         exitViewer();
         return 'handled';
       }
+      if (backToGrid()) return 'handled';
       if (stack.length > 1) {
         navBack();
         return 'handled';
