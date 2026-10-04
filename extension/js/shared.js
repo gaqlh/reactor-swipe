@@ -412,30 +412,65 @@
   };
 
   /** Los posts más nuevos (las dos últimas páginas) de varios usuarios en dos consultas: { nombre: [posts] }. */
-  RS.fetchUsersRecent = async function (names) {
+  // Los posts más nuevos (las dos últimas páginas) de varios usuarios o hashtags, en dos consultas:
+  // { nombre: [posts] }. kind = 'user' | 'tag'.
+  async function fetchRecent(kind, names) {
     if (!names.length) return {};
-    const decl = names.map((n, i) => '$u' + i + ':String!').join(',');
+    const open = (i) => (kind === 'user' ? `user(username:$v${i}){ postPager` : `tag(name:$v${i}){ postPager(type:ALL)`);
+    const type = kind === 'user' ? 'String!' : 'String';
     const vars = {};
-    names.forEach((n, i) => (vars['u' + i] = n));
-    const counts = await gql(`query(${decl}){ ${names.map((n, i) => `u${i}: user(username:$u${i}){ postPager{ count } }`).join(' ')} }`, vars);
+    names.forEach((n, i) => (vars['v' + i] = n));
+    const counts = await gql(`query(${names.map((n, i) => '$v' + i + ':' + type).join(',')}){ ${names.map((n, i) => `v${i}: ${open(i)}{ count } }`).join(' ')} }`, vars);
     const decl2 = [];
     const parts = [];
     const vars2 = {};
     names.forEach((n, i) => {
-      const u = counts['u' + i];
+      const u = counts['v' + i];
       if (!u) return;
       const last = Math.max(1, Math.ceil(u.postPager.count / PAGE_SIZE));
-      decl2.push('$u' + i + ':String!');
-      vars2['u' + i] = n;
-      parts.push(`u${i}: user(username:$u${i}){ postPager{ a: posts(page:${last}){ ${POST_FIELDS} } b: posts(page:${Math.max(1, last - 1)}){ ${POST_FIELDS} } } }`);
+      decl2.push('$v' + i + ':' + type);
+      vars2['v' + i] = n;
+      parts.push(`v${i}: ${open(i)}{ a: posts(page:${last}){ ${POST_FIELDS} } b: posts(page:${Math.max(1, last - 1)}){ ${POST_FIELDS} } } }`);
     });
     const d = parts.length ? await gql(`query(${decl2.join(',')}){ ${parts.join(' ')} }`, vars2) : {};
     const out = {};
     names.forEach((n, i) => {
-      const u = d['u' + i];
+      const u = d['v' + i];
       if (!u) return;
       const ids = new Set();
       out[n] = u.postPager.a.concat(u.postPager.b).filter((x) => !ids.has(x.id) && ids.add(x.id)).map(RS.normalizePost);
+    });
+    return out;
+  }
+  RS.fetchUsersRecent = (names) => fetchRecent('user', names);
+  RS.fetchTagsRecent = (names) => fetchRecent('tag', names);
+
+  // Cuántos posts de un hashtag llevan cada uno de los hashtags bloqueados: [{ name, n, capped, path }].
+  // La búsqueda de JoyReactor cuenta hasta 1000. Si llega a 1000 y el bloqueado está dentro del hashtag
+  // (una subcategoría), sus posts son todos de aquí y vale su propio total; si no, 1000 es solo un mínimo
+  // (capped). path = las carpetas de arriba del bloqueado.
+  RS.fetchBlockedOverlap = async function (name, blocked) {
+    const list = blocked.slice(0, 30);
+    if (!list.length) return [];
+    const vars = { n: name };
+    const F = 'name postPager(type:ALL){ count } hierarchy { name }';
+    const parts = list.map((b, i) => {
+      vars['b' + i] = b;
+      return `s${i}: search(query:"", tagNames:[$n,$b${i}], showNsfw:true){ postPager{ count } } t${i}: tag(name:$b${i}){ ${F} mainTag { ${F} } }`;
+    });
+    const decl = ['$n:String!'].concat(list.map((b, i) => '$b' + i + ':String!')).join(',');
+    const d = await gql(`query(${decl}){ ${parts.join(' ')} }`, vars);
+    const low = (x) => String(x).toLowerCase();
+    const out = [];
+    list.forEach((b, i) => {
+      const raw = d['t' + i];
+      const t = raw && (raw.mainTag || raw);
+      if (!t) return;
+      const path = (t.hierarchy || []).map((x) => x.name).filter((x) => low(x) !== low(t.name));
+      const inside = path.some((x) => low(x) === low(name));
+      const hits = d['s' + i] ? d['s' + i].postPager.count : 0;
+      const capped = hits >= 1000;
+      out.push({ name: t.name, n: capped && inside ? t.postPager.count : hits, capped: capped && !inside, path });
     });
     return out;
   };

@@ -44,7 +44,6 @@
     expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
     spinner: '<path d="M12 3a9 9 0 1 0 9 9"/>',
     alert: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/>',
-    replay: '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3 4.5V9h4.5"/>',
     user: '<circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/>',
     chart: '<path d="M4 20V11M10 20V5M16 20v-8M21 20H3"/>',
     film: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M10 9.3v5.4l4.6-2.7z"/>',
@@ -684,12 +683,14 @@
   }
 
   // Pausar es un toque rápido y en el centro de la pantalla: ni muy arriba ni muy abajo (así no se
-  // pausa sin querer al buscar los botones de Android o al tocar cerca de los bordes).
+  // pausa sin querer al buscar los botones de Android o al tocar cerca de los bordes). En pantalla
+  // completa (small) la franja es la mitad de alta que en el feed: del 37,5 al 62,5 % de la pantalla.
   const TAP_MS = 220;
-  function pauseTap(tap) {
+  function pauseTap(tap, small) {
     if (!tap || tap.ms > TAP_MS) return false;
     const H = window.innerHeight;
-    return tap.y > H * 0.25 && tap.y < H * (isLandscape() ? 0.65 : 0.75);
+    const [top, bottom] = small ? (isLandscape() ? [0.35, 0.55] : [0.375, 0.625]) : [0.25, isLandscape() ? 0.65 : 0.75];
+    return tap.y > H * top && tap.y < H * bottom;
   }
 
   const PROVIDERS = { YOUTUBE: 'YouTube', COUB: 'Coub', VIMEO: 'Vimeo', SOUNDCLOUD: 'SoundCloud', BANDCAMP: 'Bandcamp' };
@@ -813,17 +814,6 @@
     };
     bind(initial || null);
     return { el, bind, watch };
-  }
-
-  // Vuelve a empezar el GIF/video que está a la vista dentro de una tarjeta o página.
-  function replayIn(scope, index) {
-    const slides = scope.querySelectorAll('.slide, .vw-slide');
-    const slideEl = slides[index] || slides[0];
-    const v = (slideEl && slideEl.querySelector('video')) || scope.querySelector('video');
-    if (!v) return;
-    if (!v.getAttribute('src') && v.dataset.src) v.src = v.dataset.src;
-    v.currentTime = 0;
-    v.play().catch(() => {});
   }
 
   function embedLinkOut(m, p) {
@@ -1108,9 +1098,6 @@
         h('button', { class: 'act', 'aria-label': 'No me gusta: ocultar para siempre', onclick: () => dislike(it, card, feed) }, icon('down', 25)),
         h('a', { class: 'act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': p.comments + ' comentarios en JoyReactor' }, icon('comment', 24), fmt(p.comments)),
         h('span', { class: 'grow' }),
-        p.media.some((m) => m.kind === 'video')
-          ? h('button', { class: 'act dim', 'aria-label': 'Ver el GIF desde el principio', title: 'Desde el principio', onclick: () => replayIn(card, currentIndex(card)) }, icon('replay', 23))
-          : null,
         media ? h('button', { class: 'act dim', 'aria-label': 'Pantalla completa', onclick: () => openViewer(feed, p, currentIndex(card)) }, icon('expand', 21)) : null
       )
     );
@@ -1310,7 +1297,7 @@
         // abajo muestra los botones de Android (ver viewerGestures) o, en horizontal, los controles.
         // Justo después de arrastrar para adelantar, no pausa.
         onTaps(s, () => exitViewer(), (tap) => {
-          if (Date.now() - (vid._seekedAt || 0) < 700 || !pauseTap(tap)) return;
+          if (Date.now() - (vid._seekedAt || 0) < 700 || !pauseTap(tap, true)) return;
           togglePause(vid, s);
         });
       } else {
@@ -2561,14 +2548,29 @@
 
   // ================================================================ Actualizaciones
 
-  async function installUpdate() {
-    if (!S.update) return;
+  // Descarga la versión nueva y abre el instalador de Android (ahí solo se toca «Instalar»). Mientras
+  // descarga, el botón que se tocó queda ocupado.
+  let installing = false;
+  async function installUpdate(btn) {
+    if (!S.update || installing) return;
+    installing = true;
+    const label = btn ? Array.from(btn.childNodes) : null;
+    if (btn) {
+      btn.disabled = true;
+      fill(btn, icon('spinner', 16, 'spin'), 'Descargando…');
+    }
     toast('Descargando la versión ' + S.update.version + '…');
     try {
       const r = await RS.native('installUpdate', S.update.url);
       if (r && r.needsPermission) toast('Activa «Permitir de esta fuente» para Reactor Swipe, vuelve y toca Actualizar otra vez.');
+      else toast('Toca «Instalar» para terminar. Tus datos se conservan.');
     } catch (e) {
       toast(errText(e));
+    }
+    installing = false;
+    if (btn) {
+      btn.disabled = false;
+      fill(btn, label);
     }
   }
 
@@ -2578,7 +2580,7 @@
       h('strong', { text: 'Versión nueva disponible: ' + S.update.version }),
       h('span', { text: 'Toca Actualizar y después Instalar. Tus favoritos y lo que sigues se conservan.' }),
       h('div', { class: 'row-btns' },
-        h('button', { class: 'btn', onclick: installUpdate }, icon('download', 18), 'Actualizar'),
+        h('button', { class: 'btn', onclick: (e) => installUpdate(e.currentTarget) }, icon('download', 18), 'Actualizar'),
         h('button', {
           class: 'btn quiet',
           onclick: () => {
@@ -2590,13 +2592,15 @@
     );
   }
 
-  async function lookForUpdate(manual) {
+  // manual = se tocó el botón de Ajustes: si hay una versión nueva, se descarga e instala en el acto.
+  async function lookForUpdate(manual, btn) {
     try {
       S.update = await RS.checkForUpdate();
     } catch (e) {
       if (manual) toast(errText(e));
       return;
     }
+    if (manual && S.update && RS.android) return installUpdate(btn);
     if (manual) toast(S.update ? 'Hay una versión nueva: ' + S.update.version : 'Ya tienes la última versión (' + RS.version() + ')');
     if (S.update && current && current.feed && /^home:/.test(current.feed.key)) current.feed.refresh();
   }
@@ -2628,8 +2632,8 @@
     showFeed(f);
   }
 
-  // Los posts nuevos (de la última semana y que no viste) de la gente que sigues van primero en
-  // Inicio, empezando por quien más me gusta te ha dado.
+  // Los posts nuevos (de la última semana y que no viste) de la gente que sigues y de los hashtags que
+  // guardaste como perfil van primero en Inicio, empezando por quien más me gusta te ha dado.
   const FOLLOWED_DAYS = 7;
   function likesByUser() {
     const by = {};
@@ -2640,16 +2644,27 @@
     return by;
   }
   async function followedFirst() {
-    const list = Object.values(S.following);
-    if (!list.length) return [];
-    const recent = await RS.fetchUsersRecent(list.map((f) => f.name));
+    const users = Object.values(S.following);
+    const tags = Object.values(S.tagProfiles);
+    if (!users.length && !tags.length) return [];
+    const [byUser, byTag] = await Promise.all([
+      RS.fetchUsersRecent(users.map((f) => f.name)).catch(() => ({})),
+      RS.fetchTagsRecent(tags.map((t) => t.name)).catch(() => ({}))
+    ]);
     const likes = likesByUser();
     const since = Date.now() - FOLLOWED_DAYS * 86400000;
-    const order = list.slice().sort((a, b) => (likes[userKey(b.name)] || 0) - (likes[userKey(a.name)] || 0) || (b.addedAt || 0) - (a.addedAt || 0));
+    const sources = users
+      .map((f) => ({ score: likes[userKey(f.name)] || 0, at: f.addedAt || 0, posts: byUser[f.name] || [], label: (p) => 'De @' + p.user + ', a quien sigues', icon: 'user' }))
+      .concat(tags.map((t) => ({ score: likedWithTag(t.name).length, at: t.addedAt || 0, posts: byTag[t.name] || [], label: () => 'De #' + t.name + ', que guardaste como perfil', icon: 'hash' })))
+      .sort((a, b) => b.score - a.score || b.at - a.at);
     const out = [];
-    for (const f of order) {
-      const posts = (recent[f.name] || []).filter((p) => p.time >= since && !S.seenSet.has(p.id)).sort((a, b) => b.time - a.time);
-      for (const post of posts) out.push({ post, label: 'De @' + post.user + ', a quien sigues', icon: 'user', color: 'var(--accent)' });
+    const ids = new Set();
+    for (const src of sources) {
+      const posts = src.posts.filter((p) => p.time >= since && !S.seenSet.has(p.id) && !ids.has(p.id)).sort((a, b) => b.time - a.time);
+      for (const post of posts) {
+        ids.add(post.id);
+        out.push({ post, label: src.label(post), icon: src.icon, color: 'var(--accent)' });
+      }
     }
     return out;
   }
@@ -2664,10 +2679,39 @@
 
   // ================================================================ Hashtag
 
+  // El número de posts de un hashtag descuenta lo que bloqueaste: una subcategoría (algo que tiene
+  // dentro) se descuenta entera; de otro hashtag bloqueado, los posts que comparten. JoyReactor cuenta
+  // esos posts compartidos solo hasta 1000: si llega, lo que queda es un máximo («como mucho»).
+  const overlapCache = new Map();
+  function blockedOverlap(info) {
+    const list = S.mix.exclude.filter((b) => tkey(b) !== tkey(info.name));
+    if (!list.length) return Promise.resolve([]);
+    const key = tkey(info.name) + '|' + list.map(tkey).sort().join('|');
+    if (!overlapCache.has(key)) {
+      overlapCache.set(key, RS.fetchBlockedOverlap(info.name, list).catch((e) => {
+        overlapCache.delete(key);
+        throw e;
+      }));
+    }
+    return overlapCache.get(key);
+  }
+  function postsText(info, total, overlap) {
+    const above = (info.path || []).find((t) => isBlocked(t));
+    if (above) return '0 posts · está dentro de #' + above + ', que bloqueaste';
+    const hit = (overlap || []).filter((x) => x.n > 0);
+    // Uno que está dentro de otro bloqueado ya se descontó con ese.
+    const top = hit.filter((x) => !hit.some((y) => y !== x && x.path.some((p) => tkey(p) === tkey(y.name))));
+    if (!top.length) return fmt(total) + ' posts';
+    const left = Math.max(0, total - top.reduce((a, x) => a + x.n, 0));
+    const names = top.sort((a, b) => b.n - a.n).map((x) => '#' + x.name);
+    return (top.some((x) => x.capped) ? 'como mucho ' : '') + fmt(left) + ' posts · sin ' + names.slice(0, 2).join(', ') + (names.length > 2 ? ' y ' + (names.length - 2) + ' más' : '');
+  }
+
   /** totalOf (opcional): cuántos posts dice la lista del hashtag, para descontar los retirados. */
   function tagHero(name, totalOf) {
     const el = h('section', { class: 'hero' });
     let info = null;
+    let overlap = null; // posts que comparte con lo bloqueado (ver blockedOverlap)
 
     const draw = () => {
       const fav = favOf(name) || (info && favOf(info.name));
@@ -2675,7 +2719,7 @@
       const inMix = !!(fav && S.mix.sources[canon] && S.mix.sources[canon].on);
       const notify = !!(fav && fav.notify);
       const c = colorFor(canon);
-      const meta = info ? fmt(validCount(tagJunkKey(name), (totalOf && totalOf()) || info.count)) + ' posts' : 'Cargando…';
+      const meta = info ? postsText(info, validCount(tagJunkKey(name), (totalOf && totalOf()) || info.count), overlap) : 'Cargando…';
 
       const favBtn = h('button', {
         class: 'hbtn' + (fav ? ' fav' : ''),
@@ -2734,7 +2778,7 @@
       // Arriba van las categorías que lo contienen y abajo las que tiene dentro.
       const path = info ? (info.path && info.path.length ? info.path : info.parent ? [info.parent] : []) : [];
       const subs = info ? info.subTags : [];
-      const tagLink = (t, cls) => h('a', { class: 'tag' + (cls ? ' ' + cls : '') + (favOf(t) ? ' fav' : ''), href: '#/tag/' + enc(t), text: t });
+      const tagLink = (t, cls) => h('a', { class: 'tag' + (cls ? ' ' + cls : '') + (favOf(t) ? ' fav' : '') + (isBlocked(t) ? ' off' : ''), href: '#/tag/' + enc(t), text: t });
       const treeLink = info ? h('a', { class: 'tree-link', href: '#/tree/' + enc(canon) }, icon('chevright', 14), 'Ver en el árbol') : null;
       const pathRow = path.length
         ? h('div', { class: 'tree' },
@@ -2789,8 +2833,14 @@
     RS.fetchTagInfo(name)
       .then((i) => {
         info = i;
-        if (i) draw();
-        else fill(el, emptyBox('hash', 'Ese hashtag no existe', 'Revisa cómo está escrito.'));
+        if (!i) return fill(el, emptyBox('hash', 'Ese hashtag no existe', 'Revisa cómo está escrito.'));
+        draw();
+        blockedOverlap(i)
+          .then((list) => {
+            overlap = list;
+            if (list.length) draw();
+          })
+          .catch(() => {});
       })
       .catch(() => draw());
     return el;
@@ -2922,6 +2972,7 @@
       S.tagProfiles[tkey(canon)] = x;
     }
     persist('tagProfiles', 0);
+    invalidateHome(); // sus posts nuevos van primero en Inicio
   }
   /** Tus me gusta que llevan este hashtag (o uno de sus sinónimos), del más reciente al más viejo. */
   function likedWithTag(name) {
@@ -3605,6 +3656,7 @@
             toast('#' + x.name + ' ya no es un perfil', 'Deshacer', () => {
               S.tagProfiles[tkey(x.name)] = x;
               persist('tagProfiles', 0);
+              invalidateHome();
               draw();
             });
           }
@@ -4519,8 +4571,25 @@
       h('div', { class: 'setgroup' },
         h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Versión' }),
         h('div', { class: 'line' },
-          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Reactor Swipe ' + RS.version() }), h('span', { class: 'smeta', text: RS.android ? 'Cuando haya una versión nueva te llega un aviso: Actualizar → Instalar.' : 'Versión de navegador.' })),
-          h('button', { class: 'small-btn', onclick: () => lookForUpdate(true) }, icon('refresh', 16), 'Buscar')
+          h('div', { class: 'grow' },
+            h('span', { class: 'sname', text: 'Reactor Swipe ' + RS.version() }),
+            h('span', { class: 'smeta', text: !RS.android ? 'Versión de navegador.' : S.update ? 'Ya salió la ' + S.update.version + '. Tócalo y después «Instalar».' : 'Toca Actualizar: si hay una versión nueva, se descarga y se instala.' })
+          ),
+          // Un solo botón: busca y, si hay versión nueva, la descarga y abre el instalador.
+          h('button', {
+            class: 'small-btn' + (S.update ? ' follow' : ''),
+            onclick: (e) => {
+              const b = e.currentTarget;
+              if (S.update) return installUpdate(b);
+              b.disabled = true;
+              fill(b, icon('spinner', 16, 'spin'), 'Buscando…');
+              lookForUpdate(true, b).finally(() => {
+                if (installing) return;
+                b.disabled = false;
+                fill(b, icon('download', 16), 'Actualizar');
+              });
+            }
+          }, icon('download', 16), S.update ? 'Actualizar a ' + S.update.version : 'Actualizar')
         )
       ),
       h('p', { class: 'about', text: 'Lee JoyReactor con su API pública; no publica nada ni guarda tus datos fuera del teléfono.' })

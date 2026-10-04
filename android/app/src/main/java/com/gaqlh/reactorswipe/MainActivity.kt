@@ -45,7 +45,7 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_ROUTE = "route"
         private val BG = Color.parseColor("#0F0E0D")
         /** Cuánto quedan a la vista los botones de Android en pantalla completa. */
-        private const val BARS_MS = 6000L
+        private const val BARS_MS = 3000L
     }
 
     lateinit var web: WebView
