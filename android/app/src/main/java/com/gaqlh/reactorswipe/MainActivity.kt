@@ -197,9 +197,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val rehideBars = Runnable {
+        if (fullscreen) WindowInsetsControllerCompat(window, window.decorView).hide(WindowInsetsCompat.Type.systemBars())
+    }
+
+    /**
+     * En pantalla completa, muestra un momento las barras del sistema (los tres botones de Android).
+     * La interfaz lo pide al deslizar desde el borde, para que no haga falta empezar justo en la orilla.
+     */
+    fun peekSystemBars() {
+        if (!fullscreen) return
+        WindowInsetsControllerCompat(window, window.decorView).show(WindowInsetsCompat.Type.systemBars())
+        root.removeCallbacks(rehideBars)
+        root.postDelayed(rehideBars, 3500)
+    }
+
     /** Oculta (o vuelve a mostrar) las barras del sistema para el visor a pantalla completa. */
     fun setFullscreen(on: Boolean) {
         fullscreen = on
+        root.removeCallbacks(rehideBars)
         val controller = WindowInsetsControllerCompat(window, window.decorView)
         if (on) {
             controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE

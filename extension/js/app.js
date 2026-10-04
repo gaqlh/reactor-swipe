@@ -184,18 +184,19 @@
     timers[key] = setTimeout(() => {
       timers[key] = null;
       RS.save({ [key]: S[key] });
-      if (key === 'favorites' || key === 'settings' || key === 'mix') syncNative();
+      if (key === 'favorites' || key === 'following' || key === 'settings' || key === 'mix') syncNative();
     }, delay == null ? 250 : delay);
   }
 
-  // App de Android: los avisos los revisa Android en segundo plano, así que le paso
-  // qué vigilar y cómo (favoritos con campanita, ajustes y hashtags excluidos).
+  // App de Android: los avisos los revisa Android en segundo plano, así que le paso qué vigilar
+  // y cómo (hashtags y usuarios con campanita, ajustes y hashtags excluidos).
   function syncNative() {
     if (!RS.android) return;
     try {
       RS.android.syncConfig(
         JSON.stringify({
           favorites: Object.values(S.favorites).map((f) => ({ name: f.name, kind: f.kind, notify: !!f.notify })),
+          following: Object.values(S.following).map((f) => ({ name: f.name, notify: !!f.notify })),
           settings: S.settings,
           exclude: S.mix.exclude,
           postFields: RS.POST_FIELDS
@@ -236,8 +237,12 @@
   window.addEventListener('pagehide', flush);
 
   const refreshFilter = () => (pass = RS.makeFilter(S));
-  // La fecha de cada post se dibuja siempre y se oculta con CSS (así cambiar el ajuste no recarga nada).
-  const applyDates = () => document.documentElement.classList.toggle('show-dates', !!S.settings.showDates);
+  // La fecha de cada post y, en pantalla completa, la reputación y el rating se dibujan siempre y se
+  // ocultan con CSS (así cambiar el ajuste no recarga nada).
+  function applyDisplay() {
+    document.documentElement.classList.toggle('show-dates', !!S.settings.showDates);
+    document.documentElement.classList.toggle('show-scores', !!S.settings.showScores);
+  }
 
   function markSeen(id, post) {
     if (!id || S.seenSet.has(id)) return;
@@ -440,6 +445,11 @@
     if (on) S.likes[p.id] = S.likes[p.id] || { at: Date.now(), post: p };
     else delete S.likes[p.id];
     persist('likes');
+    // Lo que ya está en Favoritos no se repite en el Historial.
+    if (on && S.history.some((x) => x.id === p.id)) {
+      S.history = S.history.filter((x) => x.id !== p.id);
+      persist('history', 1500);
+    }
     document.querySelectorAll('[data-id="' + CSS.escape(p.id) + '"] .like').forEach((b) => {
       b.classList.toggle('on', on);
       b.setAttribute('aria-pressed', String(on));
@@ -528,19 +538,24 @@
   );
 
   // ---- Historial: los posts que miraste más de 10 segundos (máximo configurable, por defecto 100).
+  // También se mide cuánto tiempo miras cada post, para el Resumen de la semana (ver creditTime).
   const DWELL_MS = 10000;
   let dwell = null;
   function focusPost(p) {
     if (!p) return blurPost();
     if (dwell && dwell.id === p.id) return;
     blurPost();
-    dwell = { id: p.id, timer: setTimeout(() => addHistory(p), DWELL_MS) };
+    dwell = { id: p.id, post: p, start: Date.now(), timer: setTimeout(() => addHistory(p), DWELL_MS) };
   }
   function blurPost() {
-    if (dwell) clearTimeout(dwell.timer);
+    if (dwell) {
+      clearTimeout(dwell.timer);
+      creditTime(dwell.post, Date.now() - dwell.start);
+    }
     dwell = null;
   }
   function addHistory(p) {
+    if (S.likes[p.id]) return; // ya está en Favoritos
     const max = Number(S.settings.historyMax) || 100;
     S.history = [{ id: p.id, at: Date.now(), post: p }].concat((S.history || []).filter((x) => x.id !== p.id)).slice(0, max);
     persist('history', 1500);
@@ -846,6 +861,7 @@
     } else if (m.kind === 'video') {
       const v = makeVideo(m);
       const snd = soundBtn(v);
+      snd.hidden = !m.real; // los GIF no suenan: el botón aparece si resulta ser un video
       const badge = h('span', { class: 'mbadge', text: m.real ? 'VIDEO' : 'GIF' });
       // Videos: reproductor con pausa y tiempo. GIF: solo la barra limpia que aparece al tocar.
       const ctl = m.real ? miniPlayer(v) : scrubBar(v);
@@ -854,8 +870,9 @@
       watchAudio(v, () => {
         m.real = true;
         badge.textContent = 'VIDEO';
+        snd.hidden = false;
       });
-      onTaps(box, () => openViewer(feed, p, i), () => snd.click());
+      onTaps(box, () => openViewer(feed, p, i), () => m.real && snd.click());
     } else {
       box.append(embedLink(m, p));
     }
@@ -1113,7 +1130,8 @@
       feed = null;
     }
     const scroller = h('div', { class: 'vw-feed' });
-    const v = { feed, scroller, current: null, muted: false, onAdd: null, openedAt: Date.now() };
+    // El sonido empieza siempre apagado; se prende con el botón amarillo.
+    const v = { feed, scroller, current: null, muted: true, onAdd: null, openedAt: Date.now() };
     viewer = v;
     stats().fsOpens++;
     saveStats();
@@ -1121,6 +1139,9 @@
       scroller,
       h('div', { class: 'vw-bar' }, h('button', { class: 'vw-btn', 'aria-label': 'Salir de pantalla completa', onclick: () => exitViewer() }, icon('x', 24)))
     );
+    edgeZones(v.el);
+    v.el.addEventListener('pointerdown', showControls, true);
+    v.el.addEventListener('input', showControls, true);
     // Solo se cargan los posts cercanos; los lejanos se vacían para no gastar memoria.
     v.near = new IntersectionObserver(
       (es) => es.forEach((e) => (e.isIntersecting ? fillPage(e.target, 0) : emptyPage(e.target))),
@@ -1188,6 +1209,7 @@
     const it = page._it;
     const p = it.post;
     const videos = [];
+    let sndBtn = null;
     const slides = p.media.map((m) => {
       const s = h('div', { class: 'vw-slide' });
       if (m.kind === 'image') {
@@ -1202,10 +1224,12 @@
         watchAudio(vid, () => {
           m.real = true;
           vid._real = true;
+          if (sndBtn) sndBtn.hidden = false;
         });
         videos.push(vid);
-        s.append(vid);
-        onTaps(s, () => exitViewer(), toggleViewerSound);
+        s.append(vid, h('span', { class: 'vw-paused', 'aria-hidden': 'true' }, icon('play', 40)));
+        // Un toque pausa (o sigue); dos toques salen de la pantalla completa.
+        onTaps(s, () => exitViewer(), () => togglePause(vid, s));
       } else {
         s.append(embedLink(m, p));
       }
@@ -1236,11 +1260,10 @@
       h('button', { class: 'vw-act like' + (liked ? ' on' : ''), 'aria-label': 'Me gusta', 'aria-pressed': String(liked), onclick: () => toggleLike(p) }, icon('heart', 31)),
       h('button', { class: 'vw-act', 'aria-label': 'No me gusta: ocultar para siempre', onclick: () => dislikeInViewer(page) }, icon('down', 29)),
       h('a', { class: 'vw-act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': p.comments + ' comentarios en JoyReactor' }, icon('comment', 29), h('span', { text: fmt(p.comments) })),
-      videos.length ? h('button', { class: 'vw-act vw-sound', 'aria-label': viewer.muted ? 'Activar sonido' : 'Silenciar', onclick: toggleViewerSound }, icon(viewer.muted ? 'muted' : 'sound', 27)) : null,
-      videos.length
-        ? h('button', { class: 'vw-act', 'aria-label': 'Ver el GIF desde el principio', onclick: () => replayIn(page, page._track ? Math.round(page._track.scrollLeft / Math.max(1, page._track.clientWidth)) : 0) }, icon('replay', 27))
-        : null
+      (sndBtn = videos.length ? soundButton() : null)
     );
+    // Solo los videos tienen sonido: con GIF el botón no aparece.
+    if (sndBtn) sndBtn.hidden = !videos.some((x) => x._real);
     const mini = videos.some((x) => x._real) ? miniPlayer(null) : null;
     const scrub = videos.some((x) => !x._real) ? scrubBar(null) : null;
     if (scrub) scrub.watch(media);
@@ -1262,10 +1285,10 @@
               }
             }, icon('user', 15), p.user)
           : h('strong', { text: 'anónimo' }),
-        p.user ? repChip(p, 'media') : null,
+        // Estrellas del autor y rating del post: solo si se activan en Ajustes.
+        p.user ? h('span', { class: 'vw-score' }, repChip(p, 'media')) : null,
         h('span', { class: 'when', text: ' · ' + ago(p.time) }),
-        h('span', { text: ' · ' }),
-        h('span', { class: 'vw-rating' }, icon('up', 13), String(p.rating).replace('.', ','))
+        h('span', { class: 'vw-score' }, ' · ', h('span', { class: 'vw-rating' }, icon('up', 13), String(p.rating).replace('.', ',')))
       ),
       p.tags.length
         ? h('div', { class: 'vw-tags' },
@@ -1303,6 +1326,11 @@
     if (!viewer) return;
     // Mientras se gira el teléfono pasan otros posts por delante: no cambian el actual.
     if (!force && Date.now() < resizeLock && viewer.current && page !== viewer.current) return;
+    // El post que dejas atrás vuelve a reproducirse solo la próxima vez que llegues a él.
+    if (viewer.current && viewer.current !== page) {
+      (viewer.current._videos || []).forEach((x) => (x._userPaused = false));
+      viewer.current.querySelectorAll('.vw-slide.paused').forEach((x) => x.classList.remove('paused'));
+    }
     viewer.current = page;
     fillPage(page, 0);
     markSeen(page.dataset.id, page._it && page._it.post);
@@ -1327,7 +1355,7 @@
       let shown = null;
       for (const vid of vids) {
         if (visibleSlide && vid.parentNode === visibleSlide) {
-          vid.play().catch(() => {});
+          if (!vid._userPaused) vid.play().catch(() => {});
           shown = vid;
         } else vid.pause();
       }
@@ -1339,14 +1367,81 @@
     }
   }
 
+  // Botón de sonido de la pantalla completa: amarillo para que se vea; empieza apagado.
+  function soundButton() {
+    const b = h('button', { class: 'vw-act vw-sound', onclick: toggleViewerSound });
+    paintSound(b);
+    return b;
+  }
+  function paintSound(b) {
+    fill(b, h('span', { class: 'snd' }, icon(viewer.muted ? 'muted' : 'sound', 24)));
+    b.classList.toggle('on', !viewer.muted);
+    b.setAttribute('aria-pressed', String(!viewer.muted));
+    b.setAttribute('aria-label', viewer.muted ? 'Activar sonido' : 'Silenciar');
+  }
   function toggleViewerSound() {
     if (!viewer) return;
     viewer.muted = !viewer.muted;
     viewer.el.querySelectorAll('video').forEach((x) => (x.muted = viewer.muted));
-    viewer.el.querySelectorAll('.vw-sound').forEach((b) => {
-      fill(b, icon(viewer.muted ? 'muted' : 'sound', 27));
-      b.setAttribute('aria-label', viewer.muted ? 'Activar sonido' : 'Silenciar');
-    });
+    viewer.el.querySelectorAll('.vw-sound').forEach(paintSound);
+  }
+
+  // Un toque en pantalla completa pausa el video o el GIF; otro toque lo sigue desde donde quedó.
+  function togglePause(vid, slideEl) {
+    if (vid.paused) {
+      vid._userPaused = false;
+      vid.play().catch(() => {});
+    } else {
+      vid._userPaused = true;
+      vid.pause();
+    }
+    slideEl.classList.toggle('paused', !!vid._userPaused);
+  }
+
+  // Con el teléfono horizontal, la barra del video se esconde y aparece un momento al tocar la pantalla.
+  const CONTROLS_MS = 2600;
+  function showControls() {
+    const v = viewer;
+    if (!v) return;
+    v.el.classList.add('ctl');
+    clearTimeout(v.ctlTimer);
+    v.ctlTimer = setTimeout(() => v.el.classList.remove('ctl'), CONTROLS_MS);
+  }
+
+  // En la app, deslizar desde el borde de abajo (o desde los lados, en horizontal) muestra los
+  // botones de Android en vez de pasar de post. Android solo los muestra si el dedo empieza justo
+  // en el borde; estas franjas le dan más margen.
+  function edgeZones(el) {
+    if (!RS.android || typeof RS.android.peekSystemBars !== 'function') return;
+    el.classList.add('edge');
+    for (const side of ['bottom', 'left', 'right']) {
+      const z = h('div', { class: 'vw-edge ' + side, 'aria-hidden': 'true' });
+      let x0 = 0;
+      let y0 = 0;
+      let fired = false;
+      z.addEventListener('pointerdown', (e) => {
+        x0 = e.clientX;
+        y0 = e.clientY;
+        fired = false;
+        try {
+          z.setPointerCapture(e.pointerId);
+        } catch (err) {
+          /* sin captura */
+        }
+      });
+      z.addEventListener('pointermove', (e) => {
+        if (fired || !e.buttons) return;
+        const d = side === 'bottom' ? y0 - e.clientY : side === 'left' ? e.clientX - x0 : x0 - e.clientX;
+        if (d < 12) return;
+        fired = true;
+        try {
+          RS.android.peekSystemBars();
+        } catch (err) {
+          /* puente antiguo */
+        }
+      });
+      el.append(z);
+    }
   }
 
   function dislikeInViewer(page) {
@@ -1536,6 +1631,56 @@
     for (const ms of [120, 350, 700]) setTimeout(keepPlace, ms);
   });
 
+  // ================================================================ Posts retirados (derechos de autor)
+  //
+  // Por cada usuario o hashtag se anota qué páginas tienen posts retirados: { página: [retirados, total] }.
+  // Las páginas completas que solo tienen retirados no se vuelven a pedir; la más nueva sí, siempre,
+  // porque ahí aparecen los posts nuevos. Así, volver a una cuenta bloqueada cuesta una sola consulta.
+  const JUNK_SOURCES = 300;
+  const PAGE_FULL = 10;
+  function junkKnown(key) {
+    const r = S.junkScan[key];
+    return r ? Object.values(r.p).reduce((a, x) => a + x[0], 0) : 0;
+  }
+  // Cuántos posts se pueden ver de verdad: los que dice JoyReactor menos los retirados ya encontrados.
+  const validCount = (key, total) => Math.max(0, (total || 0) - junkKnown(key));
+  const tagJunkKey = (name) => 'tag:' + String(name).toLowerCase() + ':ALL';
+  const userJunkKey = (name) => 'user:' + String(name).toLowerCase();
+  function junkScan(key) {
+    const scan = { skipped: 0, changed: false };
+    scan.skip = (page, last) => {
+      const r = S.junkScan[key];
+      const x = r && r.p[page];
+      if (!x || page >= last || x[1] < PAGE_FULL || x[0] < x[1]) return false;
+      scan.skipped += x[0];
+      return true;
+    };
+    scan.note = (page, last, posts) => {
+      const junk = posts.filter(RS.isJunk).length;
+      let r = S.junkScan[key];
+      const old = r && r.p[page];
+      if (junk) {
+        if (old && old[0] === junk && old[1] === posts.length) return;
+        if (!r) r = S.junkScan[key] = { p: {}, at: 0 };
+        r.p[page] = [junk, posts.length];
+        r.at = Date.now();
+      } else if (old) {
+        delete r.p[page];
+        if (!Object.keys(r.p).length) delete S.junkScan[key];
+      } else return;
+      scan.changed = true;
+      const keys = Object.keys(S.junkScan);
+      if (keys.length > JUNK_SOURCES) {
+        keys
+          .sort((a, b) => S.junkScan[a].at - S.junkScan[b].at)
+          .slice(0, keys.length - JUNK_SOURCES)
+          .forEach((k) => delete S.junkScan[k]);
+      }
+      persist('junkScan', 3000);
+    };
+    return scan;
+  }
+
   // ================================================================ Feed (scroll infinito)
 
   // Pestañas del perfil de un usuario (la de Favoritos sale de tus me gusta, ver fetchChunk).
@@ -1574,6 +1719,12 @@
       this.emptyStreak = 0;
       this.endText = '';
       this.junk = 0; // posts retirados por derechos de autor que se saltaron
+      this.prelude = o.prelude || null; // Inicio: posts que van antes que todo (los de la gente que sigues)
+      this.preluded = false;
+      this.scan = null; // páginas con posts retirados ya revisadas (ver junkScan)
+      this.dry = false; // la última tanda no trajo nada que ver: la próxima pide varias páginas a la vez
+      this.total = 0; // cuántos posts dice JoyReactor que hay (para descontar los retirados)
+      this.hero = null; // cabecera del hashtag o del usuario, que muestra cuántos posts hay
       this.listeners = new Set();
 
       this.headEl = h('header', { class: 'top' + (o.back ? ' has-back' : '') });
@@ -1627,7 +1778,7 @@
         // Ya no hace falta el alto mínimo de setShow: si la pestaña está vacía, el aviso queda a la vista.
         this.list.style.minHeight = '';
         if (this.items.length) fill(s, h('span', { text: this.endText || 'No hay más posts.' }));
-        else if (this.junk) fill(s, emptyBox('ban', 'No hay nada para ver aquí', 'JoyReactor retiró estos posts por derechos de autor.'));
+        else if (this.junk || (this.scan && this.scan.skipped)) fill(s, emptyBox('ban', 'No hay nada para ver aquí', 'JoyReactor retiró estos posts por derechos de autor.'));
         else fill(s, this.renderEmpty ? this.renderEmpty(this) : emptyBox('hash', 'No hay posts aquí', this.endText));
       } else fill(s);
     }
@@ -1649,6 +1800,11 @@
       }
       this.loading = false;
       if (this.pendingAnchor && this.root.isConnected && this.scrollToPost(this.pendingAnchor)) this.pendingAnchor = null;
+      // La cabecera descuenta los posts retirados que se van encontrando.
+      if (this.hero && this.hero._redraw && this.scan && this.scan.changed) {
+        this.scan.changed = false;
+        this.hero._redraw();
+      }
       this.checkMore();
     }
 
@@ -1658,6 +1814,16 @@
     }
 
     async fetchChunk() {
+      // Inicio: primero los posts nuevos de la gente que sigues; después, el feed de siempre.
+      let pre = 0;
+      if (this.prelude && !this.preluded) {
+        this.preluded = true;
+        pre = this.add(await this.prelude().catch(() => []));
+      }
+      return pre + (await this.fetchMain());
+    }
+
+    async fetchMain() {
       if (this.kind === 'pager' && this.kinds.length) {
         if (!this.mediaSrc) this.mediaSrc = RS.createMediaSource(this.tag, this.type, S.settings.hideNsfw, this.kinds);
         const res = await this.mediaSrc.next();
@@ -1681,9 +1847,11 @@
       }
       if (this.kind === 'pager' && this.user) {
         // Las pestañas filtran la misma lista de posts; si una pestaña tiene pocos, se piden varias páginas a la vez.
-        if (!this.userSrc) this.userSrc = RS.createUserSource(this.user);
+        if (!this.scan) this.scan = junkScan('user:' + this.user.toLowerCase());
+        if (!this.userSrc) this.userSrc = RS.createUserSource(this.user, this.scan);
         const src = this.userSrc;
-        if (this.cursor >= src.posts.length && !src.done) await src.more(this.show === 'all' ? 1 : 4);
+        if (this.cursor >= src.posts.length && !src.done) await src.more(this.show === 'all' && !this.dry ? 1 : 4);
+        this.total = src.count;
         // De a 30 por vez: lo ya cargado de otra pestaña puede ser mucho.
         const out = [];
         while (this.cursor < src.posts.length && out.length < 30) {
@@ -1691,13 +1859,42 @@
           if (SHOW_TEST[this.show](post)) out.push({ post });
         }
         if (src.done && this.cursor >= src.posts.length) this.done = true;
-        return this.add(out);
+        const n = this.add(out);
+        this.dry = !n;
+        return n;
       }
       if (this.kind === 'pager') {
-        const res = await RS.fetchPage(this.tag, this.type, this.next);
-        this.next = this.next == null ? res.lastPage - 1 : this.next - 1;
+        // Las páginas que ya se sabe que solo tienen posts retirados no se vuelven a pedir. Si la
+        // tanda anterior no trajo nada que ver, se piden 4 páginas a la vez.
+        if (!this.scan) this.scan = junkScan('tag:' + String(this.tag || '').toLowerCase() + ':' + this.type);
+        const scan = this.scan;
+        if (this.next == null) {
+          const res = await RS.fetchPage(this.tag, this.type, null);
+          this.total = res.count;
+          this.last = res.lastPage;
+          scan.note(res.lastPage, res.lastPage, res.posts);
+          this.next = res.lastPage - 1;
+          if (this.next < 1) this.done = true;
+          const n = this.add(res.posts.map((post) => ({ post })));
+          this.dry = !n;
+          return n;
+        }
+        const list = [];
+        let next = this.next;
+        while (next >= 1 && list.length < (this.dry ? 4 : 1)) {
+          if (!scan.skip(next, this.last)) list.push(next);
+          next--;
+        }
+        const results = await Promise.all(list.map((pg) => RS.fetchPage(this.tag, this.type, pg)));
+        this.next = next;
         if (this.next < 1) this.done = true;
-        return this.add(res.posts.map((post) => ({ post })));
+        let n = 0;
+        results.forEach((res, i) => {
+          scan.note(list[i], this.last, res.posts);
+          n += this.add(res.posts.map((post) => ({ post })));
+        });
+        this.dry = !n;
+        return n;
       }
       if (this.kind === 'random') {
         // Con tag: solo ese hashtag, en orden aleatorio (calidad según el orden elegido arriba).
@@ -1824,11 +2021,20 @@
       this.emptyStreak = 0;
       this.endText = '';
       this.junk = 0;
+      this.dry = false;
       this.mediaSrc = null;
       fill(this.list);
       this.refresh();
       window.scrollTo(0, 0);
-      this.loadMore();
+      return this.loadMore();
+    }
+
+    // Deslizar hacia abajo arriba del todo: se vuelve a pedir todo desde el principio.
+    refreshAll() {
+      this.userSrc = null;
+      this.scan = null;
+      this.preluded = false;
+      return this.reset();
     }
 
     destroy() {
@@ -2175,6 +2381,7 @@
         kind: 'pager',
         tag: null,
         type,
+        prelude: followedFirst,
         head: (f) => [h('h1', { text: 'Inicio' }), bellLink(), viewToggle(f)],
         extra: () => [
           updateBanner(),
@@ -2190,9 +2397,44 @@
     showFeed(f);
   }
 
+  // Los posts nuevos (de la última semana y que no viste) de la gente que sigues van primero en
+  // Inicio, empezando por quien más me gusta te ha dado.
+  const FOLLOWED_DAYS = 7;
+  function likesByUser() {
+    const by = {};
+    for (const x of Object.values(S.likes)) {
+      const u = x.post && x.post.user;
+      if (u) by[userKey(u)] = (by[userKey(u)] || 0) + 1;
+    }
+    return by;
+  }
+  async function followedFirst() {
+    const list = Object.values(S.following);
+    if (!list.length) return [];
+    const recent = await RS.fetchUsersRecent(list.map((f) => f.name));
+    const likes = likesByUser();
+    const since = Date.now() - FOLLOWED_DAYS * 86400000;
+    const order = list.slice().sort((a, b) => (likes[userKey(b.name)] || 0) - (likes[userKey(a.name)] || 0) || (b.addedAt || 0) - (a.addedAt || 0));
+    const out = [];
+    for (const f of order) {
+      const posts = (recent[f.name] || []).filter((p) => p.time >= since && !S.seenSet.has(p.id)).sort((a, b) => b.time - a.time);
+      for (const post of posts) out.push({ post, label: 'De @' + post.user + ', a quien sigues', icon: 'user', color: 'var(--accent)' });
+    }
+    return out;
+  }
+  // Al seguir o dejar de seguir a alguien, Inicio se vuelve a armar la próxima vez que entres.
+  function invalidateHome() {
+    for (const [k, f] of feeds) {
+      if (!k.startsWith('home:') || (current && current.feed === f)) continue;
+      feeds.delete(k);
+      f.destroy();
+    }
+  }
+
   // ================================================================ Hashtag
 
-  function tagHero(name) {
+  /** totalOf (opcional): cuántos posts dice la lista del hashtag, para descontar los retirados. */
+  function tagHero(name, totalOf) {
     const el = h('section', { class: 'hero' });
     let info = null;
 
@@ -2202,7 +2444,7 @@
       const inMix = !!(fav && S.mix.sources[canon] && S.mix.sources[canon].on);
       const notify = !!(fav && fav.notify);
       const c = colorFor(canon);
-      const meta = info ? fmt(info.count) + ' posts' : 'Cargando…';
+      const meta = info ? fmt(validCount(tagJunkKey(name), (totalOf && totalOf()) || info.count)) + ' posts' : 'Cargando…';
 
       const favBtn = h('button', {
         class: 'hbtn' + (fav ? ' fav' : ''),
@@ -2296,6 +2538,8 @@
       );
     };
 
+    // El feed la vuelve a dibujar cuando encuentra posts retirados (cambia el número de posts).
+    el._redraw = () => info !== null && draw();
     draw();
     RS.fetchTagInfo(name)
       .then((i) => {
@@ -2395,8 +2639,9 @@
                 )
               )
             : null;
+          f.hero = tagHero(name, () => f.total);
           return [
-            tagHero(name),
+            f.hero,
             warn,
             note ? h('p', { class: 'countline', style: { padding: '12px 16px 0' }, text: note }) : null,
             chips
@@ -2434,7 +2679,8 @@
 
   // ================================================================ Usuario
 
-  function userHero(name) {
+  /** totalOf (opcional): cuántos posts dice la lista del usuario, para descontar los retirados. */
+  function userHero(name, totalOf) {
     const el = h('section', { class: 'hero' });
     let info;
     const draw = () => {
@@ -2459,15 +2705,27 @@
           draw();
         }
       }, icon(on ? 'usercheck' : 'userplus', 19), on ? 'Siguiendo' : 'Seguir');
+      const fol = S.following[userKey(shown)];
+      const notify = !!(fol && fol.notify);
+      const bellBtn = h('button', {
+        class: 'hbtn' + (notify ? ' bell' : ''),
+        'aria-pressed': String(notify),
+        onclick: () => {
+          setFollowNotify(shown, u ? u.id : 0, !notify);
+          draw();
+        }
+      }, icon(notify ? 'bell' : 'belloff', 18), notify ? 'Avisando' : 'Avisarme');
+      // JoyReactor cuenta también posts que ya no se pueden ver: se usa el número de su lista y se descuentan los retirados.
+      const total = u ? validCount(userJunkKey(name), (totalOf && totalOf()) || u.posts) : 0;
       fill(el,
         h('div', { class: 'hero-row' },
           userPic(name, u && u.id, 'hero-tile'),
           h('div', { class: 'grow' },
             h('h2', { text: shown }),
-            h('span', { class: 'meta', text: u ? fmt(u.posts) + ' posts · rating ' + Number(u.rating).toLocaleString('es', { maximumFractionDigits: 0 }) : 'Cargando…' })
+            h('span', { class: 'meta', text: u ? fmt(total) + ' posts · rating ' + Number(u.rating).toLocaleString('es', { maximumFractionDigits: 0 }) : 'Cargando…' })
           )
         ),
-        followBtn,
+        h('div', { class: 'hero-actions two' }, followBtn, bellBtn),
         r
           ? h('div', { class: 'rep-card' },
               h('div', { class: 'rep-top' }, starRow(r.stars), h('b', { text: decimal(r.stars) }), h('span', { text: 'de reputación' })),
@@ -2518,8 +2776,8 @@
     if (!lastNavWasBack) addUserVisit(name);
     const key = 'user:' + name.toLowerCase();
     const f = cached(key, () => {
-      const hero = userHero(name);
-      return new Feed({
+      const hero = userHero(name, () => feed.total);
+      const feed = new Feed({
         key,
         kind: 'pager',
         user: name,
@@ -2538,6 +2796,8 @@
               ? emptyBox('heart', 'Todavía no hay favoritos', 'Aquí salen los posts de ' + name + ' que te gustaron. JoyReactor no deja ver los favoritos de otras personas.')
               : emptyBox('user', 'Sin posts', name + ' todavía no publicó nada.')
       });
+      feed.hero = hero;
+      return feed;
     });
     showFeed(f);
   }
@@ -2547,10 +2807,32 @@
   const isFollowed = (n) => !!S.following[userKey(n)];
   function setFollow(name, userId, on) {
     const k = userKey(name);
-    if (on) S.following[k] = S.following[k] || { name, userId: userId || 0, addedAt: Date.now() };
+    if (on) S.following[k] = S.following[k] || { name, userId: userId || 0, addedAt: Date.now(), notify: false };
     else delete S.following[k];
     persist('following', 0);
+    invalidateHome();
   }
+  // Campanita de un usuario: aviso cuando publique (seguirlo es requisito).
+  function setFollowNotify(name, userId, on) {
+    if (on && !isFollowed(name)) setFollow(name, userId, true);
+    const f = S.following[userKey(name)];
+    if (!f) return;
+    f.notify = on;
+    persist('following', 0);
+    if (on) {
+      toast(
+        S.settings.notify ? 'Te avisaré cuando ' + f.name + ' publique algo' : 'Avisos desactivados en Ajustes',
+        S.settings.notify ? null : 'Ajustes',
+        () => nav('#/settings')
+      );
+    }
+  }
+  // Lo que vigilan los avisos: hashtags y usuarios con campanita.
+  const watchList = () =>
+    favList()
+      .filter((f) => f.notify)
+      .map((f) => RS.label(f.name, f.kind))
+      .concat(Object.values(S.following).filter((f) => f.notify).map((f) => '@' + f.name));
 
   const USER_HISTORY_MAX = 50;
   function addUserVisit(name) {
@@ -2673,7 +2955,7 @@
   }
 
   function userRow(u, onPick, onFollow) {
-    return personRow(u.name, u.id, 'Usuario · ' + fmt(u.posts) + ' posts', () => onPick && onPick({ type: 'user', name: u.name, pic: u.id }), followPill(u.name, u.id, onFollow));
+    return personRow(u.name, u.id, 'Usuario · ' + fmt(validCount(userJunkKey(u.name), u.posts)) + ' posts', () => onPick && onPick({ type: 'user', name: u.name, pic: u.id }), followPill(u.name, u.id, onFollow));
   }
 
   function resultRow(t, onFav, onPick) {
@@ -2703,7 +2985,7 @@
         tagPic(t.name, 'htile', '#', t.image ? RS.numId(t.id) : 0),
         h('span', { class: 'rtext' },
           h('span', { class: 'n' }, t.name, t.nsfw ? h('span', { class: 'nsfw', text: 'NSFW' }) : null),
-          h('span', { class: 'm', text: fmt(t.count) + ' posts' })
+          h('span', { class: 'm', text: fmt(validCount(tagJunkKey(t.name), t.count)) + ' posts' })
         )
       ),
       star
@@ -3048,6 +3330,15 @@
           : emptyBox('users', 'Todavía no sigues a nadie', 'Toca el nombre de quien publicó un post para ver su perfil y después toca Seguir.'),
         list.map((x) =>
           personRow(x.name, x.userId, 'Lo sigues desde ' + (ago(x.addedAt) || 'antes'), null,
+            h('button', {
+              class: 'ib bellb' + (x.notify ? ' on' : ''),
+              'aria-pressed': String(!!x.notify),
+              'aria-label': (x.notify ? 'Dejar de avisar cuando publique ' : 'Avisarme cuando publique ') + x.name,
+              onclick: () => {
+                setFollowNotify(x.name, x.userId, !x.notify);
+                draw();
+              }
+            }, icon(x.notify ? 'bell' : 'belloff', 21)),
             followPill(x.name, x.userId, (on) => {
               if (on) return;
               draw();
@@ -3082,7 +3373,7 @@
     const chip = (id, href, ic, label, n) =>
       h('button', { class: 'chip' + (active === id ? ' on' : ''), 'aria-pressed': String(active === id), onclick: () => active !== id && navReplace(href) }, icon(ic, 16), label + ' · ' + n);
     return h('nav', { class: 'chips', 'aria-label': 'Qué historial ver' },
-      chip('posts', '#/history', 'image', 'Posts', (S.history || []).length),
+      chip('posts', '#/history', 'image', 'Posts', (S.history || []).filter((x) => !S.likes[x.id]).length),
       chip('users', '#/visited', 'user', 'Usuarios', (S.userHistory || []).length)
     );
   }
@@ -3111,119 +3402,172 @@
     showFeed(f);
   }
 
-  // ================================================================ Tus 10 usuarios
+  // ================================================================ Resumen de la semana
+  //
+  // Mientras miras un post se cuenta el tiempo (ver focusPost y blurPost) y se suma a su autor y a sus
+  // hashtags. Al terminar la semana (lunes a domingo) se calcula una sola vez el resumen: los 10 usuarios
+  // y los 10 hashtags que más tiempo miraste.
 
-  // Los autores de los posts que más te gustaron. La lista se rehace cada lunes y se compara con la anterior.
   function weekStart(t) {
     const d = new Date(t);
     d.setHours(0, 0, 0, 0);
     d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
     return d.getTime();
   }
-  function countLikedUsers() {
-    const by = new Map();
-    for (const x of Object.values(S.likes)) {
-      const p = x.post;
-      if (!p || !p.user) continue;
-      const u = by.get(p.user) || { name: p.user, userId: p.userId || 0, n: 0, author: null, last: 0 };
-      u.n++;
-      if (p.author && x.at >= u.last) {
-        u.author = p.author;
-        u.last = x.at;
+
+  const TIME_MIN = 1500; // pasar de largo no cuenta
+  const TIME_MAX = 10 * 60000; // si el teléfono quedó quieto en un post, cuenta como mucho 10 min
+  function weekTime() {
+    const st = stats();
+    const key = String(weekStart(Date.now()));
+    if (st.time.key !== key) {
+      // Terminó la semana: se guarda para calcular el resumen una sola vez (ver finishWeek).
+      if (st.time.key && Object.keys(st.time.users).length + Object.keys(st.time.tags).length) {
+        S.weekly.pending = st.time;
+        persist('weekly', 0);
       }
-      by.set(p.user, u);
+      st.time = { key, users: {}, tags: {}, ids: {} };
+      saveStats();
+      finishWeek();
     }
-    return Array.from(by.values())
-      .sort((a, b) => b.n - a.n || a.name.localeCompare(b.name))
+    return st.time;
+  }
+  function creditTime(p, ms) {
+    if (!p || !(ms >= TIME_MIN)) return;
+    const t = weekTime();
+    ms = Math.min(ms, TIME_MAX);
+    if (p.user) {
+      t.users[p.user] = (t.users[p.user] || 0) + ms;
+      if (p.userId) t.ids[p.user] = p.userId;
+    }
+    for (const tag of p.tags) if (!RS.isFormatTag(tag)) t.tags[tag] = (t.tags[tag] || 0) + ms;
+    pruneCounts(t.tags, 800);
+    pruneCounts(t.users, 400);
+    saveStats();
+  }
+
+  // Los 10 usuarios y hashtags con más tiempo. Un hashtag se descarta si casi todo su tiempo viene de
+  // otro que tiene dentro (fandoms ← anime ← Touhou Project): así quedan los específicos.
+  async function summarize(t, lenient) {
+    const top = (obj, n) => Object.entries(obj || {}).sort((a, b) => b[1] - a[1]).slice(0, n);
+    const users = top(t.users, 10).map(([name, ms]) => ({ name, userId: (t.ids || {})[name] || 0, ms }));
+    const cand = top(t.tags, 30);
+    let paths = {};
+    try {
+      paths = await RS.fetchTagPaths(cand.map(([n]) => n));
+    } catch (e) {
+      if (!lenient) throw e; // sin conexión: el resumen final se calcula más tarde
+    }
+    const low = (x) => String(x).toLowerCase();
+    const isAbove = (a, b) => (paths[b] || []).some((x) => low(x) === low(a)); // ¿a contiene a b?
+    const tags = cand
+      .filter(([name, ms]) => !cand.some(([other, ms2]) => other !== name && isAbove(name, other) && ms2 >= ms * 0.6))
       .slice(0, 10)
-      .map((u) => ({ name: u.name, userId: u.userId, n: u.n, author: u.author }));
+      .map(([name, ms]) => ({ name, ms }));
+    return { users, tags };
   }
-  function topUsers() {
-    const week = String(weekStart(Date.now()));
-    const t = S.topUsers;
-    if (t.week !== week) {
-      t.prev = t.week ? t.list : [];
-      t.list = countLikedUsers();
-      t.week = week;
-      t.at = Date.now();
-      persist('topUsers');
-    } else if (t.list.length < 10) {
-      // Mientras no llegues a 10, la lista se completa sin esperar al lunes.
-      const now = countLikedUsers();
-      if (now.length > t.list.length) {
-        t.list = now;
-        persist('topUsers');
-      }
-    }
-    return t;
+  let finishing = null;
+  function finishWeek() {
+    if (finishing || !S.weekly.pending) return finishing;
+    const t = S.weekly.pending;
+    finishing = summarize(t, false)
+      .then((sum) => {
+        const w = S.weekly;
+        w.prev = w.week ? { users: w.users.map((u) => u.name), tags: w.tags.map((x) => x.name) } : null;
+        Object.assign(w, { week: t.key, at: Date.now(), users: sum.users, tags: sum.tags, pending: null });
+        persist('weekly', 0);
+      })
+      .catch(() => {})
+      .finally(() => (finishing = null));
+    return finishing;
   }
-  function moveOf(t, name, i) {
-    if (!t.prev.length) return null;
-    const j = t.prev.findIndex((x) => x.name === name);
+
+  function moveOf(prev, name, i) {
+    if (!prev) return null;
+    const j = prev.indexOf(name);
     if (j < 0) return h('span', { class: 'mv new', text: 'Nuevo' });
     if (j === i) return h('span', { class: 'mv same', text: '=' });
     return h('span', { class: 'mv ' + (j > i ? 'up' : 'down'), text: (j > i ? '▲ ' : '▼ ') + Math.abs(j - i) });
   }
-  // Hashtags de los posts que viste esta semana (sin los de formato, como #gif). Se reinicia cada lunes.
-  function weekTags() {
-    const st = stats();
-    const key = String(weekStart(Date.now()));
-    if (st.week.key !== key) {
-      st.week.prev = st.week.key ? st.week.tags : {};
-      st.week.prevKey = st.week.key;
-      st.week.tags = {};
-      st.week.key = key;
-      saveStats();
-    }
-    return st.week;
+  function rankUsers(list, prev) {
+    return h('ol', { class: 'tops-list' },
+      list.map((u, i) =>
+        h('li', null,
+          h('a', { href: '#/user/' + enc(u.name) },
+            h('span', { class: 'tl-rank', text: String(i + 1) }),
+            avatar({ user: u.name, userId: u.userId }),
+            h('span', { class: 'tl-main' },
+              h('span', { class: 'tl-name' }, h('span', { class: 'ellipsis', text: u.name }), repChip({ user: u.name })),
+              h('span', { class: 'tl-sub' }, icon('clock', 13), fmtDur(u.ms))
+            ),
+            moveOf(prev, u.name, i)
+          )
+        )
+      )
+    );
+  }
+  function rankTags(list, prev) {
+    return h('ol', { class: 'tops-list' },
+      list.map((x, i) =>
+        h('li', null,
+          h('a', { href: '#/tag/' + enc(x.name) },
+            h('span', { class: 'tl-rank', text: String(i + 1) }),
+            tagPic(x.name, 'avatar', '#'),
+            h('span', { class: 'tl-main' },
+              h('span', { class: 'tl-name' }, h('span', { class: 'ellipsis', text: '#' + x.name })),
+              h('span', { class: 'tl-sub' }, icon('clock', 13), fmtDur(x.ms))
+            ),
+            moveOf(prev, x.name, i)
+          )
+        )
+      )
+    );
   }
 
   function routeWeek() {
-    const t = topUsers();
-    const wk = weekTags();
-    const since = new Date(Number(t.week) || t.at);
-    const day = since.toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'long' });
-    const top10 = (obj) =>
-      Object.entries(obj)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 10)
-        .map(([label, value]) => ({ label, value }));
-    const postsFmt = (v) => fmt(v) + (v === 1 ? ' post' : ' posts');
-    const tagHref = (r) => '#/tag/' + enc(r.label);
+    weekTime();
+    finishWeek();
+    const w = S.weekly;
+    const day = (t) => new Date(t).toLocaleDateString('es', { day: 'numeric', month: 'long' });
+    const nextMonday = weekStart(Date.now()) + 7 * 86400000;
+    const label = (text) => h('h2', { class: 'sec section-label', style: { padding: '18px 16px 4px' }, text });
+    const live = h('div', {}, h('div', { class: 'status' }, icon('spinner', 20, 'spin'), 'Calculando…'));
+    const final = w.week
+      ? [
+          h('p', { class: 'countline', style: { padding: '14px 16px 0' }, text: 'Semana del ' + day(Number(w.week)) + ' al ' + day(Number(w.week) + 6 * 86400000) + '. Es el tiempo que miraste los posts de cada uno; se calcula una vez, al terminar la semana.' }),
+          label('Tus 10 usuarios'),
+          w.users.length ? rankUsers(w.users, w.prev && w.prev.users) : h('p', { class: 'countline', text: 'Esa semana no hubo datos.' }),
+          label('Tus 10 hashtags'),
+          w.tags.length ? rankTags(w.tags, w.prev && w.prev.tags) : h('p', { class: 'countline', text: 'Esa semana no hubo datos.' }),
+          w.prev ? h('p', { class: 'countline', text: '▲ y ▼: cuántos puestos subió o bajó respecto de la semana anterior.' }) : null
+        ]
+      : h('section', { class: 'notice' },
+          h('strong', { text: 'Tu primer resumen estará listo el lunes ' + day(nextMonday) }),
+          h('span', { text: 'Se calcula una vez, al terminar la semana, con el tiempo que miraste los posts de cada usuario y de cada hashtag. Abajo ves cómo va esta semana.' })
+        );
     mount([
       h('header', { class: 'top has-back' }, backBtn('/settings'), h('h1', { text: 'Resumen de la semana' })),
-      h('h2', { class: 'sec section-label', style: { padding: '18px 16px 4px' }, text: 'Tus 10 usuarios' }),
-      h('p', { class: 'countline', style: { padding: '4px 16px 6px' }, text: 'Los autores de los posts que más te gustaron. Se actualiza cada lunes (esta lista es del ' + day + ').' }),
-      t.list.length
-        ? h('ol', { class: 'tops-list' },
-            t.list.map((u, i) =>
-              h('li', null,
-                h('a', { href: '#/user/' + enc(u.name) },
-                  h('span', { class: 'tl-rank', text: String(i + 1) }),
-                  avatar({ user: u.name, userId: u.userId }),
-                  h('span', { class: 'tl-main' },
-                    h('span', { class: 'tl-name' }, h('span', { class: 'ellipsis', text: u.name }), repChip({ user: u.name, author: u.author })),
-                    h('span', { class: 'tl-sub' }, icon('heart', 13), u.n + (u.n === 1 ? ' post te gustó' : ' posts te gustaron'))
-                  ),
-                  moveOf(t, u.name, i)
-                )
-              )
-            )
-          )
-        : emptyBox('trophy', 'Todavía no hay lista', 'Dale ♥ a algunos posts y aquí aparecerán los usuarios que más te gustan.'),
-      t.prev.length ? h('p', { class: 'countline', text: '▲ y ▼: cuántos puestos subió o bajó respecto de la semana pasada.' }) : null,
-      h('div', { class: 'stats-page' },
-        rankList('Hashtags que más viste esta semana', top10(wk.tags), postsFmt, 'Todavía no hay datos de esta semana.', tagHref),
-        Object.keys(wk.prev || {}).length ? rankList('Tu semana anterior', top10(wk.prev), postsFmt, '', tagHref) : null
-      )
+      final,
+      h('h2', { class: 'sec', style: { padding: '26px 16px 2px', fontSize: '17px', fontWeight: '800' }, text: 'Esta semana, hasta ahora' }),
+      live
     ]);
+    summarize(stats().time, true)
+      .then((sum) => {
+        if (!live.isConnected) return;
+        fill(live,
+          sum.users.length || sum.tags.length
+            ? [label('Usuarios'), rankUsers(sum.users.slice(0, 5)), label('Hashtags'), rankTags(sum.tags.slice(0, 5))]
+            : h('p', { class: 'countline', style: { paddingTop: '8px' }, text: 'Todavía no hay datos de esta semana. Se cuentan los posts que miras más de un segundo y medio.' })
+        );
+      })
+      .catch(() => fill(live));
   }
 
   // ================================================================ Historial (vistos más de 10 s)
   // ================================================================ Historial (vistos más de 10 s)
 
   function routeHistory() {
-    const list = S.history || [];
+    const list = (S.history || []).filter((x) => !S.likes[x.id]);
     const max = Number(S.settings.historyMax) || 100;
     const sig = list.length + '|' + (list[0] ? list[0].at : 0);
     const items = list.map((x) => ({ post: x.post, label: 'Visto ' + ago(x.at), icon: 'clock', color: 'var(--text-2)' }));
@@ -3379,8 +3723,8 @@
 
   function routeNews() {
     if (S.news.unread) bg({ type: 'news-read' });
-    const watching = favList().filter((f) => f.notify);
-    const items = (S.news.items || []).map((x) => ({ post: x.post, label: 'Nuevo en ' + RS.label(x.tag, x.kind), icon: 'bell', color: 'var(--green)' }));
+    const watching = watchList();
+    const items = (S.news.items || []).map((x) => ({ post: x.post, label: (x.kind === 'user' ? 'Nuevo de ' : 'Nuevo en ') + RS.label(x.tag, x.kind), icon: 'bell', color: 'var(--green)' }));
 
     const checkBtn = h('button', { class: 'ib', 'aria-label': 'Comprobar ahora', title: 'Comprobar ahora' }, icon('refresh', 22));
     checkBtn.addEventListener('click', async () => {
@@ -3410,12 +3754,12 @@
       extra: () =>
         watching.length
           ? h('p', { class: 'countline', style: { paddingTop: '12px' } },
-              'Vigilando ' + watching.map((x) => RS.label(x.name, x.kind)).join(', ') + '. Última revisión: ' + (S.news.lastCheck ? ago(S.news.lastCheck) : 'todavía no') + '. ',
+              'Vigilando ' + watching.join(', ') + '. Última revisión: ' + (S.news.lastCheck ? ago(S.news.lastCheck) : 'todavía no') + '. ',
               h('a', { href: '#/settings', text: S.settings.notify ? 'Avisos cada ' + S.settings.interval + ' min' : 'Avisos desactivados' })
             )
           : h('div', { class: 'notice' },
               h('strong', { text: 'Elige de qué quieres enterarte' }),
-              h('span', { text: 'Toca la campanita en los hashtags que sigues y te avisaré cuando salgan posts nuevos.' }),
+              h('span', { text: 'Toca la campanita en los hashtags o usuarios que sigues y te avisaré cuando salgan posts nuevos.' }),
               h('div', { class: 'row-btns' }, h('a', { class: 'btn blue', href: '#/following' }, icon('bell', 18), 'Ir a Seguidos'))
             ),
       empty: () => emptyBox('bell', 'Sin novedades por ahora', watching.length ? 'Cuando salgan posts nuevos en lo que vigilas aparecerán aquí.' : null)
@@ -3513,7 +3857,7 @@
       }
       checkNow.disabled = false;
     });
-    const watching = favList().filter((f) => f.notify);
+    const watching = watchList();
 
     const navLine = (ic, title, text, href) =>
       h('a', { class: 'line navline', href },
@@ -3528,13 +3872,13 @@
       h('div', { class: 'setgroup' },
         h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Tu actividad' }),
         navLine('down', 'Posts ocultos', nHidden ? (nHidden === 1 ? '1 post' : fmt(nHidden) + ' posts') + ' con «no me gusta». Aquí puedes recuperarlos.' : 'Los posts con «no me gusta». Aquí puedes recuperarlos.', '#/hidden'),
-        navLine('trophy', 'Resumen de la semana', 'Tus 10 usuarios y los hashtags que más viste.', '#/week'),
+        navLine('trophy', 'Resumen de la semana', 'Los 10 usuarios y hashtags que más tiempo miraste.', '#/week'),
         navLine('chart', 'Tus estadísticas', 'Cuánto y cómo usas la app (solo en este teléfono).', '#/stats')
       ),
       h('div', { class: 'setgroup' },
         h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Avisos de posts nuevos' }),
         h('div', { class: 'line' },
-          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Avisarme con notificación' }), h('span', { class: 'smeta', text: watching.length ? 'Vigilando: ' + watching.map((x) => RS.label(x.name, x.kind)).join(', ') : 'Activa la campanita en los hashtags que sigues para elegir qué vigilar.' })),
+          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Avisarme con notificación' }), h('span', { class: 'smeta', text: watching.length ? 'Vigilando: ' + watching.join(', ') : 'Activa la campanita en los hashtags o usuarios que sigues para elegir qué vigilar.' })),
           switchBtn(st.notify, 'Avisarme con notificación', (on) => {
             st.notify = on;
             save();
@@ -3599,7 +3943,15 @@
           switchBtn(st.showDates, 'Mostrar la fecha de los posts', (on) => {
             st.showDates = on;
             save();
-            applyDates();
+            applyDisplay();
+          })
+        ),
+        h('div', { class: 'line' },
+          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Estrellas y rating en pantalla completa' }), h('span', { class: 'smeta', text: 'La reputación del autor (★) y el rating del post en JoyReactor (↑, la suma de los votos). Viene apagado.' })),
+          switchBtn(st.showScores, 'Estrellas y rating en pantalla completa', (on) => {
+            st.showScores = on;
+            save();
+            applyDisplay();
           })
         )
       ),
@@ -3641,7 +3993,8 @@
     st.users = st.users || {};
     st.kinds = st.kinds || { image: 0, gif: 0, video: 0 };
     st.sections = st.sections || {};
-    st.week = st.week || { key: '', tags: {}, prevKey: '', prev: {} }; // hashtags vistos esta semana (Resumen de la semana)
+    st.time = st.time || { key: '', users: {}, tags: {}, ids: {} }; // tiempo por usuario y hashtag de esta semana
+    delete st.week; // vistas por hashtag de la 1.1.0, reemplazadas por st.time
     for (const k of ['sessions', 'fsOpens', 'fsMs', 'searches']) st[k] = st[k] || 0;
     return st;
   }
@@ -3674,9 +4027,6 @@
     for (const t of p.tags) st.tags[t] = (st.tags[t] || 0) + 1;
     if (p.user) st.users[p.user] = (st.users[p.user] || 0) + 1;
     st.kinds[RS.isRealVideo(p) ? 'video' : RS.isGifPost(p) ? 'gif' : 'image']++;
-    const wk = weekTags();
-    for (const t of p.tags) if (!RS.isFormatTag(t)) wk.tags[t] = (wk.tags[t] || 0) + 1;
-    pruneCounts(wk.tags, 400);
     pruneCounts(st.tags, 600);
     pruneCounts(st.users, 300);
     saveStats();
@@ -3883,6 +4233,86 @@
     ]);
   }
 
+  // ================================================================ Deslizar hacia abajo para recargar
+  //
+  // Arriba del todo de una página, arrastrar el dedo hacia abajo y soltar la vuelve a cargar.
+  const PULL_MAX = 120;
+  const PULL_GO = 76;
+  // «Arriba del todo» con margen: en el feed de un post por pantalla, el primer enganche queda unos px más abajo.
+  const atTop = () => window.scrollY <= 40;
+  let ptrEl = null;
+  function drawPull(d, back) {
+    ptrEl.classList.toggle('back', !!back);
+    ptrEl.classList.toggle('ready', d >= PULL_GO);
+    ptrEl.style.transform = 'translate(-50%, ' + Math.round(d - 52) + 'px) rotate(' + Math.round(d * 3) + 'deg)';
+    ptrEl.style.opacity = String(Math.min(1, d / 40));
+  }
+  async function refreshPage() {
+    ptrEl.classList.add('busy');
+    drawPull(PULL_GO);
+    const started = Date.now();
+    try {
+      const f = current && current.feed;
+      if (f) await f.refreshAll();
+      else route();
+    } catch (e) {
+      /* el feed muestra su propio error */
+    }
+    await new Promise((r) => setTimeout(r, Math.max(0, 600 - (Date.now() - started))));
+    ptrEl.classList.remove('busy');
+    drawPull(0, true);
+  }
+  function initPullToRefresh() {
+    ptrEl = h('div', { id: 'ptr', 'aria-hidden': 'true' }, icon('refresh', 22));
+    document.body.append(ptrEl);
+    let x0 = 0;
+    let y0 = 0;
+    let dist = 0;
+    let state = ''; // '' | 'maybe' | 'pull'
+    document.addEventListener(
+      'touchstart',
+      (e) => {
+        state = '';
+        if (viewer || e.touches.length !== 1 || !atTop() || ptrEl.classList.contains('busy')) return;
+        if (e.target.closest('input, textarea, select')) return;
+        state = 'maybe';
+        dist = 0;
+        x0 = e.touches[0].clientX;
+        y0 = e.touches[0].clientY;
+      },
+      { passive: true }
+    );
+    document.addEventListener(
+      'touchmove',
+      (e) => {
+        if (!state) return;
+        const dx = e.touches[0].clientX - x0;
+        const dy = e.touches[0].clientY - y0;
+        if (state === 'maybe') {
+          // Solo cuenta un arrastre hacia abajo, más vertical que horizontal, con la página arriba del todo.
+          if (dy < -4 || Math.abs(dx) > 12 || !atTop()) {
+            state = '';
+            return;
+          }
+          if (dy < 10 || Math.abs(dx) > dy) return;
+          state = 'pull';
+        }
+        dist = Math.min(PULL_MAX, (dy - 10) * 0.55);
+        drawPull(Math.max(0, dist));
+      },
+      { passive: true }
+    );
+    const end = () => {
+      if (state === 'pull') {
+        if (dist >= PULL_GO) refreshPage();
+        else drawPull(0, true);
+      }
+      state = '';
+    };
+    document.addEventListener('touchend', end, { passive: true });
+    document.addEventListener('touchcancel', end, { passive: true });
+  }
+
   // ================================================================ Arranque
 
   let lastResumeCheck = 0;
@@ -3952,7 +4382,7 @@
     S.seenSet = new Set(S.seen);
     startUsageClock();
     refreshFilter();
-    applyDates();
+    applyDisplay();
     refreshFavIndex();
     if (RS.android) {
       loadNativeNews();
@@ -3960,11 +4390,13 @@
       lastResumeCheck = Date.now();
     }
     initTabs();
+    initPullToRefresh();
+    finishWeek();
     window.addEventListener('hashchange', route);
     route();
     // Si Android cerró Firefox y no se revisó en un buen rato, reviso al abrir la app.
     const stale = Date.now() - (S.news.lastCheck || 0) > (Number(S.settings.interval) || 15) * 60000;
-    if (stale && favList().some((f) => f.notify)) bg({ type: 'check-now' }).catch(() => {});
+    if (stale && watchList().length) bg({ type: 'check-now' }).catch(() => {});
     lookForUpdate(false);
   }
 

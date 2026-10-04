@@ -366,11 +366,12 @@
 
   /**
    * Todos los posts de un usuario, de lo más nuevo a lo más viejo, pedidos de a varias páginas
-   * en paralelo. Las pestañas del perfil (Todo, Imágenes, GIF y video) filtran esta misma lista,
-   * así que al cambiar de pestaña no se vuelve a pedir nada.
+   * en paralelo. Las pestañas del perfil filtran esta misma lista, así que al cambiar de pestaña
+   * no se vuelve a pedir nada. scan (opcional) = { skip(página, última), note(página, última, posts) }:
+   * salta las páginas que ya se sabe que solo tienen posts retirados (ver junkScan en app.js).
    */
-  RS.createUserSource = function (username) {
-    const src = { posts: [], count: 0, done: false, next: null, busy: null };
+  RS.createUserSource = function (username, scan) {
+    const src = { posts: [], count: 0, done: false, next: null, last: 0, busy: null };
     const ids = new Set();
     const add = (res) => {
       for (const p of res.posts) {
@@ -385,19 +386,80 @@
         if (src.next == null) {
           const res = await RS.fetchUserPage(username, null);
           src.count = res.count;
+          src.last = res.lastPage;
+          if (scan) scan.note(res.lastPage, res.lastPage, res.posts);
           add(res);
           src.next = res.lastPage - 1;
         } else {
           const list = [];
-          for (let i = 0; i < (pages || 1) && src.next - i >= 1; i++) list.push(src.next - i);
-          (await Promise.all(list.map((pg) => RS.fetchUserPage(username, pg)))).forEach(add);
-          src.next -= list.length;
+          let next = src.next;
+          while (next >= 1 && list.length < (pages || 1)) {
+            if (!(scan && scan.skip(next, src.last))) list.push(next);
+            next--;
+          }
+          const results = await Promise.all(list.map((pg) => RS.fetchUserPage(username, pg)));
+          results.forEach((res, i) => {
+            if (scan) scan.note(list[i], src.last, res.posts);
+            add(res);
+          });
+          src.next = next;
         }
         if (src.next < 1) src.done = true;
       })().finally(() => (src.busy = null));
       return src.busy;
     };
     return src;
+  };
+
+  /** Los posts más nuevos (las dos últimas páginas) de varios usuarios en dos consultas: { nombre: [posts] }. */
+  RS.fetchUsersRecent = async function (names) {
+    if (!names.length) return {};
+    const decl = names.map((n, i) => '$u' + i + ':String!').join(',');
+    const vars = {};
+    names.forEach((n, i) => (vars['u' + i] = n));
+    const counts = await gql(`query(${decl}){ ${names.map((n, i) => `u${i}: user(username:$u${i}){ postPager{ count } }`).join(' ')} }`, vars);
+    const decl2 = [];
+    const parts = [];
+    const vars2 = {};
+    names.forEach((n, i) => {
+      const u = counts['u' + i];
+      if (!u) return;
+      const last = Math.max(1, Math.ceil(u.postPager.count / PAGE_SIZE));
+      decl2.push('$u' + i + ':String!');
+      vars2['u' + i] = n;
+      parts.push(`u${i}: user(username:$u${i}){ postPager{ a: posts(page:${last}){ ${POST_FIELDS} } b: posts(page:${Math.max(1, last - 1)}){ ${POST_FIELDS} } } }`);
+    });
+    const d = parts.length ? await gql(`query(${decl2.join(',')}){ ${parts.join(' ')} }`, vars2) : {};
+    const out = {};
+    names.forEach((n, i) => {
+      const u = d['u' + i];
+      if (!u) return;
+      const ids = new Set();
+      out[n] = u.postPager.a.concat(u.postPager.b).filter((x) => !ids.has(x.id) && ids.add(x.id)).map(RS.normalizePost);
+    });
+    return out;
+  };
+
+  // Categorías de arriba de varios hashtags (para el Resumen de la semana): { nombre: [de arriba] }.
+  // El árbol casi no cambia, así que se guarda mientras la app esté abierta.
+  const pathCache = new Map();
+  RS.fetchTagPaths = async function (names) {
+    const missing = names.filter((n) => !pathCache.has(n.toLowerCase())).slice(0, 60);
+    if (missing.length) {
+      const decl = missing.map((n, i) => '$n' + i + ':String').join(',');
+      const vars = {};
+      missing.forEach((n, i) => (vars['n' + i] = n));
+      const F = 'name hierarchy { name }';
+      const d = await gql(`query(${decl}){ ${missing.map((n, i) => `t${i}: tag(name:$n${i}){ ${F} mainTag { ${F} } }`).join(' ')} }`, vars);
+      missing.forEach((n, i) => {
+        const t = d['t' + i] && (d['t' + i].mainTag || d['t' + i]);
+        const self = t ? t.name.toLowerCase() : n.toLowerCase();
+        pathCache.set(n.toLowerCase(), t ? (t.hierarchy || []).map((x) => x.name).filter((x) => x.toLowerCase() !== self) : []);
+      });
+    }
+    const out = {};
+    for (const n of names) out[n] = pathCache.get(n.toLowerCase()) || [];
+    return out;
   };
 
   const userCache = new Map();
@@ -459,15 +521,20 @@
     seen: [],
     // tagGif, tagVideo y tagOrder ya no se usan: desde la 1.0.9 un hashtag abre siempre con todos sus posts.
     // showDates: mostrar la fecha de cada post (desde la 1.1.0 viene apagado).
-    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100, showDates: false },
+    // showScores: estrellas del autor y rating del post en pantalla completa (desde la 1.2.0 viene apagado).
+    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100, showDates: false, showScores: false },
     news: { items: [], known: {}, unread: 0, lastCheck: 0 },
     dismissed: [],
     history: [], // posts vistos más de 10 s: [{ id, at, post }], el más nuevo primero
     searches: [], // búsquedas recientes: [{ type: 'tag' | 'user', name, pic?, at }]
     stats: {}, // métricas de uso (ver app.js)
-    topUsers: { week: '', at: 0, list: [], prev: [] }, // tus 10 usuarios de la semana y los de la anterior
-    following: {}, // usuarios que sigues: nombre en minúsculas -> { name, userId, addedAt }
+    topUsers: { week: '', at: 0, list: [], prev: [] }, // tus 10 usuarios por me gusta (hasta la 1.1.0; ya no se muestra)
+    following: {}, // usuarios que sigues: nombre en minúsculas -> { name, userId, addedAt, notify }
     userHistory: [], // perfiles que visitaste (máximo 50): [{ name, userId, at }], el más nuevo primero
+    // Páginas con posts retirados por derechos de autor, por usuario o hashtag (ver junkScan en app.js).
+    junkScan: {}, // 'user:nombre' | 'tag:nombre:TIPO' -> { p: { página: [retirados, total] }, at }
+    // Resumen de la semana ya calculado (los 10 usuarios y hashtags que más tiempo miraste).
+    weekly: { week: '', at: 0, users: [], tags: [], prev: null, pending: null },
     eraCache: {}
   };
   RS.KEYS = Object.keys(DEFAULTS);
@@ -511,19 +578,22 @@
     return (p) => !dis[p.id] && !RS.isJunk(p) && !(hideNsfw && (p.nsfw || p.unsafe)) && !p.tags.some((t) => ex.has(t.toLowerCase()));
   };
 
-  RS.label = (name, kind) => (!name ? 'todo JoyReactor' : kind === 'category' ? name.charAt(0).toUpperCase() + name.slice(1) : '#' + name);
+  RS.label = (name, kind) =>
+    !name ? 'todo JoyReactor' : kind === 'user' ? '@' + name : kind === 'category' ? name.charAt(0).toUpperCase() + name.slice(1) : '#' + name;
 
   // ---------------------------------------------------------------- Novedades (avisos)
 
   /**
-   * Revisa los favoritos con la campanita activada y guarda los posts que no había visto.
-   * La primera vez que revisa un favorito solo toma nota de lo que hay (no avisa de lo viejo).
+   * Revisa los hashtags y usuarios con la campanita activada y guarda los posts que no había visto.
+   * La primera vez que revisa uno solo toma nota de lo que hay (no avisa de lo viejo).
    */
   RS.checkNews = async function () {
-    const st = await RS.load(['favorites', 'settings', 'news', 'dislikes', 'mix']);
+    const st = await RS.load(['favorites', 'following', 'settings', 'news', 'dislikes', 'mix']);
     const news = st.news;
     const result = { total: 0, per: {} };
-    const targets = Object.values(st.favorites).filter((f) => f.notify);
+    const targets = Object.values(st.favorites)
+      .filter((f) => f.notify)
+      .concat(Object.values(st.following).filter((f) => f.notify).map((f) => ({ name: f.name, kind: 'user', user: true })));
     news.lastCheck = Date.now();
     if (!targets.length) {
       await RS.save({ news });
@@ -531,13 +601,13 @@
     }
     const type = st.settings.notifyType === 'GOOD' ? 'GOOD' : 'NEW';
 
-    const decl = targets.map((f, i) => '$n' + i + ':String').join(',');
+    // Los usuarios se piden con user(username) (variable obligatoria: String!) y sin tipo de lista.
+    const declOf = (f, i) => '$n' + i + (f.user ? ':String!' : ':String');
+    const pager = (f, i, inner) => (f.user ? `t${i}: user(username:$n${i}){ postPager{ ${inner} } }` : `t${i}: tag(name:$n${i}){ postPager(type:${type}){ ${inner} } }`);
+    const decl = targets.map(declOf).join(',');
     const vars = {};
     targets.forEach((f, i) => (vars['n' + i] = f.name));
-    const counts = await gql(
-      `query(${decl}){ ${targets.map((f, i) => `t${i}: tag(name:$n${i}){ postPager(type:${type}){ count } }`).join(' ')} }`,
-      vars
-    );
+    const counts = await gql(`query(${decl}){ ${targets.map((f, i) => pager(f, i, 'count')).join(' ')} }`, vars);
 
     const decl2 = [];
     const parts = [];
@@ -546,11 +616,9 @@
       const t = counts['t' + i];
       if (!t) return;
       const last = Math.max(1, Math.ceil(t.postPager.count / PAGE_SIZE));
-      decl2.push('$n' + i + ':String');
+      decl2.push(declOf(f, i));
       vars2['n' + i] = f.name;
-      parts.push(
-        `t${i}: tag(name:$n${i}){ postPager(type:${type}){ a: posts(page:${last}){ ${POST_FIELDS} } b: posts(page:${Math.max(1, last - 1)}){ ${POST_FIELDS} } } }`
-      );
+      parts.push(pager(f, i, `a: posts(page:${last}){ ${POST_FIELDS} } b: posts(page:${Math.max(1, last - 1)}){ ${POST_FIELDS} }`));
     });
     const pages = parts.length ? await gql(`query(${decl2.join(',')}){ ${parts.join(' ')} }`, vars2) : {};
 
@@ -561,8 +629,9 @@
       if (!t) return;
       const posts = t.postPager.a.concat(t.postPager.b).map(RS.normalizePost);
       const ids = posts.map((p) => p.id);
-      const known = news.known[f.name];
-      news.known[f.name] = Array.from(new Set(ids.concat(known || []))).slice(0, 80);
+      const kkey = f.user ? '@' + f.name : f.name;
+      const known = news.known[kkey];
+      news.known[kkey] = Array.from(new Set(ids.concat(known || []))).slice(0, 80);
       if (!known) return;
       const knownSet = new Set(known);
       const fresh = posts.filter((p) => !knownSet.has(p.id) && !have.has(p.id) && ok(p));

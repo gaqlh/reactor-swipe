@@ -50,8 +50,11 @@ object NewsChecker {
         }
     }
 
-    private fun label(name: String, kind: String): String =
-        if (kind == "category") name.replaceFirstChar { it.uppercase() } else "#$name"
+    private fun label(name: String, kind: String): String = when (kind) {
+        "user" -> "@$name"
+        "category" -> name.replaceFirstChar { it.uppercase() }
+        else -> "#$name"
+    }
 
     private fun time(s: String?): Long = try {
         OffsetDateTime.parse(s).toInstant().toEpochMilli()
@@ -82,9 +85,15 @@ object NewsChecker {
         val cfg = Store.config(ctx)
         val settings = cfg.optJSONObject("settings") ?: JSONObject()
         val favs = cfg.optJSONArray("favorites") ?: JSONArray()
+        val follows = cfg.optJSONArray("following") ?: JSONArray()
+        // Hashtags con campanita y usuarios seguidos con campanita (estos llevan "user": true).
         val targets = (0 until favs.length())
             .mapNotNull { favs.optJSONObject(it) }
-            .filter { it.optBoolean("notify") && it.optString("name").isNotEmpty() }
+            .filter { it.optBoolean("notify") && it.optString("name").isNotEmpty() } +
+            (0 until follows.length())
+                .mapNotNull { follows.optJSONObject(it) }
+                .filter { it.optBoolean("notify") && it.optString("name").isNotEmpty() }
+                .map { JSONObject().put("name", it.optString("name")).put("kind", "user").put("user", true) }
         val result = CheckResult()
 
         if (targets.isEmpty()) {
@@ -102,11 +111,17 @@ object NewsChecker {
         val excl = cfg.optJSONArray("exclude") ?: JSONArray()
         val exclude = (0 until excl.length()).map { excl.optString(it).lowercase() }.toHashSet()
 
-        // 1) Cuántos posts tiene cada favorito → cuál es su última página.
+        // Un usuario se pide con user(username), que exige String!, y su lista no tiene tipo.
+        fun declOf(f: JSONObject, i: Int) = if (f.optBoolean("user")) "\$n$i:String!" else "\$n$i:String"
+        fun pagerOf(f: JSONObject, i: Int, inner: String) =
+            if (f.optBoolean("user")) "t$i: user(username:\$n$i){ postPager{ $inner } }"
+            else "t$i: tag(name:\$n$i){ postPager(type:$type){ $inner } }"
+
+        // 1) Cuántos posts tiene cada uno → cuál es su última página.
         val vars = JSONObject()
         targets.forEachIndexed { i, f -> vars.put("n$i", f.getString("name")) }
-        val decl = targets.indices.joinToString(",") { "\$n$it:String" }
-        val parts = targets.indices.joinToString(" ") { "t$it: tag(name:\$n$it){ postPager(type:$type){ count } }" }
+        val decl = targets.indices.joinToString(",") { declOf(targets[it], it) }
+        val parts = targets.indices.joinToString(" ") { pagerOf(targets[it], it, "count") }
         val counts = gql("query($decl){ $parts }", vars)
 
         // 2) Las dos páginas más nuevas de cada uno.
@@ -117,8 +132,8 @@ object NewsChecker {
             val count = counts.optJSONObject("t$i")?.optJSONObject("postPager")?.optInt("count") ?: return@forEachIndexed
             val last = max(1, ceil(count / 10.0).toInt())
             vars2.put("n$i", f.getString("name"))
-            decl2.add("\$n$i:String")
-            parts2.append(" t$i: tag(name:\$n$i){ postPager(type:$type){ a: posts(page:$last){ $fields } b: posts(page:${max(1, last - 1)}){ $fields } } }")
+            decl2.add(declOf(f, i))
+            parts2.append(" ").append(pagerOf(f, i, "a: posts(page:$last){ $fields } b: posts(page:${max(1, last - 1)}){ $fields }"))
         }
         val pages = if (decl2.isEmpty()) JSONObject() else gql("query(${decl2.joinToString(",")}){$parts2 }", vars2)
 
@@ -144,11 +159,12 @@ object NewsChecker {
                     for (k in 0 until arr.length()) arr.optJSONObject(k)?.let { posts.add(it) }
                 }
                 val name = f.getString("name")
-                val prev = known.optJSONArray(name)
+                val knownKey = if (f.optBoolean("user")) "@$name" else name
+                val prev = known.optJSONArray(knownKey)
                 val merged = LinkedHashSet<String>()
                 posts.forEach { merged.add(it.optString("id")) }
                 if (prev != null) for (k in 0 until prev.length()) merged.add(prev.optString(k))
-                known.put(name, JSONArray(merged.take(80)))
+                known.put(knownKey, JSONArray(merged.take(80)))
                 if (prev == null) return@forEachIndexed
 
                 val prevSet = HashSet<String>()
@@ -165,7 +181,7 @@ object NewsChecker {
                     n++
                 }
                 if (n > 0) {
-                    result.per[name] = n
+                    result.per[knownKey] = n
                     result.total += n
                     labels.add(label(name, f.optString("kind")) + " ($n)")
                 }

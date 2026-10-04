@@ -903,13 +903,102 @@ a.navline > .i { color: var(--text-3); }
 /* Fecha de los posts: oculta salvo que se active en Ajustes */
 html:not(.show-dates) .when { display: none; }
 
-/* Pantalla completa con el teléfono horizontal: botones más chicos para que no tapen el video */
+/* ---------- 1.2.0 ---------- */
+/* Seguir a un usuario: Seguir y Avisarme lado a lado */
+.hero-actions.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+/* Los GIF no tienen botón de sonido (se esconde con hidden) */
+.sound[hidden], .vw-sound[hidden] { display: none; }
+
+/* Pantalla completa: botón de sonido amarillo, empieza apagado */
+.vw-sound .snd {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 3px rgba(245, 165, 36, 0.28), 0 6px 16px rgba(0, 0, 0, 0.45);
+  transition: box-shadow 0.2s;
+}
+.vw-sound .snd .i { filter: none; stroke-width: 2.2; }
+.vw-sound.on .snd { box-shadow: 0 0 0 6px rgba(245, 165, 36, 0.4), 0 6px 16px rgba(0, 0, 0, 0.45); }
+
+/* Un toque pausa: se ve el triángulo de reproducir en el centro */
+.vw-paused {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.8);
+  transition: opacity 0.15s, transform 0.15s;
+  pointer-events: none;
+}
+.vw-paused .i { fill: currentColor; stroke: none; margin-left: 5px; }
+.vw-slide.paused .vw-paused { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+
+/* Estrellas del autor y rating del post en pantalla completa: solo si se activan en Ajustes */
+html:not(.show-scores) .vw-score { display: none; }
+
+/* Franjas de los bordes (app de Android): deslizar desde ahí muestra los botones del sistema */
+.vw-edge { position: absolute; z-index: 5; touch-action: none; }
+.vw-edge.bottom { left: 0; right: 0; bottom: 0; height: 30px; }
+.vw-edge.left, .vw-edge.right { top: 0; bottom: 0; width: 24px; display: none; }
+.vw-edge.left { left: 0; }
+.vw-edge.right { right: 0; }
+.viewer.edge .vw-info { padding-bottom: max(34px, env(safe-area-inset-bottom)); }
+
+/* Pantalla completa con el teléfono horizontal: sin hashtags, botones más chicos y la barra del video
+   abajo del todo; la barra aparece al tocar la pantalla y se esconde sola. */
 @media (orientation: landscape) and (max-height: 560px) {
   .vw-side { bottom: max(8px, env(safe-area-inset-bottom)); right: max(4px, env(safe-area-inset-right)); gap: 0; }
   .vw-act { width: 46px; min-height: 44px; font-size: 11.5px; }
   .vw-act .i { width: 23px; height: 23px; }
-  .vw-info { gap: 4px; padding: 28px 60px max(8px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
-  .vw-tags { max-height: 2.2em; font-size: 13.5px; }
+  .vw-sound .snd { width: 38px; height: 38px; }
+  .vw-info { gap: 4px; padding: 24px 60px max(8px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
+  .vw-tags { display: none; }
   .vw-bar { padding-left: max(10px, env(safe-area-inset-left)); }
-  .vw-info .mini { height: 32px; }
+  .vw-info .mini { order: 9; height: 32px; opacity: 0; pointer-events: none; transition: opacity 0.25s; }
+  .viewer.ctl .vw-info .mini { opacity: 1; pointer-events: auto; }
+  .vw-info > .scrub { top: auto; bottom: 0; align-items: flex-end; }
+  .vw-edge.bottom { height: 18px; }
+  .vw-edge.left, .vw-edge.right { display: block; }
+  .viewer.edge .vw-info { padding-left: 32px; padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+  .viewer.edge .vw-side { right: 28px; }
+  .viewer.edge .vw-bar { padding-left: 30px; }
 }
+
+/* Deslizar hacia abajo para recargar */
+#ptr {
+  position: fixed;
+  left: 50%;
+  top: calc(var(--top-h) + env(safe-area-inset-top, 0px));
+  z-index: 19;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text-2);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: translate(-50%, -52px);
+  pointer-events: none;
+}
+#ptr.back { transition: transform 0.25s, opacity 0.25s; }
+#ptr.ready { color: var(--accent); }
+#ptr.busy .i { animation: spin 0.8s linear infinite; color: var(--accent); }
+/* Resumen de la semana: el reloj del tiempo no lleva el rosa del corazón */
+.tl-sub .i-clock { fill: none; stroke: var(--text-2); }

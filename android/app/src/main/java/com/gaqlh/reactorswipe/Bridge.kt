@@ -76,6 +76,11 @@ class Bridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun peekSystemBars() {
+        activity.runOnUiThread { activity.peekSystemBars() }
+    }
+
+    @JavascriptInterface
     fun checkNow(cb: String) = async(cb) { NewsChecker.run(ctx, notify = false).toJson() }
 
     @JavascriptInterface

@@ -42,7 +42,9 @@ object Scheduler {
         val cfg = Store.config(ctx)
         val settings = cfg.optJSONObject("settings") ?: JSONObject()
         val favs = cfg.optJSONArray("favorites") ?: JSONArray()
-        val watching = (0 until favs.length()).any { favs.optJSONObject(it)?.optBoolean("notify") == true }
+        val follows = cfg.optJSONArray("following") ?: JSONArray()
+        val watching = (0 until favs.length()).any { favs.optJSONObject(it)?.optBoolean("notify") == true } ||
+            (0 until follows.length()).any { follows.optJSONObject(it)?.optBoolean("notify") == true }
         val enabled = settings.optBoolean("notify", true) && watching
         val minutes = settings.optInt("interval", 15).coerceIn(15, 240).toLong()
         val online = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
