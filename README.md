@@ -4,17 +4,17 @@ App de **Android** que convierte JoyReactor en un feed tipo Instagram:
 
 - **Un post por pantalla**: deslizas hacia arriba y pasa al siguiente. Se acabó el botón «Siguiente página».
 - **Carrusel**: los posts con varias imágenes o videos se deslizan hacia los lados.
-- **Doble toque = pantalla completa** (sin barras); doble toque o «atrás» para salir. En pantalla completa, **un toque pausa** el video o GIF y otro lo sigue; el sonido empieza apagado y se prende con el **botón amarillo** (solo en videos). Deslizar desde el borde de abajo muestra los botones de Android.
+- **Doble toque = pantalla completa** (sin barras); doble toque o «atrás» para salir. En pantalla completa, **un toque pausa** el video o GIF y otro lo sigue; **mantener el dedo y arrastrarlo a los lados** lo adelanta o atrasa (sensibilidad en Ajustes); el sonido empieza apagado y se prende con el **botón amarillo** (solo en videos). La barra del video es una línea mínima, como la de los GIF. Subir el dedo desde la parte de abajo muestra los botones de Android (solo un arrastre largo pasa de post). En horizontal todo se esconde y tocar abajo muestra los controles.
 - **Deslizar hacia abajo** desde arriba del todo recarga la página.
 - **Miniaturas** con un botón. Cada miniatura tiene su ♥ y su 👎, y al tocarla se abre ese post.
 - **Abajo, cinco pestañas**: Inicio, Buscar, Aleatorio, **Seguidos** (hashtags y categorías / usuarios que sigues) y **Favoritos** (tus me gusta y el historial). Ajustes se abre con ⚙ desde Favoritos.
-- **Hashtags tocables**. Los que sigues salen como «historias» arriba del Inicio. Mantener presionado un hashtag 3 segundos lo sigue, también en pantalla completa.
+- **Hashtags tocables**, solo los más específicos de cada cadena (con su carpeta en chiquito) y «+N» para ver todos. Los que sigues salen como «historias» arriba del Inicio. Mantener presionado un hashtag 3 segundos lo sigue, también en pantalla completa.
 - **Categorías**: en JoyReactor los hashtags forman un árbol, como carpetas (fandoms › anime › Touhou Project). La página de cada hashtag muestra dónde está («Está dentro de») y qué tiene dentro («Subcategorías»).
 - **Página de cada hashtag** que abre siempre con **todos** sus posts, lo más reciente primero, o con **Barajar** en orden aleatorio. Los filtros **GIF** y **Video** de la cabecera se activan solo si los tocas.
 - **Perfiles de usuario**: al tocar el autor ves todos sus posts en **miniaturas**, como en Instagram, con las pestañas **Todos**, **Videos y GIF** y **Favoritos** (los posts suyos que te gustaron: JoyReactor no deja ver los favoritos de otras personas), los botones **Seguir** y **Avisarme** (notificación cuando publique) y su **reputación** de 1 a 5 estrellas (calidad, trayectoria y actividad). Las estrellas también salen junto al nombre en cada post.
 - **Inicio** muestra primero los posts nuevos de la gente que sigues, empezando por quien más me gusta te ha dado.
 - **Historial de usuarios**: los últimos 50 perfiles que visitaste (Favoritos › Historial › Usuarios).
-- **Resumen de la semana** (en Ajustes): los 10 usuarios y los 10 hashtags que más **tiempo** miraste. Se calcula una vez al terminar la semana; los hashtags generales (como #anime) se descartan si casi todo su tiempo viene de uno más específico.
+- **Resumen de la semana** (en Ajustes): los 10 usuarios y los 10 hashtags que más **tiempo** miraste, contando solo el hashtag más específico de cada post. Se calcula una vez al terminar la semana.
 - **Buscar** hashtags y usuarios, con las **búsquedas recientes** como en Instagram.
 - **GIF** con una barra casi transparente que solo aparece al tocar la pantalla y se arrastra para adelantar o retroceder. Los **videos** tienen pausa, barra y tiempo. Los dos tienen botón para repetir, y la etiqueta dice VIDEO cuando el post tiene sonido.
 - **Aleatorio a tu medida**: eliges qué entra y cuánto pesa cada cosa. También hay calidad mínima, época, «no repetir lo ya visto» y hashtags excluidos.

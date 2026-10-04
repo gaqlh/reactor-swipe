@@ -950,30 +950,31 @@ html:not(.show-dates) .when { display: none; }
 /* Estrellas del autor y rating del post en pantalla completa: solo si se activan en Ajustes */
 html:not(.show-scores) .vw-score { display: none; }
 
-/* Franjas de los bordes (app de Android): deslizar desde ahí muestra los botones del sistema */
-.vw-edge { position: absolute; z-index: 5; touch-action: none; }
-.vw-edge.bottom { left: 0; right: 0; bottom: 0; height: 30px; }
-.vw-edge.left, .vw-edge.right { top: 0; bottom: 0; width: 24px; display: none; }
+/* Franjas de los lados (app de Android, en horizontal): deslizar desde ahí muestra los botones del sistema.
+   Abajo no hay franja: lo resuelven los gestos de la pantalla completa (viewerGestures). */
+.vw-edge { position: absolute; z-index: 5; touch-action: none; top: 0; bottom: 0; width: 24px; display: none; }
 .vw-edge.left { left: 0; }
 .vw-edge.right { right: 0; }
-.viewer.edge .vw-info { padding-bottom: max(34px, env(safe-area-inset-bottom)); }
 
-/* Pantalla completa con el teléfono horizontal: sin hashtags, botones más chicos y la barra del video
-   abajo del todo; la barra aparece al tocar la pantalla y se esconde sola. */
+/* Pantalla completa con el teléfono horizontal: sin hashtags ni nombre del autor, y todo escondido hasta
+   que se toca la parte de abajo de la pantalla (entonces aparecen la barra y los botones un momento). */
 @media (orientation: landscape) and (max-height: 560px) {
   .vw-side { bottom: max(8px, env(safe-area-inset-bottom)); right: max(4px, env(safe-area-inset-right)); gap: 0; }
   .vw-act { width: 46px; min-height: 44px; font-size: 11.5px; }
   .vw-act .i { width: 23px; height: 23px; }
   .vw-sound .snd { width: 38px; height: 38px; }
   .vw-info { gap: 4px; padding: 24px 60px max(8px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
-  .vw-tags { display: none; }
-  .vw-bar { padding-left: max(10px, env(safe-area-inset-left)); }
-  .vw-info .mini { order: 9; height: 32px; opacity: 0; pointer-events: none; transition: opacity 0.25s; }
-  .viewer.ctl .vw-info .mini { opacity: 1; pointer-events: auto; }
+  .vw-tags, .vw-who, .vw-src { display: none; }
+  .vw-side, .vw-bar, .vw-count, .dots.vw-dots, .vw-info > .scrub { transition: opacity 0.25s; }
+  .viewer:not(.ctl) .vw-side,
+  .viewer:not(.ctl) .vw-bar,
+  .viewer:not(.ctl) .vw-count,
+  .viewer:not(.ctl) .dots.vw-dots,
+  .viewer:not(.ctl) .vw-info > .scrub { opacity: 0 !important; pointer-events: none !important; }
+  .viewer.ctl .vw-info > .scrub { opacity: 1; pointer-events: auto; }
   .vw-info > .scrub { top: auto; bottom: 0; align-items: flex-end; }
-  .vw-edge.bottom { height: 18px; }
   .vw-edge.left, .vw-edge.right { display: block; }
-  .viewer.edge .vw-info { padding-left: 32px; padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+  .viewer.edge .vw-info { padding-left: 32px; }
   .viewer.edge .vw-side { right: 28px; }
   .viewer.edge .vw-bar { padding-left: 30px; }
 }
@@ -1002,3 +1003,50 @@ html:not(.show-scores) .vw-score { display: none; }
 #ptr.busy .i { animation: spin 0.8s linear infinite; color: var(--accent); }
 /* Resumen de la semana: el reloj del tiempo no lleva el rosa del corazón */
 .tl-sub .i-clock { fill: none; stroke: var(--text-2); }
+
+/* ---------- 1.3.0 ---------- */
+/* Hashtags: solo lo más específico, con su carpeta en chiquito, y «+N» para ver todos */
+.htag .tparent { margin-left: 4px; font-size: 0.8em; font-weight: 500; color: var(--text-3); }
+.vw-tags .htag .tparent { color: rgba(255, 255, 255, 0.6); }
+button.htag.more { padding: 0 8px; border-radius: 9px; background: var(--surface-2); color: var(--text-2); line-height: 1.5; vertical-align: baseline; }
+.vw-tags button.htag.more { background: rgba(36, 33, 30, 0.75); color: #fff; }
+
+/* Barra mínima de los videos en pantalla completa: el tiempo en chiquito sobre la línea */
+.scrub-time { display: none; position: absolute; right: 10px; bottom: 9px; font: 500 10.5px/1 ui-monospace, Menlo, monospace; color: rgba(255, 255, 255, 0.75); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); pointer-events: none; }
+.scrub.timed .scrub-time { display: block; }
+.vw-info > .scrub .scrub-time { bottom: 16px; }
+
+/* Arrastrar para adelantar: cuánto se movió y en qué momento va */
+.vw-seek {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  z-index: 6;
+  min-width: 150px;
+  padding: 10px 14px 12px;
+  border-radius: 14px;
+  background: rgba(15, 14, 13, 0.72);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.vw-seek.show { opacity: 1; }
+.vw-seek b { font: 800 22px/1 var(--display, system-ui); font-variant-numeric: tabular-nums; }
+.vw-seek span { font: 500 12px/1 ui-monospace, Menlo, monospace; color: rgba(255, 255, 255, 0.8); }
+.vw-seek i { display: block; width: 100%; height: 3px; margin-top: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.2); overflow: hidden; }
+.vw-seek u { display: block; height: 100%; background: var(--accent); }
+.viewer { -webkit-user-select: none; user-select: none; }
+.viewer video { -webkit-touch-callout: none; }
+
+/* Perfil: la reputación plegada, se abre al tocarla */
+.rep-card button.rep-top { width: 100%; padding: 0; border: 0; background: none; color: inherit; text-align: left; }
+.rep-card.closed { padding-block: 10px; }
+.rep-chev { color: var(--text-3); transition: transform 0.2s; }
+.rep-card:not(.closed) .rep-chev { transform: rotate(180deg); }
+.rep-top .grow { font-size: 13px; color: var(--text-2); }

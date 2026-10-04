@@ -445,11 +445,13 @@
     if (on) S.likes[p.id] = S.likes[p.id] || { at: Date.now(), post: p };
     else delete S.likes[p.id];
     persist('likes');
-    // Lo que ya está en Favoritos no se repite en el Historial.
+    // Lo que ya está en Favoritos no se repite en el Historial (y si lo estás mirando, sale en el acto).
     if (on && S.history.some((x) => x.id === p.id)) {
       S.history = S.history.filter((x) => x.id !== p.id);
       persist('history', 1500);
     }
+    const hf = current && current.feed;
+    if (on && hf && hf.source === 'history') hf.drop(p.id);
     document.querySelectorAll('[data-id="' + CSS.escape(p.id) + '"] .like').forEach((b) => {
       b.classList.toggle('on', on);
       b.setAttribute('aria-pressed', String(on));
@@ -749,12 +751,14 @@
     return { el, bind };
   }
 
-  // Barra de los GIF: una línea casi transparente a todo lo ancho, sin botones ni tiempo.
-  // Solo aparece mientras tocas la pantalla (y un momento después); se arrastra para ir a otro momento.
+  // Barra de los GIF (y, en pantalla completa, también de los videos): una línea casi transparente a
+  // todo lo ancho. Solo aparece mientras tocas la pantalla (y un momento después); se arrastra para ir
+  // a otro momento. Con un video muestra además el tiempo, en chiquito.
   const SCRUB_HIDE_MS = 1800;
   function scrubBar(initial) {
     const bar = h('span', { class: 'scrub-fill' });
-    const el = h('div', { class: 'scrub', role: 'slider', 'aria-label': 'Posición del GIF', 'aria-valuemin': '0', 'aria-valuemax': '100' }, h('span', { class: 'scrub-track' }, bar));
+    const time = h('span', { class: 'scrub-time' });
+    const el = h('div', { class: 'scrub', role: 'slider', 'aria-label': 'Posición del video', 'aria-valuemin': '0', 'aria-valuemax': '100' }, time, h('span', { class: 'scrub-track' }, bar));
     let v = null;
     let raf = 0;
     let hideTimer = null;
@@ -765,6 +769,7 @@
       const r = d ? Math.min(1, v.currentTime / d) : 0;
       bar.style.transform = 'scaleX(' + r + ')';
       el.setAttribute('aria-valuenow', String(Math.round(r * 100)));
+      if (el.classList.contains('timed') && d) time.textContent = fmtTime(v.currentTime) + ' / ' + fmtTime(d);
     };
     const loop = () => {
       paint();
@@ -823,9 +828,10 @@
       zone.addEventListener('pointerup', hideSoon, { passive: true });
       zone.addEventListener('pointercancel', hideSoon, { passive: true });
     };
-    const bind = (video) => {
+    const bind = (video, timed) => {
       v = video || null;
       el.hidden = !v;
+      el.classList.toggle('timed', !!(v && timed));
       if (!v) el.classList.remove('show');
       paint();
     };
@@ -914,14 +920,104 @@
     return el;
   }
 
-  // Botón de hashtag: un toque lo abre; mantenerlo presionado 3 s lo sigue (Seguidos).
-  // (Es un botón y no un enlace: Android cancela la pulsación larga sobre los enlaces.)
-  function tagButton(t, onOpen) {
-    return holdToFavorite(h('button', { type: 'button', class: 'htag' + (favOf(t) ? ' fav' : ''), draggable: 'false', onclick: onOpen }, '#' + t), t);
+  // ================================================================ Hashtags más específicos
+  //
+  // Cada post lleva toda la cadena de carpetas (fandoms › anime › Touhou Project › Cirno) y además
+  // etiquetas de formato (#gif, #video). Se muestra solo lo más específico de cada cadena, con su
+  // carpeta al lado en chiquito, y las estadísticas y el resumen cuentan solo eso. El árbol se pide una
+  // vez por hashtag (de a 60 por consulta) y se guarda en el teléfono: S.tagTree.
+  const TREE_MAX = 8000;
+  const TAGS_SHOWN = 4;
+  const tkey = (t) => String(t).toLowerCase();
+  const knownTree = (t) => S.tagTree[tkey(t)];
+  const treeWaiting = new Set();
+  const treeRows = new Set(); // filas de hashtags que se vuelven a dibujar cuando llega el árbol
+  let treeTimer = null;
+  function needTree(tags) {
+    for (const t of tags) if (!RS.isFormatTag(t) && !knownTree(t)) treeWaiting.add(t);
+    if (treeWaiting.size && !treeTimer) treeTimer = setTimeout(loadTree, 120);
+  }
+  async function loadTree() {
+    treeTimer = null;
+    const names = Array.from(treeWaiting).slice(0, 60);
+    names.forEach((n) => treeWaiting.delete(n));
+    if (!names.length) return;
+    try {
+      const paths = await RS.fetchTagPaths(names);
+      const now = Date.now();
+      for (const n of names) S.tagTree[tkey(n)] = { p: paths[n] || [], at: now };
+      const keys = Object.keys(S.tagTree);
+      if (keys.length > TREE_MAX) {
+        keys
+          .sort((a, b) => S.tagTree[a].at - S.tagTree[b].at)
+          .slice(0, keys.length - TREE_MAX)
+          .forEach((k) => delete S.tagTree[k]);
+      }
+      persist('tagTree', 3000);
+      for (const row of Array.from(treeRows)) if (row._draw()) treeRows.delete(row);
+    } catch (e) {
+      /* sin conexión: mientras tanto se ven todos los hashtags */
+    }
+    if (treeWaiting.size && !treeTimer) treeTimer = setTimeout(loadTree, 120);
+  }
+  /** Los hashtags más específicos de un post (sin los de formato), cada uno con su carpeta de arriba. */
+  function leafTags(tags) {
+    const list = tags.filter((t) => !RS.isFormatTag(t));
+    const inPost = new Set(list.map(tkey));
+    const above = new Set();
+    for (const t of list) {
+      const k = knownTree(t);
+      if (k) for (const a of k.p) if (inPost.has(tkey(a))) above.add(tkey(a));
+    }
+    return list
+      .filter((t) => !above.has(tkey(t)))
+      .map((t) => {
+        const k = knownTree(t);
+        const parent = k && k.p[0] && !RS.isFormatTag(k.p[0]) ? k.p[0] : null;
+        return { name: t, parent };
+      });
   }
 
-  function tagsRow(p) {
-    return h('div', { class: 'tags' }, p.tags.map((t) => tagButton(t, () => nav('#/tag/' + enc(t)))));
+  // Botón de hashtag: un toque lo abre; mantenerlo presionado 3 s lo sigue (Seguidos).
+  // (Es un botón y no un enlace: Android cancela la pulsación larga sobre los enlaces.)
+  function tagButton(t, onOpen, parent) {
+    return holdToFavorite(
+      h('button', { type: 'button', class: 'htag' + (favOf(t) ? ' fav' : ''), 'data-tag': t, draggable: 'false', onclick: onOpen }, '#' + t, parent ? h('small', { class: 'tparent', text: parent }) : null),
+      t
+    );
+  }
+
+  // Fila de hashtags de un post: lo más específico (hasta 4) y «+N» para ver todos.
+  function tagsRow(p, onOpen, cls) {
+    const open = onOpen || ((t) => nav('#/tag/' + enc(t)));
+    const row = h('div', { class: cls || 'tags' });
+    let all = false;
+    row._draw = () => {
+      const complete = !p.tags.some((t) => !RS.isFormatTag(t) && !knownTree(t));
+      const shown = all ? p.tags.map((t) => ({ name: t, parent: null })) : leafTags(p.tags).slice(0, TAGS_SHOWN);
+      const rest = p.tags.length - shown.length;
+      fill(row,
+        shown.map((x) => tagButton(x.name, () => open(x.name), x.parent)),
+        !all && rest > 0
+          ? h('button', {
+              type: 'button',
+              class: 'htag more',
+              'aria-label': 'Ver los ' + p.tags.length + ' hashtags',
+              onclick: (e) => {
+                e.stopPropagation();
+                all = true;
+                row._draw();
+              }
+            }, '+' + rest)
+          : null
+      );
+      return complete;
+    };
+    if (!row._draw()) {
+      needTree(p.tags);
+      treeRows.add(row);
+    }
+    return row;
   }
 
   // Mantener presionado un hashtag 3 segundos lo sigue (se ve una línea que se llena).
@@ -952,8 +1048,8 @@
         const fav = await addFavorite(tag);
         if (!fav) return;
         toast(savedText(tag, fav));
-        document.querySelectorAll('.htag').forEach((a) => {
-          if (favOf(a.textContent.slice(1))) a.classList.add('fav');
+        document.querySelectorAll('.htag[data-tag]').forEach((a) => {
+          if (favOf(a.dataset.tag)) a.classList.add('fav');
         });
       }, HOLD_MS);
     });
@@ -1139,9 +1235,11 @@
       scroller,
       h('div', { class: 'vw-bar' }, h('button', { class: 'vw-btn', 'aria-label': 'Salir de pantalla completa', onclick: () => exitViewer() }, icon('x', 24)))
     );
+    v.seekEl = h('div', { class: 'vw-seek', 'aria-hidden': 'true' });
+    v.el.append(v.seekEl);
     edgeZones(v.el);
-    v.el.addEventListener('pointerdown', showControls, true);
-    v.el.addEventListener('input', showControls, true);
+    viewerGestures(v);
+    v.el.addEventListener('pointerdown', viewerPointerDown, true);
     // Solo se cargan los posts cercanos; los lejanos se vacían para no gastar memoria.
     v.near = new IntersectionObserver(
       (es) => es.forEach((e) => (e.isIntersecting ? fillPage(e.target, 0) : emptyPage(e.target))),
@@ -1225,11 +1323,17 @@
           m.real = true;
           vid._real = true;
           if (sndBtn) sndBtn.hidden = false;
+          if (page._scrub && viewer && viewer.current === page) page._scrub.bind(vid, true);
         });
         videos.push(vid);
         s.append(vid, h('span', { class: 'vw-paused', 'aria-hidden': 'true' }, icon('play', 40)));
-        // Un toque pausa (o sigue); dos toques salen de la pantalla completa.
-        onTaps(s, () => exitViewer(), () => togglePause(vid, s));
+        // Un toque pausa (o sigue); dos toques salen de la pantalla completa. En horizontal, tocar la
+        // parte de abajo solo muestra los controles. Justo después de arrastrar para adelantar, no pausa.
+        onTaps(s, () => exitViewer(), () => {
+          if (Date.now() - (vid._seekedAt || 0) < 700) return;
+          if (isLandscape() && lastDownY > window.innerHeight * (1 - LAND_CTL_ZONE)) return;
+          togglePause(vid, s);
+        });
       } else {
         s.append(embedLink(m, p));
       }
@@ -1264,14 +1368,12 @@
     );
     // Solo los videos tienen sonido: con GIF el botón no aparece.
     if (sndBtn) sndBtn.hidden = !videos.some((x) => x._real);
-    const mini = videos.some((x) => x._real) ? miniPlayer(null) : null;
-    const scrub = videos.some((x) => !x._real) ? scrubBar(null) : null;
+    // Barra mínima, como la de los GIF, también para los videos (con el tiempo en chiquito).
+    const scrub = videos.length ? scrubBar(null) : null;
     if (scrub) scrub.watch(media);
-    page._mini = mini;
     page._scrub = scrub;
     const info = h('div', { class: 'vw-info' },
       scrub ? scrub.el : null,
-      mini ? mini.el : null,
       page._dots || null,
       it.label ? h('span', { class: 'vw-src', text: it.label }) : null,
       h('div', { class: 'vw-who' },
@@ -1290,11 +1392,7 @@
         h('span', { class: 'when', text: ' · ' + ago(p.time) }),
         h('span', { class: 'vw-score' }, ' · ', h('span', { class: 'vw-rating' }, icon('up', 13), String(p.rating).replace('.', ',')))
       ),
-      p.tags.length
-        ? h('div', { class: 'vw-tags' },
-            p.tags.map((t) => tagButton(t, () => closeViewerThen(() => nav('#/tag/' + enc(t)))))
-          )
-        : null
+      p.tags.length ? tagsRow(p, (t) => closeViewerThen(() => nav('#/tag/' + enc(t))), 'vw-tags') : null
     );
 
     fill(page, media, side, info);
@@ -1359,11 +1457,7 @@
           shown = vid;
         } else vid.pause();
       }
-      if (page === viewer.current) {
-        const real = !!(shown && shown._real && page._mini);
-        if (page._mini) page._mini.bind(real ? shown : null);
-        if (page._scrub) page._scrub.bind(real ? null : shown || null);
-      }
+      if (page === viewer.current && page._scrub) page._scrub.bind(shown || null, !!(shown && shown._real));
     }
   }
 
@@ -1398,8 +1492,11 @@
     slideEl.classList.toggle('paused', !!vid._userPaused);
   }
 
-  // Con el teléfono horizontal, la barra del video se esconde y aparece un momento al tocar la pantalla.
+  // Con el teléfono horizontal todo se esconde (el nombre del autor, siempre). Tocar la parte de abajo
+  // de la pantalla muestra un momento la barra y los botones; tocar en otro lado pausa el video.
   const CONTROLS_MS = 2600;
+  const LAND_CTL_ZONE = 0.35; // la parte de abajo: el 35 % de la altura
+  let lastDownY = 0;
   function showControls() {
     const v = viewer;
     if (!v) return;
@@ -1407,14 +1504,128 @@
     clearTimeout(v.ctlTimer);
     v.ctlTimer = setTimeout(() => v.el.classList.remove('ctl'), CONTROLS_MS);
   }
+  function viewerPointerDown(e) {
+    lastDownY = e.clientY;
+    if (!isLandscape() || e.clientY > window.innerHeight * (1 - LAND_CTL_ZONE)) showControls();
+  }
 
-  // En la app, deslizar desde el borde de abajo (o desde los lados, en horizontal) muestra los
-  // botones de Android en vez de pasar de post. Android solo los muestra si el dedo empieza justo
-  // en el borde; estas franjas le dan más margen.
+  // ---- Gestos con el dedo en pantalla completa:
+  // · Mantener el dedo sobre un video o GIF y arrastrarlo a los lados lo adelanta o lo atrasa
+  //   (se apaga en Ajustes; seekSpan = segundos al cruzar la pantalla de lado a lado).
+  // · En la app, subir el dedo desde la parte de abajo muestra los botones de Android en vez de pasar
+  //   de post; solo un arrastre largo (más de LONG_SWIPE_MS) pasa al siguiente.
+  const SEEK_HOLD_MS = 280;
+  const LONG_SWIPE_MS = 650;
+  const bottomZone = () => Math.max(80, window.innerHeight * 0.12);
+  function peekBars() {
+    try {
+      if (RS.android && typeof RS.android.peekSystemBars === 'function') RS.android.peekSystemBars();
+    } catch (e) {
+      /* puente antiguo */
+    }
+  }
+  function viewerGestures(v) {
+    let g = null;
+    v.el.addEventListener(
+      'touchstart',
+      (e) => {
+        if (g) clearTimeout(g.timer);
+        g = null;
+        if (e.touches.length !== 1 || e.target.closest('.scrub, input, .vw-edge')) return;
+        const t = e.touches[0];
+        g = { x0: t.clientX, y0: t.clientY, at: Date.now(), mode: '', bottom: !!RS.android && t.clientY > window.innerHeight - bottomZone() };
+        const slideEl = e.target.closest('.vw-slide');
+        const vid = slideEl && slideEl.querySelector('video');
+        if (vid && S.settings.seekDrag && !e.target.closest('button, a')) g.timer = setTimeout(() => startSeek(g, vid), SEEK_HOLD_MS);
+      },
+      { passive: true }
+    );
+    v.el.addEventListener(
+      'touchmove',
+      (e) => {
+        if (!g) return;
+        const t = e.touches[0];
+        const dx = t.clientX - g.x0;
+        const dy = t.clientY - g.y0;
+        if (g.mode === 'seek') {
+          e.preventDefault();
+          moveSeek(g, dx);
+          return;
+        }
+        if (Math.hypot(dx, dy) > 10) clearTimeout(g.timer);
+        if (!g.bottom || g.mode === 'native' || g.mode === 'done') return;
+        if (g.mode === '') {
+          // Hacia abajo o hacia los lados se desliza como siempre; hacia arriba, se frena.
+          if (dy > 0 || Math.abs(dx) > Math.abs(dy)) {
+            g.mode = 'native';
+            return;
+          }
+          g.mode = 'hold';
+        }
+        e.preventDefault();
+        if (g.mode === 'hold' && dy < -12) {
+          g.mode = 'peek';
+          peekBars();
+        }
+        if (g.mode === 'peek' && Date.now() - g.at > LONG_SWIPE_MS && dy < -90) {
+          g.mode = 'done';
+          const next = viewer && viewer.current && viewer.current.nextElementSibling;
+          if (next) viewer.scroller.scrollTo({ top: next.offsetTop, behavior: 'smooth' });
+        }
+      },
+      { passive: false }
+    );
+    const end = () => {
+      if (!g) return;
+      clearTimeout(g.timer);
+      if (g.mode === 'seek') endSeek(g);
+      g = null;
+    };
+    v.el.addEventListener('touchend', end, { passive: true });
+    v.el.addEventListener('touchcancel', end, { passive: true });
+  }
+  function startSeek(g, vid) {
+    if (!viewer || !vid.duration) return;
+    g.mode = 'seek';
+    g.vid = vid;
+    g.t0 = vid.currentTime;
+    g.wasPlaying = !vid.paused;
+    vid.pause();
+    buzz(10);
+    showSeek(vid, 0);
+  }
+  function moveSeek(g, dx) {
+    const v = g.vid;
+    const d = v.duration || 0;
+    if (!d) return;
+    const span = Math.min(d, Number(S.settings.seekSpan) || 60);
+    const to = Math.max(0, Math.min(d - 0.05, g.t0 + (dx / Math.max(1, window.innerWidth)) * span));
+    v.currentTime = to;
+    showSeek(v, to - g.t0);
+  }
+  function endSeek(g) {
+    g.vid._seekedAt = Date.now();
+    if (g.wasPlaying && !g.vid._userPaused) g.vid.play().catch(() => {});
+    if (viewer) viewer.seekEl.classList.remove('show');
+  }
+  function showSeek(vid, delta) {
+    if (!viewer) return;
+    const d = vid.duration || 0;
+    const pct = d ? Math.round((vid.currentTime / d) * 100) : 0;
+    fill(viewer.seekEl,
+      h('b', { text: (delta < 0 ? '−' : '+') + fmtTime(Math.abs(delta)) }),
+      h('span', { text: fmtTime(vid.currentTime) + ' / ' + fmtTime(d) }),
+      h('i', {}, h('u', { style: 'width:' + pct + '%' }))
+    );
+    viewer.seekEl.classList.add('show');
+  }
+
+  // En horizontal, en la app, deslizar desde los lados muestra los botones de Android (en esa
+  // posición la barra de Android queda a un costado). Abajo lo resuelve viewerGestures.
   function edgeZones(el) {
     if (!RS.android || typeof RS.android.peekSystemBars !== 'function') return;
     el.classList.add('edge');
-    for (const side of ['bottom', 'left', 'right']) {
+    for (const side of ['left', 'right']) {
       const z = h('div', { class: 'vw-edge ' + side, 'aria-hidden': 'true' });
       let x0 = 0;
       let y0 = 0;
@@ -1431,7 +1642,7 @@
       });
       z.addEventListener('pointermove', (e) => {
         if (fired || !e.buttons) return;
-        const d = side === 'bottom' ? y0 - e.clientY : side === 'left' ? e.clientX - x0 : x0 - e.clientX;
+        const d = side === 'left' ? e.clientX - x0 : x0 - e.clientX;
         if (d < 12) return;
         fired = true;
         try {
@@ -1633,14 +1844,17 @@
 
   // ================================================================ Posts retirados (derechos de autor)
   //
-  // Por cada usuario o hashtag se anota qué páginas tienen posts retirados: { página: [retirados, total] }.
-  // Las páginas completas que solo tienen retirados no se vuelven a pedir; la más nueva sí, siempre,
-  // porque ahí aparecen los posts nuevos. Así, volver a una cuenta bloqueada cuesta una sola consulta.
+  // Por cada usuario o hashtag se anota qué páginas tienen posts retirados o que faltan:
+  // { página: [retirados, recibidos, era la última (1/0), esperados] }. JoyReactor a veces cuenta posts
+  // que después no entrega (#Sweetie Fox dice 346 y entrega 339): también se descuentan.
+  // Las páginas que solo traen retirados no se vuelven a pedir; la más nueva sí, siempre, porque ahí
+  // aparecen los posts nuevos. Así, volver a una cuenta bloqueada cuesta una sola consulta.
   const JUNK_SOURCES = 300;
   const PAGE_FULL = 10;
+  // Posts que no se pueden ver: retirados más los que faltan (las anotaciones de la 1.2.0 no tienen faltantes).
   function junkKnown(key) {
     const r = S.junkScan[key];
-    return r ? Object.values(r.p).reduce((a, x) => a + x[0], 0) : 0;
+    return r ? Object.values(r.p).reduce((a, x) => a + x[0] + Math.max(0, (x[3] == null ? x[1] : x[3]) - x[1]), 0) : 0;
   }
   // Cuántos posts se pueden ver de verdad: los que dice JoyReactor menos los retirados ya encontrados.
   const validCount = (key, total) => Math.max(0, (total || 0) - junkKnown(key));
@@ -1651,18 +1865,22 @@
     scan.skip = (page, last) => {
       const r = S.junkScan[key];
       const x = r && r.p[page];
-      if (!x || page >= last || x[1] < PAGE_FULL || x[0] < x[1]) return false;
+      if (!x || page >= last || x[0] < x[1]) return false;
+      // Una página anotada cuando era la última pudo llenarse después: esa se vuelve a pedir.
+      if (x.length < 3 ? x[1] < PAGE_FULL : x[2]) return false;
       scan.skipped += x[0];
       return true;
     };
-    scan.note = (page, last, posts) => {
+    scan.note = (page, last, posts, total) => {
       const junk = posts.filter(RS.isJunk).length;
+      const expected = page < last ? PAGE_FULL : Math.max(posts.length, (total || 0) - PAGE_FULL * (last - 1));
       let r = S.junkScan[key];
       const old = r && r.p[page];
-      if (junk) {
-        if (old && old[0] === junk && old[1] === posts.length) return;
+      if (junk || posts.length < expected) {
+        const entry = [junk, posts.length, page >= last ? 1 : 0, expected];
+        if (old && old.join() === entry.join()) return;
         if (!r) r = S.junkScan[key] = { p: {}, at: 0 };
-        r.p[page] = [junk, posts.length];
+        r.p[page] = entry;
         r.at = Date.now();
       } else if (old) {
         delete r.p[page];
@@ -1725,6 +1943,7 @@
       this.dry = false; // la última tanda no trajo nada que ver: la próxima pide varias páginas a la vez
       this.total = 0; // cuántos posts dice JoyReactor que hay (para descontar los retirados)
       this.hero = null; // cabecera del hashtag o del usuario, que muestra cuántos posts hay
+      this.reloadItems = o.reload || null; // listas guardadas (Me gusta, Historial): se releen al recargar
       this.listeners = new Set();
 
       this.headEl = h('header', { class: 'top' + (o.back ? ' has-back' : '') });
@@ -1872,7 +2091,7 @@
           const res = await RS.fetchPage(this.tag, this.type, null);
           this.total = res.count;
           this.last = res.lastPage;
-          scan.note(res.lastPage, res.lastPage, res.posts);
+          scan.note(res.lastPage, res.lastPage, res.posts, res.count);
           this.next = res.lastPage - 1;
           if (this.next < 1) this.done = true;
           const n = this.add(res.posts.map((post) => ({ post })));
@@ -1890,7 +2109,7 @@
         if (this.next < 1) this.done = true;
         let n = 0;
         results.forEach((res, i) => {
-          scan.note(list[i], this.last, res.posts);
+          scan.note(list[i], this.last, res.posts, this.total);
           n += this.add(res.posts.map((post) => ({ post })));
         });
         this.dry = !n;
@@ -2029,8 +2248,22 @@
       return this.loadMore();
     }
 
+    // Saca un post de la lista a la vista (p. ej. del Historial al darle me gusta).
+    drop(id) {
+      const el = this.list.querySelector('[data-id="' + CSS.escape(id) + '"]');
+      if (el) {
+        pauseIn(el);
+        el.remove();
+      }
+      this.items = this.items.filter((it) => it.post.id !== id);
+      this.staticItems = this.staticItems.filter((it) => it.post.id !== id);
+      fill(this.extraEl, ...[].concat(this.renderExtra ? this.renderExtra(this) : []));
+      if (!this.items.length && this.done) this.setStatus('end');
+    }
+
     // Deslizar hacia abajo arriba del todo: se vuelve a pedir todo desde el principio.
     refreshAll() {
+      if (this.reloadItems) this.staticItems = this.reloadItems();
       this.userSrc = null;
       this.scan = null;
       this.preluded = false;
@@ -2726,13 +2959,26 @@
           )
         ),
         h('div', { class: 'hero-actions two' }, followBtn, bellBtn),
+        // La reputación queda plegada: se abre al tocarla.
         r
-          ? h('div', { class: 'rep-card' },
-              h('div', { class: 'rep-top' }, starRow(r.stars), h('b', { text: decimal(r.stars) }), h('span', { text: 'de reputación' })),
-              part('Calidad', r.quality, Math.round((a.good / a.posts) * 100) + ' % de sus posts llegó a «Bueno»'),
-              part('Trayectoria', r.career, fmt(a.good) + ' en «Bueno» y ' + fmt(a.best) + ' en «Top» en toda su historia'),
-              part('Actividad', r.activity, fmt(Math.round(a.week)) + ' de rating esta semana'),
-              h('p', { class: 'rep-note', text: 'Calidad 40 % · Trayectoria 45 % · Actividad 15 %' })
+          ? h('div', { class: 'rep-card' + (S.ui.repOpen ? '' : ' closed') },
+              h('button', {
+                type: 'button',
+                class: 'rep-top',
+                'aria-expanded': String(!!S.ui.repOpen),
+                onclick: () => {
+                  S.ui.repOpen = !S.ui.repOpen;
+                  draw();
+                }
+              }, starRow(r.stars), h('b', { text: decimal(r.stars) }), h('span', { class: 'grow', text: 'de reputación' }), icon('chevdown', 18, 'rep-chev')),
+              S.ui.repOpen
+                ? [
+                    part('Calidad', r.quality, Math.round((a.good / a.posts) * 100) + ' % de sus posts llegó a «Bueno»'),
+                    part('Trayectoria', r.career, fmt(a.good) + ' en «Bueno» y ' + fmt(a.best) + ' en «Top» en toda su historia'),
+                    part('Actividad', r.activity, fmt(Math.round(a.week)) + ' de rating esta semana'),
+                    h('p', { class: 'rep-note', text: 'Calidad 40 % · Trayectoria 45 % · Actividad 15 %' })
+                  ]
+                : null
             )
           : null
       );
@@ -2783,7 +3029,7 @@
         user: name,
         mode: 'grid',
         back: true,
-        head: (f) => [backBtn('/home'), h('h1', { text: '@' + name }), viewToggle(f)],
+        head: () => [backBtn('/home'), h('h1', { text: '@' + name })],
         extra: () => {
           hero._redraw();
           return [hero];
@@ -3378,9 +3624,10 @@
     );
   }
 
+  const likedItems = () => Object.values(S.likes).sort((a, b) => b.at - a.at).map((x) => ({ post: x.post }));
   function routeLikes() {
     const all = Object.values(S.likes).sort((a, b) => b.at - a.at);
-    const items = all.map((x) => ({ post: x.post }));
+    const items = likedItems();
     const sig = all.length + '|' + (all[0] ? all[0].at : 0);
 
     const f = cached('likes:' + sig, () => new Feed({
@@ -3388,6 +3635,7 @@
       kind: 'static',
       source: 'likes',
       items,
+      reload: likedItems,
       memoryKey: 'likes',
       anchor: feedMemory.get('likes'),
       mode: S.ui.likesMode,
@@ -3440,7 +3688,7 @@
       t.users[p.user] = (t.users[p.user] || 0) + ms;
       if (p.userId) t.ids[p.user] = p.userId;
     }
-    for (const tag of p.tags) if (!RS.isFormatTag(tag)) t.tags[tag] = (t.tags[tag] || 0) + ms;
+    for (const x of leafTags(p.tags)) t.tags[x.name] = (t.tags[x.name] || 0) + ms;
     pruneCounts(t.tags, 800);
     pruneCounts(t.users, 400);
     saveStats();
@@ -3566,16 +3814,20 @@
   // ================================================================ Historial (vistos más de 10 s)
   // ================================================================ Historial (vistos más de 10 s)
 
+  // Lo que ya está en Favoritos no sale en el Historial.
+  const historyList = () => (S.history || []).filter((x) => !S.likes[x.id]);
+  const historyItems = () => historyList().map((x) => ({ post: x.post, label: 'Visto ' + ago(x.at), icon: 'clock', color: 'var(--text-2)' }));
   function routeHistory() {
-    const list = (S.history || []).filter((x) => !S.likes[x.id]);
+    const list = historyList();
     const max = Number(S.settings.historyMax) || 100;
     const sig = list.length + '|' + (list[0] ? list[0].at : 0);
-    const items = list.map((x) => ({ post: x.post, label: 'Visto ' + ago(x.at), icon: 'clock', color: 'var(--text-2)' }));
+    const items = historyItems();
     const f = cached('history:' + sig, () => new Feed({
       key: 'history',
       kind: 'static',
       source: 'history',
       items,
+      reload: historyItems,
       memoryKey: 'history',
       anchor: feedMemory.get('history'),
       mode: S.ui.historyMode || 'grid',
@@ -3946,8 +4198,26 @@
             applyDisplay();
           })
         ),
+      ),
+      h('div', { class: 'setgroup' },
+        h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Pantalla completa' }),
         h('div', { class: 'line' },
-          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Estrellas y rating en pantalla completa' }), h('span', { class: 'smeta', text: 'La reputación del autor (★) y el rating del post en JoyReactor (↑, la suma de los votos). Viene apagado.' })),
+          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Adelantar arrastrando el dedo' }), h('span', { class: 'smeta', text: 'Mantén el dedo sobre un video o GIF y arrástralo: a la derecha adelanta, a la izquierda atrasa.' })),
+          switchBtn(st.seekDrag, 'Adelantar arrastrando el dedo', (on) => {
+            st.seekDrag = on;
+            save();
+          })
+        ),
+        h('div', { class: 'field' },
+          h('span', { class: 't', text: 'Sensibilidad' }),
+          h('span', { class: 'd', text: 'Cuánto avanza al cruzar la pantalla de lado a lado. En un video más corto, cruzarla recorre el video entero.' }),
+          seg([[15, '15 s'], [30, '30 s'], [60, '1 min'], [120, '2 min']], Number(st.seekSpan) || 60, (v) => {
+            st.seekSpan = v;
+            save();
+          })
+        ),
+        h('div', { class: 'line' },
+          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Estrellas y rating' }), h('span', { class: 'smeta', text: 'La reputación del autor (★) y el rating del post en JoyReactor (↑, la suma de los votos). Viene apagado.' })),
           switchBtn(st.showScores, 'Estrellas y rating en pantalla completa', (on) => {
             st.showScores = on;
             save();
@@ -4024,7 +4294,7 @@
     today().posts++;
     const section = parseHash().parts[0] || 'home';
     st.sections[section] = (st.sections[section] || 0) + 1;
-    for (const t of p.tags) st.tags[t] = (st.tags[t] || 0) + 1;
+    for (const x of leafTags(p.tags)) st.tags[x.name] = (st.tags[x.name] || 0) + 1;
     if (p.user) st.users[p.user] = (st.users[p.user] || 0) + 1;
     st.kinds[RS.isRealVideo(p) ? 'video' : RS.isGifPost(p) ? 'gif' : 'image']++;
     pruneCounts(st.tags, 600);
@@ -4165,7 +4435,7 @@
         .slice(0, n)
         .map(([label, value]) => ({ label, value }));
     const likedTags = {};
-    for (const x of Object.values(S.likes)) for (const t of x.post.tags) likedTags[t] = (likedTags[t] || 0) + 1;
+    for (const x of Object.values(S.likes)) for (const t of leafTags(x.post.tags)) likedTags[t.name] = (likedTags[t.name] || 0) + 1;
 
     const n = (v) => fmt(v);
     const postsFmt = (v) => fmt(v) + (v === 1 ? ' post' : ' posts');

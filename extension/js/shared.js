@@ -387,7 +387,7 @@
           const res = await RS.fetchUserPage(username, null);
           src.count = res.count;
           src.last = res.lastPage;
-          if (scan) scan.note(res.lastPage, res.lastPage, res.posts);
+          if (scan) scan.note(res.lastPage, res.lastPage, res.posts, res.count);
           add(res);
           src.next = res.lastPage - 1;
         } else {
@@ -399,7 +399,7 @@
           }
           const results = await Promise.all(list.map((pg) => RS.fetchUserPage(username, pg)));
           results.forEach((res, i) => {
-            if (scan) scan.note(list[i], src.last, res.posts);
+            if (scan) scan.note(list[i], src.last, res.posts, src.count);
             add(res);
           });
           src.next = next;
@@ -522,7 +522,8 @@
     // tagGif, tagVideo y tagOrder ya no se usan: desde la 1.0.9 un hashtag abre siempre con todos sus posts.
     // showDates: mostrar la fecha de cada post (desde la 1.1.0 viene apagado).
     // showScores: estrellas del autor y rating del post en pantalla completa (desde la 1.2.0 viene apagado).
-    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100, showDates: false, showScores: false },
+    // seekDrag / seekSpan: mantener el dedo y arrastrar a los lados adelanta el video; seekSpan = segundos al cruzar la pantalla.
+    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100, showDates: false, showScores: false, seekDrag: true, seekSpan: 60 },
     news: { items: [], known: {}, unread: 0, lastCheck: 0 },
     dismissed: [],
     history: [], // posts vistos más de 10 s: [{ id, at, post }], el más nuevo primero
@@ -532,7 +533,9 @@
     following: {}, // usuarios que sigues: nombre en minúsculas -> { name, userId, addedAt, notify }
     userHistory: [], // perfiles que visitaste (máximo 50): [{ name, userId, at }], el más nuevo primero
     // Páginas con posts retirados por derechos de autor, por usuario o hashtag (ver junkScan en app.js).
-    junkScan: {}, // 'user:nombre' | 'tag:nombre:TIPO' -> { p: { página: [retirados, total] }, at }
+    junkScan: {}, // 'user:nombre' | 'tag:nombre:TIPO' -> { p: { página: [retirados, recibidos, era la última, esperados] }, at }
+    // Árbol de los hashtags: nombre en minúsculas -> { p: [carpeta de arriba, la siguiente, …], at } (ver leafTags en app.js).
+    tagTree: {},
     // Resumen de la semana ya calculado (los 10 usuarios y hashtags que más tiempo miraste).
     weekly: { week: '', at: 0, users: [], tags: [], prev: null, pending: null },
     eraCache: {}
