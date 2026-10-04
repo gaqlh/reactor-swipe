@@ -119,5 +119,6 @@ Abre <http://localhost:5178/android.html> en vista de móvil: es la interfaz con
 - **Imágenes:** `https://img10.joyreactor.com/pics/post/post-<id>.<ext>`. Con `full/` sale el tamaño original y con `static/…jpeg` la portada de un GIF.
 - **Sinónimos:** muchos hashtags son sinónimos (`cat` → `cats`). Los que sigues se guardan con el nombre principal.
 - **Árbol de hashtags:** cada hashtag tiene su cadena de carpetas (`hierarchy`) y lo que tiene dentro (`tagPager`). La app guarda el árbol en el teléfono para mostrar solo lo más específico.
+- **Caché:** lo que encuentra la pestaña «Videos y GIF» de cada hashtag se guarda en el teléfono (IndexedDB, aparte de tus datos). Al volver solo se pide lo nuevo.
 - **Avisos:** los revisa `NewsChecker.kt` cada 15/30/60 min. La primera vez que revisa un hashtag o usuario solo toma nota de lo que hay, sin avisar.
 - **Resumen de los lunes:** la interfaz le pasa a Android el tiempo y el top de la semana (`syncWeek`) cada vez que se usa; `Weekly.kt` revisa cada hora si ya es lunes desde las 9 y avisa una vez por semana.

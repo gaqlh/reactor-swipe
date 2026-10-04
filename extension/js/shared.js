@@ -284,13 +284,69 @@
     };
   };
 
+  // ---- Caché en el teléfono (IndexedDB) para lo que se puede volver a pedir, como los GIF y videos ya
+  // encontrados en cada hashtag. No son datos del usuario: si se borra, solo se vuelve a pedir.
+  const cacheDb = (() => {
+    let opening = null;
+    const open = () =>
+      opening ||
+      (opening = new Promise((resolve, reject) => {
+        if (typeof indexedDB === 'undefined') return reject(new Error('Sin IndexedDB'));
+        const rq = indexedDB.open('reactor-swipe-cache', 1);
+        rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
+        rq.onsuccess = () => resolve(rq.result);
+        rq.onerror = () => reject(rq.error);
+      }));
+    const run = (mode, fn) =>
+      open().then(
+        (db) =>
+          new Promise((resolve, reject) => {
+            const tx = db.transaction('kv', mode);
+            const req = fn(tx.objectStore('kv'));
+            tx.oncomplete = () => resolve(req.result);
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+          })
+      );
+    return {
+      get: (k) => run('readonly', (s) => s.get(k)).catch(() => undefined),
+      set: (k, v) => run('readwrite', (s) => s.put(v, k)).catch(() => {}),
+      del: (k) => run('readwrite', (s) => s.delete(k)).catch(() => {})
+    };
+  })();
+  RS.cacheDb = cacheDb;
+
+  // Páginas ya revisadas de un hashtag: { v, born, count, n, pages: { página: [posts que se guardan] } }.
+  // Las páginas se numeran desde la más vieja, así que una página completa (todas menos la más nueva)
+  // no cambia cuando salen posts nuevos. Se guardan hasta SCAN_POSTS posts por hashtag, de los últimos
+  // SCAN_TAGS hashtags, y se tiran a los SCAN_DAYS días (por si JoyReactor retiró algo).
+  const SCAN_DAYS = 30;
+  const SCAN_POSTS = 2000;
+  const SCAN_TAGS = 30;
+  async function touchScanIndex(key) {
+    const index = (await cacheDb.get('scan-index')) || {};
+    index[key] = Date.now();
+    const keys = Object.keys(index).sort((a, b) => index[b] - index[a]);
+    for (const old of keys.slice(SCAN_TAGS)) {
+      delete index[old];
+      cacheDb.del(old);
+    }
+    await cacheDb.set('scan-index', index);
+  }
+
   /**
    * Todos los posts de un hashtag, de lo más nuevo a lo más viejo, de a varias páginas por consulta
    * (como createUserSource). La pestaña «Videos y GIF» filtra esta lista. scan (opcional) salta las
    * páginas que ya se sabe que solo tienen posts retirados (ver junkScan en app.js).
+   * keep (opcional) = qué posts se guardan en el teléfono: con eso, al volver solo se pide la página más
+   * nueva (y las que salieron desde la última vez); lo ya revisado sale del teléfono, sin consultas.
+   * src.seen = cuántos posts se revisaron (los de las páginas guardadas cuentan aunque no se guarden).
    */
-  RS.createTagSource = function (tag, type, scan) {
-    const src = { posts: [], count: 0, done: false, next: null, last: 0, busy: null };
+  RS.createTagSource = function (tag, type, scan, keep) {
+    const src = { posts: [], count: 0, seen: 0, done: false, next: null, last: 0, busy: null };
+    const key = 'scan:' + String(tag).toLowerCase() + ':' + type;
+    let saved = null;
+    let dirty = false;
     const ids = new Set();
     const add = (posts) => {
       for (const p of posts) {
@@ -299,32 +355,74 @@
         src.posts.push(p);
       }
     };
+    const stored = (page) => !!(saved && saved.pages[page]);
+    const remember = (page, posts) => {
+      // La página más nueva todavía se va llenando: esa no se guarda.
+      if (!saved || page >= src.last || saved.n >= SCAN_POSTS) return;
+      const kept = posts.filter(keep);
+      saved.pages[page] = kept;
+      saved.n += kept.length;
+      dirty = true;
+    };
+    const save = () => {
+      if (!saved || !dirty) return;
+      dirty = false;
+      saved.count = src.count;
+      cacheDb.set(key, saved).then(() => touchScanIndex(key));
+    };
     src.more = (pages) => {
       if (src.busy) return src.busy;
       src.busy = (async () => {
         if (src.next == null) {
+          if (keep) {
+            const s = await cacheDb.get(key);
+            saved = s && s.v === 1 && Date.now() - s.born < SCAN_DAYS * 86400000 ? s : { v: 1, born: Date.now(), count: 0, n: 0, pages: {} };
+          }
           const res = await RS.fetchPage(tag, type, null);
           src.count = res.count;
           src.last = res.lastPage;
           if (scan) scan.note(res.lastPage, res.lastPage, res.posts, res.count);
           add(res.posts);
+          src.seen += res.posts.length;
           src.next = res.lastPage - 1;
         } else {
-          const list = [];
+          // Hasta `pages` páginas por pedir (en una sola consulta); las guardadas se intercalan en su
+          // lugar sin consultar nada (como mucho 30 páginas por vez).
+          const seq = [];
+          let need = 0;
           let next = src.next;
-          while (next >= 1 && list.length < (pages || 1)) {
-            if (!(scan && scan.skip(next, src.last))) list.push(next);
+          while (next >= 1 && need < (pages || 1) && seq.length < 30) {
+            if (!(scan && scan.skip(next, src.last))) {
+              const has = stored(next);
+              // Si ya hay páginas guardadas para mostrar, se sirven sin consultar: lo que sigue se
+              // pide recién cuando llegues ahí.
+              if (!has && seq.length && seq.every(stored)) break;
+              seq.push(next);
+              if (!has) need++;
+            }
             next--;
           }
-          if (list.length) {
-            const res = await RS.fetchPages(tag, type, list);
+          const want = seq.filter((p) => !stored(p));
+          const got = new Map();
+          if (want.length) {
+            const res = await RS.fetchPages(tag, type, want);
             src.count = res.count;
-            res.pages.forEach((x) => {
-              if (scan) scan.note(x.page, src.last, x.posts, src.count);
-              add(x.posts);
-            });
+            res.pages.forEach((x) => got.set(x.page, x.posts));
+          }
+          for (const p of seq) {
+            if (got.has(p)) {
+              const posts = got.get(p);
+              if (scan) scan.note(p, src.last, posts, src.count);
+              add(posts);
+              src.seen += posts.length;
+              remember(p, posts);
+            } else {
+              add(saved.pages[p]);
+              src.seen += PAGE_SIZE;
+            }
           }
           src.next = next;
+          save();
         }
         if (src.next < 1) src.done = true;
       })().finally(() => (src.busy = null));

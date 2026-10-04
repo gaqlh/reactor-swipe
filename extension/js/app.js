@@ -1916,7 +1916,7 @@
       this.show = o.show || 'all'; // perfil: 'all' | 'anim' | 'fav' (pestañas Todos, Videos y GIF, Favoritos)
       this.userSrc = null;
       this.scanSrc = null; // hashtag: todos sus posts, para filtrar los GIF y videos (ver fetchMain)
-      this.scanned = 0; // cuántos posts de scanSrc ya se revisaron
+      this.scanned = 0; // cuántos posts de scanSrc ya se revisaron (src.seen)
       this.sinceHit = 0; // posts revisados desde el último GIF o video encontrado
       this.held = false; // se dejó de buscar GIF y videos (muchos posts sin ninguno): sigue con un botón
       this.mode = o.mode || 'feed';
@@ -1982,7 +1982,7 @@
         const text = this.kind === 'random'
           ? 'Sorteando posts de tu mezcla…'
           : (this.show === 'anim' || this.kinds.length) && src && src.count
-            ? 'Buscando videos y GIF… revisé ' + fmt(src.posts.length) + ' de ' + fmt(src.count) + ' posts'
+            ? 'Buscando videos y GIF… revisé ' + fmt(src.seen != null ? src.seen : src.posts.length) + ' de ' + fmt(src.count) + ' posts'
             : 'Cargando más posts…';
         fill(s, icon('spinner', 20, 'spin'), text);
       } else if (kind === 'error') {
@@ -1998,7 +1998,7 @@
       } else if (kind === 'held') {
         const src = this.scanSrc;
         fill(s,
-          emptyBox('film', 'No encontré más GIF ni videos', 'Revisé ' + fmt(src ? src.posts.length : 0) + ' de ' + fmt(src ? src.count : 0) + ' posts. Puede haber más, más atrás.',
+          emptyBox('film', 'No encontré más GIF ni videos', 'Revisé ' + fmt(src ? src.seen : 0) + ' de ' + fmt(src ? src.count : 0) + ' posts. Puede haber más, más atrás.',
             h('button', {
               class: 'btn ghost retry',
               onclick: () => {
@@ -2061,13 +2061,14 @@
       if (this.kind === 'pager' && this.kinds.length) {
         // Videos y GIF de un hashtag: se recorren sus páginas (de a 6 por consulta) y quedan los posts
         // que traen un GIF o un video, tengan o no la etiqueta #gif o #video (ver RS.createTagSource).
+        // Lo encontrado queda guardado en el teléfono: al volver solo se pide lo nuevo.
         if (!this.scan) this.scan = junkScan('tag:' + String(this.tag || '').toLowerCase() + ':' + this.type);
-        if (!this.scanSrc) this.scanSrc = RS.createTagSource(this.tag, this.type, this.scan);
+        if (!this.scanSrc) this.scanSrc = RS.createTagSource(this.tag, this.type, this.scan, RS.isAnimated);
         const src = this.scanSrc;
         if (this.cursor >= src.posts.length && !src.done) await src.more(6);
         this.total = src.count;
         const out = [];
-        while (this.cursor < src.posts.length) {
+        while (this.cursor < src.posts.length && out.length < 30) {
           const post = src.posts[this.cursor++];
           if (RS.matchesKinds(post, this.kinds)) out.push({ post });
         }
@@ -2077,8 +2078,8 @@
         }
         const n = this.add(out);
         // Si en 1500 posts seguidos no aparece ninguno, se deja de buscar solo (ver setStatus 'held').
-        this.sinceHit = n ? 0 : this.sinceHit + src.posts.length - this.scanned;
-        this.scanned = src.posts.length;
+        this.sinceHit = n ? 0 : this.sinceHit + src.seen - this.scanned;
+        this.scanned = src.seen;
         if (!n && !this.done && this.sinceHit >= 1500) this.held = true;
         return n;
       }
