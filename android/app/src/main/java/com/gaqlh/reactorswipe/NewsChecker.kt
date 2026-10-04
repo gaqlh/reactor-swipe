@@ -69,6 +69,14 @@ object NewsChecker {
         return false
     }
 
+    /** Post retirado por JoyReactor (derechos de autor): sin imágenes y con una imagen de aviso como texto. */
+    private fun isJunk(p: JSONObject): Boolean {
+        val attrs = p.optJSONArray("attributes")
+        if (attrs != null && attrs.length() > 0) return false
+        val text = p.optString("text")
+        return text.contains("/images/censorship/") || text.replace(Regex("<[^>]*>"), "").isBlank()
+    }
+
     @Synchronized
     fun run(ctx: Context, notify: Boolean): CheckResult {
         val cfg = Store.config(ctx)
@@ -151,6 +159,7 @@ object NewsChecker {
                     if (id.isEmpty() || id in prevSet || id in have) continue
                     if (hideNsfw && (p.optBoolean("nsfw") || p.optBoolean("unsafe"))) continue
                     if (hasExcluded(p, exclude)) continue
+                    if (isJunk(p)) continue
                     all.add(JSONObject().put("id", id).put("tag", name).put("kind", f.optString("kind")).put("at", now).put("raw", p))
                     have.add(id)
                     n++

@@ -6,19 +6,25 @@ App de **Android** que convierte JoyReactor en un feed tipo Instagram:
 - **Carrusel**: los posts con varias imágenes o videos se deslizan hacia los lados.
 - **Doble toque = pantalla completa** (sin barras); doble toque o «atrás» para salir.
 - **Miniaturas** con un botón. Cada miniatura tiene su ♥ y su 👎, y al tocarla se abre ese post.
-- **Hashtags tocables**, y **favoritos** (categorías y hashtags) que salen como «historias» arriba del Inicio. Mantener presionado un hashtag 3 segundos lo guarda en favoritos, también en pantalla completa.
+- **Abajo, cinco pestañas**: Inicio, Buscar, Aleatorio, **Seguidos** (hashtags y categorías / usuarios que sigues) y **Favoritos** (tus me gusta y el historial). Ajustes se abre con ⚙ desde Favoritos.
+- **Hashtags tocables**. Los que sigues salen como «historias» arriba del Inicio. Mantener presionado un hashtag 3 segundos lo sigue, también en pantalla completa.
+- **Categorías**: en JoyReactor los hashtags forman un árbol, como carpetas (fandoms › anime › Touhou Project). La página de cada hashtag muestra dónde está («Está dentro de») y qué tiene dentro («Subcategorías»).
 - **Página de cada hashtag** que abre siempre con **todos** sus posts, lo más reciente primero, o con **Barajar** en orden aleatorio. Los filtros **GIF** y **Video** de la cabecera se activan solo si los tocas.
-- **Perfiles de usuario**: al tocar el autor ves todos sus posts en **miniaturas**, como en Instagram, con las pestañas **Todo**, **Imágenes** y **GIF y video**, y su **reputación** de 1 a 5 estrellas (calidad, trayectoria y actividad). Las estrellas también salen junto al nombre en cada post.
-- **Tus 10 usuarios**: los autores de los posts que más te gustaron, arriba de Me gusta. Se actualiza cada lunes y muestra quién subió o bajó.
+- **Perfiles de usuario**: al tocar el autor ves todos sus posts en **miniaturas**, como en Instagram, con las pestañas **Todos**, **Videos y GIF** y **Favoritos** (los posts suyos que te gustaron: JoyReactor no deja ver los favoritos de otras personas), el botón **Seguir** y su **reputación** de 1 a 5 estrellas (calidad, trayectoria y actividad). Las estrellas también salen junto al nombre en cada post.
+- **Historial de usuarios**: los últimos 50 perfiles que visitaste (Favoritos › Historial › Usuarios).
+- **Resumen de la semana** (en Ajustes): tus 10 usuarios (los autores de los posts que más te gustaron, se rehace cada lunes) y los hashtags que más viste en la semana.
 - **Buscar** hashtags y usuarios, con las **búsquedas recientes** como en Instagram.
 - **GIF** con una barra casi transparente que solo aparece al tocar la pantalla y se arrastra para adelantar o retroceder. Los **videos** tienen pausa, barra y tiempo. Los dos tienen botón para repetir, y la etiqueta dice VIDEO cuando el post tiene sonido.
 - **Aleatorio a tu medida**: eliges qué entra y cuánto pesa cada cosa. También hay calidad mínima, época, «no repetir lo ya visto» y hashtags excluidos.
-- **Me gusta** con historial, y **No me gusta** que oculta el post para siempre (con historial para restaurar).
+- **Me gusta** con una animación del corazón, y **No me gusta** que oculta el post para siempre (los ocultos se recuperan desde Ajustes).
+- **Sin posts basura**: los posts que JoyReactor retiró por derechos de autor no salen en ningún lado (antes eran cuadros vacíos de «Post de texto»).
+- **Girar el teléfono**: con un GIF o video a la vista, ponerlo horizontal lo abre en pantalla completa; al volver a vertical se cierra en el mismo post.
+- **Fechas de los posts** ocultas por defecto; se activan en Ajustes.
 - **Bloquear hashtags** con el botón ⊘ de cada hashtag: sus posts no salen en ningún feed ni en los avisos. La lista está en Ajustes.
 - **Historial** de los posts que miraste más de 10 segundos (100 por defecto; se puede cambiar a 50, 200 o 500).
 - **Estadísticas** de uso: tiempo por día y por hora, qué ves, tus hashtags y usuarios más vistos.
 - **«Atrás» te deja donde estabas**: en el mismo post, en la misma vista y, si venías de pantalla completa, otra vez en pantalla completa. Si abriste un post desde las miniaturas, vuelves a ellas.
-- **Avisos** de posts nuevos en tus favoritos con campanita, aunque la app esté cerrada.
+- **Avisos** de posts nuevos en los hashtags que sigues con campanita, aunque la app esté cerrada.
 - **Actualizaciones**: cuando hay versión nueva llega un aviso y son 2 toques (**Actualizar** e **Instalar**).
 - **Respaldo**: exportar e importar tus datos (se guarda en Descargas).
 
@@ -68,7 +74,7 @@ Abre <http://localhost:5178/app.html> en vista de móvil. El servidor local hace
 
 | Carpeta / archivo | Qué es |
 | --- | --- |
-| `extension/` | La interfaz (feed, miniaturas, aleatorio, favoritos…). También funciona como extensión de Firefox |
+| `extension/` | La interfaz (feed, miniaturas, aleatorio, seguidos, favoritos…). También funciona como extensión de Firefox |
 | `extension/js/shared.js` | API GraphQL de JoyReactor, datos del usuario y aleatorio |
 | `extension/js/app.js` | Pantallas y navegación |
 | `android/` | App nativa: WebView con la interfaz, avisos (WorkManager), actualizaciones y pantalla completa |
@@ -81,5 +87,5 @@ Abre <http://localhost:5178/app.html> en vista de móvil. El servidor local hace
 - **API:** `https://api.joyreactor.com/graphql`. Las páginas tienen unos 10 posts y van de la más vieja (1) a la más nueva.
 - **Origen de la página:** la app sirve la interfaz desde sus assets en `https://joyreactor.com/__rs/` (`WebViewAssetLoader`). Con ese origen, la API acepta las peticiones y los videos (`mp4/`, que exigen el `Referer` de joyreactor.com) se cargan.
 - **Imágenes:** `https://img10.joyreactor.com/pics/post/post-<id>.<ext>`. Con `full/` sale el tamaño original y con `static/…jpeg` la portada de un GIF.
-- **Sinónimos:** muchos hashtags son sinónimos (`cat` → `cats`). Los favoritos se guardan con el nombre principal.
-- **Avisos:** los revisa `NewsChecker.kt` cada 15/30/60 min. La primera vez que revisa un favorito solo toma nota de lo que hay, sin avisar.
+- **Sinónimos:** muchos hashtags son sinónimos (`cat` → `cats`). Los que sigues se guardan con el nombre principal.
+- **Avisos:** los revisa `NewsChecker.kt` cada 15/30/60 min. La primera vez que revisa un hashtag solo toma nota de lo que hay, sin avisar.

@@ -181,6 +181,10 @@
     return { stars: Math.round(raw * 2) / 2, raw, quality, career, activity };
   };
 
+  // JoyReactor retira algunos posts por derechos de autor: llegan sin imágenes y con un único
+  // texto, una imagen de aviso de /images/censorship/ (p. ej. copywrite.jpg).
+  const CENSORED = /\/images\/censorship\//i;
+
   RS.normalizePost = function (p) {
     const media = [];
     const isVideoPost = (p.tags || []).some((t) => VIDEO_TAGS.has(String(t.name).toLowerCase()));
@@ -208,9 +212,13 @@
       author: authorStats(p.user),
       tags: (p.tags || []).map((t) => t.name),
       text: cleanText(p.text),
+      censored: !media.length && CENSORED.test(p.text || ''),
       media
     };
   };
+
+  /** Post que no tiene nada que ver: retirado por derechos de autor, o sin imágenes ni texto. */
+  RS.isJunk = (p) => !!p && (p.censored || (!p.media.length && !p.text));
 
   // Los videos de JoyReactor solo se sirven si la petición dice venir de joyreactor.com.
   // En la extensión eso lo añade background.js; en desarrollo lo hace el proxy local.
@@ -411,7 +419,7 @@
     const key = String(name).toLowerCase();
     if (tagCache.has(key)) return tagCache.get(key);
     // Muchos hashtags son sinónimos (p. ej. «cat» → «cats»): uso siempre el principal.
-    const F = 'id name count subscribers showAsCategory nsfw image { id } category { name } subTags { name }';
+    const F = 'id name count subscribers showAsCategory nsfw image { id } category { name } subTags { name } hierarchy { name }';
     const d = await gql(`query($n:String){ tag(name:$n){ ${F} mainTag { ${F} } } }`, { n: name });
     const t = d.tag && (d.tag.mainTag || d.tag);
     const info = t
@@ -421,6 +429,11 @@
           subscribers: t.subscribers || 0,
           nsfw: !!t.nsfw,
           parent: t.category ? t.category.name : null,
+          // Las categorías de arriba, de la más grande a la más cercana (p. ej. fandoms › anime).
+          path: (t.hierarchy || [])
+            .map((x) => x.name)
+            .filter((n) => n.toLowerCase() !== t.name.toLowerCase())
+            .reverse(),
           subTags: (t.subTags || []).map((s) => s.name),
           kind: t.showAsCategory || (t.subTags || []).length ? 'category' : 'hashtag',
           pic: t.image ? numId(t.id) : 0
@@ -441,17 +454,20 @@
   const DEFAULTS = {
     likes: {}, // id -> { at, post }
     dislikes: {}, // id -> { at, post }
-    favorites: {}, // nombre -> { name, kind, notify, addedAt }
+    favorites: {}, // hashtags y categorías que sigues (pestaña Seguidos): nombre -> { name, kind, notify, addedAt }
     mix: { sources: {}, quality: 'GOOD', era: 'any', noRepeat: true, exclude: [] },
     seen: [],
     // tagGif, tagVideo y tagOrder ya no se usan: desde la 1.0.9 un hashtag abre siempre con todos sus posts.
-    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100 },
+    // showDates: mostrar la fecha de cada post (desde la 1.1.0 viene apagado).
+    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100, showDates: false },
     news: { items: [], known: {}, unread: 0, lastCheck: 0 },
     dismissed: [],
     history: [], // posts vistos más de 10 s: [{ id, at, post }], el más nuevo primero
     searches: [], // búsquedas recientes: [{ type: 'tag' | 'user', name, pic?, at }]
     stats: {}, // métricas de uso (ver app.js)
     topUsers: { week: '', at: 0, list: [], prev: [] }, // tus 10 usuarios de la semana y los de la anterior
+    following: {}, // usuarios que sigues: nombre en minúsculas -> { name, userId, addedAt }
+    userHistory: [], // perfiles que visitaste (máximo 50): [{ name, userId, at }], el más nuevo primero
     eraCache: {}
   };
   RS.KEYS = Object.keys(DEFAULTS);
@@ -487,12 +503,12 @@
   };
   RS.save = (obj) => area.set(obj);
 
-  /** Filtro común a todos los feeds: no me gusta, hashtags excluidos y NSFW. */
+  /** Filtro común a todos los feeds: no me gusta, hashtags excluidos, NSFW y posts retirados. */
   RS.makeFilter = function (st) {
     const dis = st.dislikes || {};
     const ex = new Set(((st.mix && st.mix.exclude) || []).map((s) => s.toLowerCase()));
     const hideNsfw = st.settings && st.settings.hideNsfw;
-    return (p) => !dis[p.id] && !(hideNsfw && (p.nsfw || p.unsafe)) && !p.tags.some((t) => ex.has(t.toLowerCase()));
+    return (p) => !dis[p.id] && !RS.isJunk(p) && !(hideNsfw && (p.nsfw || p.unsafe)) && !p.tags.some((t) => ex.has(t.toLowerCase()));
   };
 
   RS.label = (name, kind) => (!name ? 'todo JoyReactor' : kind === 'category' ? name.charAt(0).toUpperCase() + name.slice(1) : '#' + name);

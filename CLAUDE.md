@@ -22,7 +22,7 @@ App de Android que muestra joyreactor.com como un feed tipo Instagram. La lee y 
 | Archivo | Qué hay |
 | --- | --- |
 | `extension/js/shared.js` | API GraphQL, normalización de posts, `DEFAULTS` y guardado, aleatorio (`randomBatch`), fuentes de GIF y videos (`createMediaSource`), búsqueda de actualizaciones |
-| `extension/js/app.js` | Toda la interfaz: router por hash con pila de «atrás», clase `Feed`, visor de pantalla completa (`openViewer`), hashtag (`routeTag`), usuario (`routeUser`), buscador (`searchBox`), historial (`addHistory`, `routeHistory`), estadísticas (`recordView`, `routeStats`), ajustes |
+| `extension/js/app.js` | Toda la interfaz: router por hash con pila de «atrás», clase `Feed`, visor de pantalla completa (`openViewer`), giro del teléfono (`keepPlace`, `openRotated`), hashtag (`routeTag`, `tagHero`), usuario (`routeUser`, `setFollow`, `addUserVisit`), buscador (`searchBox`), Seguidos (`routeFollowing`), Favoritos (`routeLikes`, `routeHistory`, `routeVisited`), resumen semanal (`routeWeek`), estadísticas (`recordView`, `routeStats`), ajustes |
 | `extension/app.css` | Tema oscuro. Tokens en `:root`; acento `#f5a524` |
 | `android/app/src/main/java/com/gaqlh/reactorswipe/` | `MainActivity` (WebView, atrás, pantalla completa), `Bridge` (puente `RSAndroid`), `NewsChecker` y `Workers` (avisos y actualizaciones), `Updater`, `Store`, `Notifs` |
 | `tools/release.mjs`, `tools/make_qr.py` | Publicar y generar el QR |
@@ -45,6 +45,11 @@ Estilo del código: JavaScript sin frameworks. Para crear y vaciar nodos se usan
 
 - En Android la pulsación larga se cancela sobre los enlaces: los hashtags son `<button>`, no `<a>`.
 - El «atrás» de Android lo resuelve JavaScript con `RSApp.handleBack()`, que responde `handled` o `exit` (`MainActivity` usa `native` si la página no respondió). Para abrir la pantalla completa en Android no se usa `history.pushState`: solo en el navegador (`!RS.android`).
+- Nombres históricos: los hashtags que el usuario **sigue** se guardan en `S.favorites` (antes la pestaña se llamaba Favoritos); la pestaña **Favoritos** de hoy son los me gusta (`S.likes`) y el historial. `#/favorites` sigue funcionando y abre Seguidos. Los usuarios seguidos van en `S.following` y los perfiles visitados en `S.userHistory` (máximo 50).
+- JoyReactor no deja ver los favoritos de otro usuario (`favoritePostPager` responde «unauthorized»): la pestaña Favoritos del perfil muestra los me gusta del usuario de la app a ese autor.
+- Posts retirados por derechos de autor: llegan sin `attributes` y con un `text` que es solo una imagen de `/images/censorship/` (p. ej. `copywrite.jpg`). `RS.isJunk` los saca de todos los feeds y `NewsChecker.isJunk` de los avisos.
+- Las categorías son un árbol (`hierarchy` en la API: fandoms › anime › Touhou Project) y cada post lleva también las etiquetas de arriba. En la app, «categoría» = hashtag con otros dentro (`subTags`).
+- Al girar el teléfono la actividad no se reinicia (`configChanges`); `keepPlace` vuelve al mismo post y a la misma imagen del carrusel (`track._idx`). Horizontal con un GIF o video a la vista abre la pantalla completa (`viewer.byRotation`) y vertical la cierra.
 - Los hashtags bloqueados se guardan en `S.mix.exclude` (nombre histórico: antes era «Nunca mostrar» del Aleatorio). Se cambian siempre con `setBlocked`, que rehace los feeds guardados. Bloquear etiquetas de formato (`RS.isFormatTag`: #gif, #video…) esconde casi todos los GIF; la página del hashtag lo avisa.
 - La pila de navegación es la de la app (`stack` en `app.js`). En Android, «atrás» usa `navBack()` sobre esa pila y no `history.back()`, que se desfasaba. Ir a una página que ya está en la pila (p. ej. tocar una pestaña de abajo) recorta la pila hasta ella.
 - Si el panel del navegador de pruebas está oculto, se congelan `requestAnimationFrame` y los `IntersectionObserver`. Ninguna lógica debe depender solo de eso.

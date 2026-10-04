@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
@@ -164,6 +165,13 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         web.onResume()
         web.evaluateJavascript("window.RSApp && RSApp.onResume && RSApp.onResume()", null)
+    }
+
+    // Al girar el teléfono la app no se reinicia (configChanges), pero algunos teléfonos vuelven
+    // a mostrar las barras del sistema: si estaba en pantalla completa, se ocultan otra vez.
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (fullscreen) setFullscreen(true)
     }
 
     override fun onPause() {

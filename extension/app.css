@@ -160,7 +160,8 @@ img, video { display: block; }
 }
 #tabs a.on { color: var(--accent); font-weight: 800; }
 #tabs a.on .i { fill: var(--accent); }
-#tabs a[data-tab='random'].on .i, #tabs a[data-tab='home'].on .i { fill: none; }
+#tabs a[data-tab='random'].on .i, #tabs a[data-tab='home'].on .i, #tabs a[data-tab='following'].on .i { fill: none; }
+#tabs a[data-tab='following'].on .i { stroke-width: 2.2; }
 
 /* ---------- Chips ---------- */
 .chips { display: flex; gap: 8px; padding: 10px 16px 12px; overflow-x: auto; scrollbar-width: none; }
@@ -339,8 +340,6 @@ html.snap .list.cards .card { scroll-snap-stop: always; }
 }
 .act.dim { color: var(--text-2); }
 .act.like.on .i { fill: var(--like); stroke: var(--like); }
-.act.like.pop .i { animation: pop 0.3s ease-out; }
-@keyframes pop { 50% { transform: scale(1.3); } }
 .caption {
   flex-shrink: 0;
   margin: 0;
@@ -834,3 +833,83 @@ a.rank-name { color: #8ec5ff; }
 .mv.down { color: var(--danger-text); background: var(--danger-soft); }
 .mv.same { color: var(--text-3); }
 .mv.new { color: var(--blue); background: var(--blue-soft); }
+
+/* ---------- 1.1.0 ---------- */
+/* Me gusta: el corazón rebota y suelta un anillo con chispas */
+.like { position: relative; }
+.like .i { transition: fill 0.18s, stroke 0.18s; }
+.like.pop .i { animation: like-pop 0.6s cubic-bezier(0.2, 0.9, 0.3, 1.15); }
+.like.unpop .i { animation: like-unpop 0.28s ease-out; }
+@keyframes like-pop {
+  0% { transform: scale(1); }
+  15% { transform: scale(0.7); }
+  45% { transform: scale(1.4) rotate(-8deg); }
+  70% { transform: scale(0.92) rotate(3deg); }
+  100% { transform: scale(1); }
+}
+@keyframes like-unpop { 45% { transform: scale(0.78); } }
+.burst { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; z-index: 1; }
+.burst .ring { position: absolute; left: -22px; top: -22px; width: 44px; height: 44px; border-radius: 50%; border: 3px solid var(--like); opacity: 0; animation: burst-ring 0.55s ease-out forwards; }
+.burst .spark { position: absolute; left: -3.5px; top: -3.5px; width: 7px; height: 7px; border-radius: 50%; background: var(--like); opacity: 0; animation: burst-spark 0.65s ease-out 0.06s forwards; }
+.burst .spark:nth-child(odd) { background: var(--accent); width: 5px; height: 5px; left: -2.5px; top: -2.5px; }
+@keyframes burst-ring {
+  0% { transform: scale(0.2); opacity: 0.9; border-width: 8px; }
+  100% { transform: scale(1.35); opacity: 0; border-width: 0; }
+}
+@keyframes burst-spark {
+  0% { transform: rotate(var(--a)) translateY(-10px) scale(1); opacity: 1; }
+  100% { transform: rotate(var(--a)) translateY(-30px) scale(0.2); opacity: 0; }
+}
+.tact .burst .ring { left: -18px; top: -18px; width: 36px; height: 36px; }
+@media (prefers-reduced-motion: reduce) {
+  .like.pop .i, .like.unpop .i { animation: none; }
+}
+
+/* Seguir: hashtags (+ / ✓) y usuarios */
+.followb { color: var(--text-2); }
+.followb.on { color: var(--accent); background: var(--accent-soft); }
+.hbtn.fav .i { fill: none; }
+.follow-btn {
+  height: 44px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 15px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.follow-btn.on { background: transparent; color: var(--text); box-shadow: inset 0 0 0 1px var(--line-2); }
+.follow-btn .i { stroke-width: 2; }
+.small-btn.follow { min-width: 92px; justify-content: center; border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
+.small-btn.follow.on { border-color: var(--line-2); background: transparent; color: var(--text); }
+.result .m.user-line { min-width: 0; }
+
+/* Cabecera del hashtag: dónde está en el árbol de JoyReactor y qué tiene dentro */
+.tree { display: flex; flex-direction: column; gap: 8px; }
+.crumbs { display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.crumbs::-webkit-scrollbar { display: none; }
+.crumbs .sep { flex-shrink: 0; color: var(--text-3); font-size: 18px; line-height: 1; }
+
+/* Ajustes: filas que abren otra página */
+a.navline { color: var(--text); padding-top: 8px; padding-bottom: 8px; padding-right: 14px; }
+a.navline:active { background: var(--surface); }
+.navline-ic { width: 36px; height: 36px; border-radius: 10px; background: var(--surface-2); color: var(--accent); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+a.navline > .i { color: var(--text-3); }
+
+/* Fecha de los posts: oculta salvo que se active en Ajustes */
+html:not(.show-dates) .when { display: none; }
+
+/* Pantalla completa con el teléfono horizontal: botones más chicos para que no tapen el video */
+@media (orientation: landscape) and (max-height: 560px) {
+  .vw-side { bottom: max(8px, env(safe-area-inset-bottom)); right: max(4px, env(safe-area-inset-right)); gap: 0; }
+  .vw-act { width: 46px; min-height: 44px; font-size: 11.5px; }
+  .vw-act .i { width: 23px; height: 23px; }
+  .vw-info { gap: 4px; padding: 28px 60px max(8px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
+  .vw-tags { max-height: 2.2em; font-size: 13.5px; }
+  .vw-bar { padding-left: max(10px, env(safe-area-inset-left)); }
+  .vw-info .mini { height: 32px; }
+}
