@@ -8,7 +8,7 @@ App de **Android** que convierte JoyReactor en un feed tipo Instagram. Todo se g
 
 - **Abajo, cinco pestañas**: Inicio, Buscar, Aleatorio, **Seguidos** (hashtags y perfiles) y **Favoritos** (tus me gusta y el historial). Ajustes se abre con ⚙ desde Favoritos.
 - **Un post por pantalla**: deslizas hacia arriba y pasa al siguiente. Los posts con varias imágenes o videos se deslizan hacia los lados (carrusel con puntitos).
-- **GIF y videos, en toda la app**: la barra de avance es una línea mínima que aparece al tocar (en los videos, con el tiempo) y **un toque rápido en el centro de la pantalla** pausa o sigue (en el feed, la mitad central de la pantalla). Dos toques abren la pantalla completa.
+- **GIF y videos, en toda la app**: la barra de avance es una línea mínima que aparece al tocar (en los videos, con el tiempo) y **un toque rápido en el centro** pausa o sigue (en el feed, en el centro del video; en pantalla completa, en el centro de la pantalla). Dos toques abren la pantalla completa.
 - **Miniaturas** con un botón. Cada miniatura tiene su ♥ y su 👎, y al tocarla se abre ese post.
 - **Deslizar hacia abajo** desde arriba del todo recarga la página.
 - **«Atrás» te deja donde estabas**: en el mismo post, en la misma vista y, si venías de pantalla completa, otra vez en pantalla completa. Si abriste un post desde las miniaturas, vuelves a ellas.
@@ -32,7 +32,7 @@ App de **Android** que convierte JoyReactor en un feed tipo Instagram. Todo se g
 - En cada post salen **solo los hashtags más específicos** de cada cadena, con su carpeta en chiquito al lado, sin los de formato (#gif, #video). Si quedan más de 4, «+N» muestra todos.
 - **Categorías**: en JoyReactor los hashtags forman un árbol, como carpetas (fandoms › anime › Touhou Project). La página de cada hashtag muestra dónde está («Está dentro de») y qué tiene dentro («Subcategorías»).
 - **Árbol de hashtags** (herramienta temporal, en Ajustes y en cada hashtag): recorre las carpetas y lo que tiene dentro cada una.
-- La **página de cada hashtag** tiene pestañas, como un perfil: **Todos** (lo más reciente primero) y **Videos y GIF**. El botón de **barajar** (a la derecha de las pestañas) los pone en orden aleatorio; deslizar hacia abajo los vuelve a barajar.
+- La **página de cada hashtag** tiene pestañas, como un perfil: **Todos** (lo más reciente primero) y **Videos y GIF**, que muestra todos los posts que traen un GIF o un video, tengan o no la etiqueta #gif o #video. El botón de **barajar** (a la derecha de las pestañas) los pone en orden aleatorio; deslizar hacia abajo los vuelve a barajar.
 - **Guardar como perfil**: un hashtag que elijas se ve como el perfil de un usuario, en miniaturas y con una pestaña más, **Favoritos** (tus me gusta con ese hashtag). Sale en **Seguidos › Perfiles**, junto a los usuarios que sigues.
 - **Seguir** un hashtag con el botón de su página o manteniéndolo presionado 3 segundos (también en pantalla completa). Los que sigues salen como «historias» arriba del Inicio.
 - **Bloquear hashtags** con el botón ⊘: sus posts no salen en ningún feed ni en los avisos. La lista está en Ajustes.

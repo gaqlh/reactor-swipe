@@ -252,16 +252,10 @@
     };
   };
 
-  // ---- Solo GIF y videos de un hashtag: la búsqueda de JoyReactor con «hashtag + gif» y
-  // «hashtag + video», mezcladas en un solo listado. Cada búsqueda devuelve como máximo 1000
-  // resultados (100 páginas); la página 1 es la más nueva (o la mejor, en Top).
-  const SEARCH_Q = `query($t:[String!],$p:Int,$d:Boolean,$r:Boolean,$min:Int,$nsfw:Boolean){ search(query:"", tagNames:$t, sortByDate:$d, sortByRating:$r, minRating:$min, showNsfw:$nsfw){ postPager{ count posts(page:$p){ ${POST_FIELDS} } } } }`;
-  const SEARCH_COUNT_Q = `query($t:[String!],$d:Boolean,$r:Boolean,$min:Int,$nsfw:Boolean){ search(query:"", tagNames:$t, sortByDate:$d, sortByRating:$r, minRating:$min, showNsfw:$nsfw){ postPager{ count } } }`;
-  // «Bueno» se aproxima con rating mínimo 10 (la búsqueda no tiene el filtro «bueno» de los hashtags).
-  const MEDIA_ORDER = { NEW: { d: true }, ALL: { d: true }, GOOD: { d: true, min: 10 }, BEST: { r: true } };
-  RS.MEDIA_KINDS = ['gif', 'video'];
-  RS.GIF_LIMIT = 1000;
-
+  // ---- GIF y videos de un hashtag. JoyReactor no deja filtrar por tipo de archivo, y buscar
+  // «hashtag + gif» o «hashtag + video» dejaba fuera los que llevan otra etiqueta (#anime gif,
+  // #video with sound…) o ninguna: en #Touhou Project eran 9 de cada 11. Por eso se recorren las
+  // páginas del hashtag y quedan los posts que de verdad traen un GIF o un video.
   RS.isAnimated = (p) => p.media.some((m) => m.kind === 'video' || m.kind === 'embed' || m.ext === 'gif');
   RS.isRealVideo = (p) => p.media.some((m) => (m.kind === 'video' && m.real) || m.kind === 'embed');
   RS.isGifPost = (p) => p.media.some((m) => (m.kind === 'video' && !m.real) || m.ext === 'gif');
@@ -276,79 +270,67 @@
   RS.FORMAT_TAGS = new Set(['gif', 'gifs', 'гифки', 'гифка', 'гиф', 'videogif', 'video gif', 'анимация', 'animation', 'animated'].concat(Array.from(VIDEO_TAGS)));
   RS.isFormatTag = (t) => RS.FORMAT_TAGS.has(String(t).toLowerCase());
 
-  async function canonicalTag(tag) {
-    const info = await RS.fetchTagInfo(tag).catch(() => null);
-    return info ? info.name : tag;
-  }
-  const searchTags = (name, kind) => (name.toLowerCase() === kind ? [kind] : [name, kind]);
-  const searchVars = (tags, type, hideNsfw) => {
-    const o = MEDIA_ORDER[type] || MEDIA_ORDER.GOOD;
-    return { t: tags, d: o.d || null, r: o.r || null, min: o.min == null ? null : o.min, nsfw: hideNsfw ? false : null };
-  };
-
-  /** Una página de «hashtag + gif» o «hashtag + video». */
-  RS.fetchMediaPage = async function (tag, kind, type, page, hideNsfw) {
-    const name = await canonicalTag(tag);
-    const d = await gql(SEARCH_Q, Object.assign(searchVars(searchTags(name, kind), type, hideNsfw), { p: page }));
-    const pp = d.search && d.search.postPager;
-    if (!pp) throw new Error('No pude buscar GIF ni videos de «' + tag + '»');
+  /** Varias páginas de un hashtag en una sola consulta: { count, lastPage, pages: [{ page, posts }] }. */
+  RS.fetchPages = async function (tag, type, pages) {
+    const parts = pages.map((pg, i) => `p${i}: posts(page:${Number(pg)}){ ${POST_FIELDS} }`).join(' ');
+    const d = await gql(`query($n:String,$t:PostLineType!){ tag(name:$n){ postPager(type:$t){ count ${parts} } } }`, { n: tag || null, t: type });
+    if (!d.tag) throw new Error('No existe el hashtag «' + tag + '»');
+    const pp = d.tag.postPager;
+    countCache.set(tag + '|' + type, { count: pp.count, at: Date.now() });
     return {
       count: pp.count,
-      lastPage: Math.max(1, Math.ceil(Math.min(pp.count, RS.GIF_LIMIT) / PAGE_SIZE)),
-      posts: (pp.posts || []).map(RS.normalizePost)
+      lastPage: Math.max(1, Math.ceil(pp.count / PAGE_SIZE)),
+      pages: pages.map((pg, i) => ({ page: pg, posts: (pp['p' + i] || []).map(RS.normalizePost) }))
     };
-  };
-
-  RS.mediaCount = async function (tag, kind, type, hideNsfw) {
-    const key = 'media|' + tag + '|' + kind + '|' + type + '|' + !!hideNsfw;
-    const c = countCache.get(key);
-    if (c && Date.now() - c.at < 30 * 60 * 1000) return c.count;
-    const name = await canonicalTag(tag);
-    const d = await gql(SEARCH_COUNT_Q, searchVars(searchTags(name, kind), type, hideNsfw));
-    const count = (d.search && d.search.postPager && d.search.postPager.count) || 0;
-    countCache.set(key, { count, at: Date.now() });
-    return count;
   };
 
   /**
-   * Listado ordenado de GIF + videos de un hashtag: va pidiendo páginas de ambas búsquedas y
-   * las intercala por fecha (o por rating en Top). next() devuelve el siguiente lote.
+   * Todos los posts de un hashtag, de lo más nuevo a lo más viejo, de a varias páginas por consulta
+   * (como createUserSource). La pestaña «Videos y GIF» filtra esta lista. scan (opcional) salta las
+   * páginas que ya se sabe que solo tienen posts retirados (ver junkScan en app.js).
    */
-  RS.createMediaSource = function (tag, type, hideNsfw, kinds) {
-    const byRating = type === 'BEST';
-    const key = (p) => (byRating ? p.rating : p.time);
-    const subs = (kinds && kinds.length ? kinds : RS.MEDIA_KINDS).map((kind) => ({ kind, page: 0, last: Infinity, buf: [], done: false, capped: false }));
-    const refill = async (s) => {
-      s.page += 1;
-      if (s.page > s.last) {
-        s.done = true;
-        return;
+  RS.createTagSource = function (tag, type, scan) {
+    const src = { posts: [], count: 0, done: false, next: null, last: 0, busy: null };
+    const ids = new Set();
+    const add = (posts) => {
+      for (const p of posts) {
+        if (ids.has(p.id)) continue;
+        ids.add(p.id);
+        src.posts.push(p);
       }
-      const res = await RS.fetchMediaPage(tag, s.kind, type, s.page, hideNsfw);
-      s.last = res.lastPage;
-      s.capped = res.count > RS.GIF_LIMIT;
-      if (!res.posts.length) s.done = true;
-      s.buf.push(...res.posts);
     };
-    return {
-      async next() {
-        await Promise.all(subs.filter((s) => !s.done && !s.buf.length).map(refill));
-        const out = [];
-        // Saca siempre el más nuevo (o mejor) de los dos montones mientras ambos tengan algo.
-        while (out.length < 20) {
-          if (subs.some((s) => !s.done && !s.buf.length)) break;
-          const live = subs.filter((s) => s.buf.length);
-          if (!live.length) break;
-          live.sort((a, b) => key(b.buf[0]) - key(a.buf[0]));
-          out.push(live[0].buf.shift());
+    src.more = (pages) => {
+      if (src.busy) return src.busy;
+      src.busy = (async () => {
+        if (src.next == null) {
+          const res = await RS.fetchPage(tag, type, null);
+          src.count = res.count;
+          src.last = res.lastPage;
+          if (scan) scan.note(res.lastPage, res.lastPage, res.posts, res.count);
+          add(res.posts);
+          src.next = res.lastPage - 1;
+        } else {
+          const list = [];
+          let next = src.next;
+          while (next >= 1 && list.length < (pages || 1)) {
+            if (!(scan && scan.skip(next, src.last))) list.push(next);
+            next--;
+          }
+          if (list.length) {
+            const res = await RS.fetchPages(tag, type, list);
+            src.count = res.count;
+            res.pages.forEach((x) => {
+              if (scan) scan.note(x.page, src.last, x.posts, src.count);
+              add(x.posts);
+            });
+          }
+          src.next = next;
         }
-        return {
-          posts: out,
-          done: subs.every((s) => s.done && !s.buf.length),
-          capped: subs.some((s) => s.capped)
-        };
-      }
+        if (src.next < 1) src.done = true;
+      })().finally(() => (src.busy = null));
+      return src.busy;
     };
+    return src;
   };
 
   // ---- Perfil de un usuario y todos sus posts (página 1 = más vieja, como los hashtags).
@@ -411,7 +393,6 @@
     return src;
   };
 
-  /** Los posts más nuevos (las dos últimas páginas) de varios usuarios en dos consultas: { nombre: [posts] }. */
   // Los posts más nuevos (las dos últimas páginas) de varios usuarios o hashtags, en dos consultas:
   // { nombre: [posts] }. kind = 'user' | 'tag'.
   async function fetchRecent(kind, names) {
@@ -774,8 +755,8 @@
    * Un lote de posts al azar según la mezcla: sortea la fuente por peso, salta a una página
    * al azar de esa fuente y se queda con 1–2 posts que no estén vistos, ocultos ni excluidos.
    * st = { favorites, mix, seenSet, filter }
-   * opts = { n, skip:Set, sources?, type?, era?, noRepeat?, gif?, hideNsfw? } — sources/type/era/noRepeat
-   *        reemplazan a los de la mezcla (p. ej. un solo hashtag en orden aleatorio); gif = solo GIF/videos.
+   * opts = { n, skip:Set, sources?, type?, era?, noRepeat?, mediaKinds? } — sources/type/era/noRepeat
+   *        reemplazan a los de la mezcla (p. ej. un solo hashtag en orden aleatorio); mediaKinds = solo GIF/videos.
    */
   RS.randomBatch = async function (st, opts) {
     opts = opts || {};
@@ -797,16 +778,12 @@
       let res;
       const kinds = opts.mediaKinds && opts.mediaKinds.length ? opts.mediaKinds : null;
       if (kinds) {
-        // Solo GIF y/o videos: elige el tipo según cuántos hay y salta a una página al azar.
-        const counts = await Promise.all(kinds.map((k) => RS.mediaCount(src.name, k, type, opts.hideNsfw)));
-        const capped = counts.map((c) => Math.min(c, RS.GIF_LIMIT));
-        const totalMedia = capped.reduce((a, b) => a + b, 0);
-        if (!totalMedia) return [];
-        let r = Math.random() * totalMedia;
-        let ki = 0;
-        while (ki < capped.length - 1 && (r -= capped[ki]) >= 0) ki++;
-        const lastPage = Math.max(1, Math.ceil(capped[ki] / PAGE_SIZE));
-        res = await RS.fetchMediaPage(src.name, kinds[ki], type, randInt(1, lastPage), opts.hideNsfw);
+        // Solo GIF y/o videos: tres páginas al azar en una consulta, y quedan los posts animados.
+        const count = await pagerCount(src.name, type);
+        const last = Math.max(1, Math.ceil(count / PAGE_SIZE));
+        const pages = Array.from(new Set(Array.from({ length: Math.min(3, last) }, () => randInt(1, last))));
+        const many = await RS.fetchPages(src.name, type, pages);
+        res = { posts: [].concat(...many.pages.map((x) => x.posts)) };
       } else {
         const count = await pagerCount(src.name, type);
         const last = Math.max(1, Math.ceil(count / PAGE_SIZE));
@@ -822,7 +799,7 @@
           (!kinds || RS.matchesKinds(p, kinds))
       );
       return shuffle(ok)
-        .slice(0, 2)
+        .slice(0, kinds ? 4 : 2)
         .map((post) => ({ post, source: src.name, sourceKind: src.kind }));
     };
 

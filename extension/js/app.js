@@ -612,6 +612,21 @@
     return v;
   }
 
+  // Lo que ocupa el video dentro de su recuadro (se muestra entero, con bandas negras arriba y abajo
+  // o a los lados): ahí está «el centro del video» para pausar en el feed.
+  function videoBox(v) {
+    const r = v.getBoundingClientRect();
+    const vw = v.videoWidth || v.width;
+    const vh = v.videoHeight || v.height;
+    if (!vw || !vh || !r.width || !r.height) return v;
+    const k = Math.min(r.width / vw, r.height / vh);
+    const w = vw * k;
+    const hh = vh * k;
+    const left = r.left + (r.width - w) / 2;
+    const top = r.top + (r.height - hh) / 2;
+    return { getBoundingClientRect: () => ({ left, top, width: w, height: hh, right: left + w, bottom: top + hh }) };
+  }
+
   // Un GIF y un video llegan con el mismo formato: si al reproducirlo tiene sonido, es un video.
   function watchAudio(v, onAudio) {
     const check = () => {
@@ -682,14 +697,19 @@
     });
   }
 
-  // Pausar es un toque rápido y en el centro de la pantalla: ni muy arriba ni muy abajo (así no se
-  // pausa sin querer al buscar los botones de Android o al tocar cerca de los bordes). En pantalla
-  // completa (small) la franja es la mitad de alta que en el feed: del 37,5 al 62,5 % de la pantalla.
+  // Pausar es un toque rápido y en el centro: ni muy arriba ni muy abajo (así no se pausa sin querer
+  // al buscar los botones de Android o al tocar cerca de los bordes). En pantalla completa cuenta la
+  // pantalla (del 37,5 al 62,5 % del alto; en horizontal, del 35 al 55 %). En el feed (box = el
+  // video) cuenta el video: la mitad central de su alto.
   const TAP_MS = 220;
-  function pauseTap(tap, small) {
+  function pauseTap(tap, box) {
     if (!tap || tap.ms > TAP_MS) return false;
+    if (box) {
+      const r = box.getBoundingClientRect();
+      return tap.y > r.top + r.height * 0.25 && tap.y < r.bottom - r.height * 0.25;
+    }
     const H = window.innerHeight;
-    const [top, bottom] = small ? (isLandscape() ? [0.35, 0.55] : [0.375, 0.625]) : [0.25, isLandscape() ? 0.65 : 0.75];
+    const [top, bottom] = isLandscape() ? [0.35, 0.55] : [0.375, 0.625];
     return tap.y > H * top && tap.y < H * bottom;
   }
 
@@ -847,7 +867,7 @@
         ctl.bind(v, true);
       });
       // Un toque rápido en el centro pausa (o sigue); dos toques, pantalla completa.
-      onTaps(box, () => openViewer(feed, p, i), (tap) => pauseTap(tap) && togglePause(v, box));
+      onTaps(box, () => openViewer(feed, p, i), (tap) => pauseTap(tap, videoBox(v)) && togglePause(v, box));
     } else {
       box.append(embedLink(m, p));
     }
@@ -1297,7 +1317,7 @@
         // abajo muestra los botones de Android (ver viewerGestures) o, en horizontal, los controles.
         // Justo después de arrastrar para adelantar, no pausa.
         onTaps(s, () => exitViewer(), (tap) => {
-          if (Date.now() - (vid._seekedAt || 0) < 700 || !pauseTap(tap, true)) return;
+          if (Date.now() - (vid._seekedAt || 0) < 700 || !pauseTap(tap)) return;
           togglePause(vid, s);
         });
       } else {
@@ -1895,7 +1915,10 @@
       this.user = o.user || null; // todos los posts de un usuario
       this.show = o.show || 'all'; // perfil: 'all' | 'anim' | 'fav' (pestañas Todos, Videos y GIF, Favoritos)
       this.userSrc = null;
-      this.mediaSrc = null;
+      this.scanSrc = null; // hashtag: todos sus posts, para filtrar los GIF y videos (ver fetchMain)
+      this.scanned = 0; // cuántos posts de scanSrc ya se revisaron
+      this.sinceHit = 0; // posts revisados desde el último GIF o video encontrado
+      this.held = false; // se dejó de buscar GIF y videos (muchos posts sin ninguno): sigue con un botón
       this.mode = o.mode || 'feed';
       this.source = o.source || '';
       this.staticItems = o.items || [];
@@ -1955,10 +1978,10 @@
     setStatus(kind, err) {
       const s = this.statusEl;
       if (kind === 'loading') {
-        const src = this.userSrc;
+        const src = this.userSrc || this.scanSrc;
         const text = this.kind === 'random'
           ? 'Sorteando posts de tu mezcla…'
-          : this.show === 'anim' && src && src.count
+          : (this.show === 'anim' || this.kinds.length) && src && src.count
             ? 'Buscando videos y GIF… revisé ' + fmt(src.posts.length) + ' de ' + fmt(src.count) + ' posts'
             : 'Cargando más posts…';
         fill(s, icon('spinner', 20, 'spin'), text);
@@ -1972,6 +1995,19 @@
             }
           }, 'Reintentar'))
         );
+      } else if (kind === 'held') {
+        const src = this.scanSrc;
+        fill(s,
+          emptyBox('film', 'No encontré más GIF ni videos', 'Revisé ' + fmt(src ? src.posts.length : 0) + ' de ' + fmt(src ? src.count : 0) + ' posts. Puede haber más, más atrás.',
+            h('button', {
+              class: 'btn ghost retry',
+              onclick: () => {
+                this.held = false;
+                this.sinceHit = 0;
+                this.loadMore();
+              }
+            }, 'Seguir buscando'))
+        );
       } else if (kind === 'end') {
         // Ya no hace falta el alto mínimo de setShow: si la pestaña está vacía, el aviso queda a la vista.
         this.list.style.minHeight = '';
@@ -1982,16 +2018,16 @@
     }
 
     async loadMore() {
-      if (this.loading || this.done || this.failed || !this.root.isConnected) return;
+      if (this.loading || this.done || this.failed || this.held || !this.root.isConnected) return;
       this.loading = true;
       this.setStatus('loading');
       try {
         let added = 0;
-        for (let guard = 0; !added && !this.done && guard < 5; guard++) {
+        for (let guard = 0; !added && !this.done && !this.held && guard < 5; guard++) {
           added += await this.fetchChunk();
-          if (!added && !this.done) this.setStatus('loading');
+          if (!added && !this.done && !this.held) this.setStatus('loading');
         }
-        this.setStatus(this.done ? 'end' : '');
+        this.setStatus(this.done ? 'end' : this.held ? 'held' : '');
       } catch (e) {
         this.failed = true;
         this.setStatus('error', e);
@@ -2007,7 +2043,7 @@
     }
 
     checkMore() {
-      if (this.done || this.loading || this.failed || !this.root.isConnected) return;
+      if (this.done || this.loading || this.failed || this.held || !this.root.isConnected) return;
       if (this.sentinel.getBoundingClientRect().top < window.innerHeight + 1600) setTimeout(() => this.loadMore(), 0);
     }
 
@@ -2023,14 +2059,28 @@
 
     async fetchMain() {
       if (this.kind === 'pager' && this.kinds.length) {
-        if (!this.mediaSrc) this.mediaSrc = RS.createMediaSource(this.tag, this.type, S.settings.hideNsfw, this.kinds);
-        const res = await this.mediaSrc.next();
-        if (res.done) {
-          this.done = true;
-          if (res.capped) this.endText = 'Llegaste al límite: JoyReactor solo deja ver los ' + RS.GIF_LIMIT + ' más recientes de cada tipo por hashtag. Prueba a barajarlos con el botón de arriba.';
-          else this.endText = 'No hay más ' + (this.kinds.length > 1 ? 'GIF ni videos' : this.kinds[0] === 'gif' ? 'GIF' : 'videos') + '.';
+        // Videos y GIF de un hashtag: se recorren sus páginas (de a 6 por consulta) y quedan los posts
+        // que traen un GIF o un video, tengan o no la etiqueta #gif o #video (ver RS.createTagSource).
+        if (!this.scan) this.scan = junkScan('tag:' + String(this.tag || '').toLowerCase() + ':' + this.type);
+        if (!this.scanSrc) this.scanSrc = RS.createTagSource(this.tag, this.type, this.scan);
+        const src = this.scanSrc;
+        if (this.cursor >= src.posts.length && !src.done) await src.more(6);
+        this.total = src.count;
+        const out = [];
+        while (this.cursor < src.posts.length) {
+          const post = src.posts[this.cursor++];
+          if (RS.matchesKinds(post, this.kinds)) out.push({ post });
         }
-        return this.add(res.posts.filter((p) => RS.matchesKinds(p, this.kinds)).map((post) => ({ post })));
+        if (src.done && this.cursor >= src.posts.length) {
+          this.done = true;
+          this.endText = 'No hay más ' + (this.kinds.length > 1 ? 'GIF ni videos' : this.kinds[0] === 'gif' ? 'GIF' : 'videos') + '.';
+        }
+        const n = this.add(out);
+        // Si en 1500 posts seguidos no aparece ninguno, se deja de buscar solo (ver setStatus 'held').
+        this.sinceHit = n ? 0 : this.sinceHit + src.posts.length - this.scanned;
+        this.scanned = src.posts.length;
+        if (!n && !this.done && this.sinceHit >= 1500) this.held = true;
+        return n;
       }
       if (this.kind === 'pager' && this.user && this.show === 'fav') {
         // Favoritos: los posts de este usuario que te gustaron (JoyReactor no deja ver los favoritos de otras personas).
@@ -2223,7 +2273,10 @@
       this.endText = '';
       this.junk = 0;
       this.dry = false;
-      this.mediaSrc = null;
+      this.scanSrc = null;
+      this.scanned = 0;
+      this.sinceHit = 0;
+      this.held = false;
       fill(this.list);
       this.refresh();
       window.scrollTo(0, 0);
