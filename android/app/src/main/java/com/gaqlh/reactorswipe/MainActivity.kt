@@ -9,6 +9,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.ViewGroup
 import android.webkit.ValueCallback
@@ -43,6 +44,8 @@ class MainActivity : ComponentActivity() {
         const val START_URL = "https://$HOST/__rs/app.html"
         const val EXTRA_ROUTE = "route"
         private val BG = Color.parseColor("#0F0E0D")
+        /** Cuánto quedan a la vista los botones de Android en pantalla completa. */
+        private const val BARS_MS = 6000L
     }
 
     lateinit var web: WebView
@@ -77,6 +80,8 @@ class MainActivity : ComponentActivity() {
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
             if (fullscreen) {
                 v.setPadding(0, 0, 0, 0)
+                // Android mostró los botones (deslizando desde el borde): quedan un rato y se vuelven a esconder.
+                if (insets.isVisible(WindowInsetsCompat.Type.navigationBars())) keepBarsAWhile()
             } else {
                 val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
                 val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
@@ -197,28 +202,55 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Hasta cuándo se dejan a la vista los botones de Android en pantalla completa (reloj de uptime). */
+    private var barsUntil = 0L
+    /** Cuándo se escondieron las barras al entrar en pantalla completa (para no confundir eso con mostrarlas). */
+    private var hiddenAt = 0L
+
     private val rehideBars = Runnable {
-        if (fullscreen) WindowInsetsControllerCompat(window, window.decorView).hide(WindowInsetsCompat.Type.systemBars())
+        barsUntil = 0L
+        if (fullscreen) {
+            hiddenAt = SystemClock.uptimeMillis()
+            WindowInsetsControllerCompat(window, window.decorView).hide(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    private fun keepBarsAWhile() {
+        // Justo al esconderlas todavía llegan las medidas de antes, con los botones a la vista.
+        if (SystemClock.uptimeMillis() - hiddenAt < 600) return
+        barsUntil = SystemClock.uptimeMillis() + BARS_MS
+        root.removeCallbacks(rehideBars)
+        root.postDelayed(rehideBars, BARS_MS)
     }
 
     /**
-     * En pantalla completa, muestra un momento las barras del sistema (los tres botones de Android).
-     * La interfaz lo pide al deslizar desde el borde, para que no haga falta empezar justo en la orilla.
+     * En pantalla completa, muestra las barras del sistema (los tres botones de Android) unos segundos.
+     * La interfaz lo pide al tocar la parte de abajo o subir el dedo desde ahí, para que no haga falta
+     * empezar justo en la orilla.
      */
     fun peekSystemBars() {
         if (!fullscreen) return
         WindowInsetsControllerCompat(window, window.decorView).show(WindowInsetsCompat.Type.systemBars())
-        root.removeCallbacks(rehideBars)
-        root.postDelayed(rehideBars, 3500)
+        hiddenAt = 0L
+        keepBarsAWhile()
     }
 
-    /** Oculta (o vuelve a mostrar) las barras del sistema para el visor a pantalla completa. */
+    /**
+     * Oculta (o vuelve a mostrar) las barras del sistema para el visor a pantalla completa.
+     * Las barras se esconden con BEHAVIOR_DEFAULT: al deslizar desde el borde quedan fijas (no como
+     * las pasajeras, que Android esconde en cuanto tocas la pantalla) y las esconde keepBarsAWhile.
+     */
     fun setFullscreen(on: Boolean) {
+        // Mientras los botones están a la vista a propósito, volver a pedir pantalla completa (al girar,
+        // por ejemplo) no los esconde: se van solos al terminar el tiempo.
+        if (on && fullscreen && SystemClock.uptimeMillis() < barsUntil) return
         fullscreen = on
+        barsUntil = 0L
         root.removeCallbacks(rehideBars)
         val controller = WindowInsetsControllerCompat(window, window.decorView)
         if (on) {
-            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hiddenAt = SystemClock.uptimeMillis()
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
             controller.hide(WindowInsetsCompat.Type.systemBars())
         } else {
             controller.show(WindowInsetsCompat.Type.systemBars())

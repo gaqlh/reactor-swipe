@@ -72,6 +72,7 @@ window.RSAndroid = {
   getNews: () => '{}',
   markNewsRead() {},
   syncConfig() {},
+  syncWeek(json) { window.__simWeek = JSON.parse(json); },
   notificationsAllowed: () => true,
   batteryUnrestricted: () => true,
   requestNotifications() {},

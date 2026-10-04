@@ -48,6 +48,16 @@ object Store {
         saveNews(ctx, n)
     }
 
+    /** Resumen de los lunes: lo que manda la interfaz (ver Weekly). */
+    @Synchronized
+    fun week(ctx: Context): JSONObject = parse(prefs(ctx).getString("week", null))
+
+    @Synchronized
+    fun saveWeek(ctx: Context, json: String) {
+        JSONObject(json) // valida
+        prefs(ctx).edit().putString("week", json).apply()
+    }
+
     /** Últimos posts ya vistos de cada favorito (para saber cuáles son nuevos). */
     @Synchronized
     fun known(ctx: Context): JSONObject = parse(prefs(ctx).getString("known", null))

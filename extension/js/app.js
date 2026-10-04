@@ -44,7 +44,6 @@
     expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
     spinner: '<path d="M12 3a9 9 0 1 0 9 9"/>',
     alert: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/>',
-    pause: '<rect x="6.5" y="5" width="3.5" height="14" rx="1"/><rect x="14" y="5" width="3.5" height="14" rx="1"/>',
     replay: '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3 4.5V9h4.5"/>',
     user: '<circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/>',
     chart: '<path d="M4 20V11M10 20V5M16 20v-8M21 20H3"/>',
@@ -516,14 +515,21 @@
     },
     { rootMargin: '900px 0px' }
   );
+  // Lo que pausaste con un toque sigue pausado mientras esté a la vista; al irse, la próxima vez arranca solo.
   const playIO = new IntersectionObserver(
     (entries) => {
       for (const e of entries) {
         const v = e.target;
         if (e.isIntersecting && e.intersectionRatio >= 0.6 && !viewer) {
           if (!v.getAttribute('src') && v.dataset.src) v.src = v.dataset.src;
-          v.play().catch(() => {});
-        } else v.pause();
+          if (!v._userPaused) v.play().catch(() => {});
+        } else {
+          v.pause();
+          if (!e.isIntersecting && v._userPaused) {
+            v._userPaused = false;
+            if (v.parentNode) v.parentNode.classList.remove('paused');
+          }
+        }
       }
     },
     { threshold: [0, 0.6] }
@@ -649,12 +655,17 @@
     return el;
   }
 
-  /** Doble toque → dbl(); un toque → single() (si se da). Ignora botones y enlaces. */
+  /**
+   * Doble toque → dbl(); un toque → single(tap) (si se da). Ignora botones y enlaces.
+   * tap = { y, ms }: dónde se tocó (alto de la pantalla) y cuánto duró el dedo apoyado.
+   */
   function onTaps(el, dbl, single) {
     let last = 0;
     let timer = null;
+    let downAt = 0;
+    el.addEventListener('pointerdown', () => (downAt = Date.now()), { passive: true });
     el.addEventListener('click', (e) => {
-      if (e.target.closest('button, a, input, .mini, .scrub')) return;
+      if (e.target.closest('button, a, input, .scrub')) return;
       const now = Date.now();
       if (now - last < 320) {
         clearTimeout(timer);
@@ -664,11 +675,21 @@
         return;
       }
       last = now;
+      const tap = { y: e.clientY, ms: downAt ? now - downAt : 0 };
       if (single) timer = setTimeout(() => {
         timer = null;
-        single();
+        single(tap);
       }, 320);
     });
+  }
+
+  // Pausar es un toque rápido y en el centro de la pantalla: ni muy arriba ni muy abajo (así no se
+  // pausa sin querer al buscar los botones de Android o al tocar cerca de los bordes).
+  const TAP_MS = 220;
+  function pauseTap(tap) {
+    if (!tap || tap.ms > TAP_MS) return false;
+    const H = window.innerHeight;
+    return tap.y > H * 0.25 && tap.y < H * (isLandscape() ? 0.65 : 0.75);
   }
 
   const PROVIDERS = { YOUTUBE: 'YouTube', COUB: 'Coub', VIMEO: 'Vimeo', SOUNDCLOUD: 'SoundCloud', BANDCAMP: 'Bandcamp' };
@@ -706,54 +727,9 @@
     return m + ':' + (sec < 10 ? '0' : '') + sec;
   };
 
-  // Reproductor mínimo para videos: pausa/reproducir, barra para adelantar o atrasar y tiempo.
-  function miniPlayer(initial) {
-    const btn = h('button', { class: 'mini-btn', 'aria-label': 'Pausar' }, icon('pause', 16));
-    const range = h('input', { class: 'mini-range', type: 'range', min: 0, max: 1000, step: 1, value: 0, 'aria-label': 'Posición del video' });
-    const time = h('span', { class: 'mini-time', text: '0:00' });
-    const el = h('div', { class: 'mini' }, btn, range, time);
-    let v = null;
-    let off = null;
-    let seeking = false;
-    const paint = () => {
-      if (!v) return;
-      const d = v.duration || 0;
-      if (!seeking && d) range.value = String(Math.round((v.currentTime / d) * 1000));
-      time.textContent = fmtTime(v.currentTime) + ' / ' + fmtTime(d);
-      fill(btn, icon(v.paused ? 'play' : 'pause', 16));
-      btn.setAttribute('aria-label', v.paused ? 'Reproducir' : 'Pausar');
-      el.classList.toggle('ready', d > 0);
-    };
-    const bind = (video) => {
-      if (off) off.abort();
-      v = video;
-      el.hidden = !v;
-      if (!v) return;
-      off = new AbortController();
-      for (const ev of ['timeupdate', 'play', 'pause', 'loadedmetadata', 'durationchange']) v.addEventListener(ev, paint, { signal: off.signal });
-      paint();
-    };
-    range.addEventListener('input', () => {
-      if (!v || !v.duration) return;
-      seeking = true;
-      v.currentTime = (Number(range.value) / 1000) * v.duration;
-      time.textContent = fmtTime(v.currentTime) + ' / ' + fmtTime(v.duration);
-    });
-    range.addEventListener('change', () => (seeking = false));
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (!v) return;
-      if (v.paused) v.play().catch(() => {});
-      else v.pause();
-    });
-    for (const ev of ['click', 'dblclick', 'pointerdown', 'touchstart']) el.addEventListener(ev, (e) => e.stopPropagation(), { passive: true });
-    bind(initial || null);
-    return { el, bind };
-  }
-
-  // Barra de los GIF (y, en pantalla completa, también de los videos): una línea casi transparente a
-  // todo lo ancho. Solo aparece mientras tocas la pantalla (y un momento después); se arrastra para ir
-  // a otro momento. Con un video muestra además el tiempo, en chiquito.
+  // Barra mínima de los GIF y los videos, en toda la app: una línea casi transparente a todo lo ancho.
+  // Solo aparece mientras tocas la pantalla (y un momento después); se arrastra para ir a otro momento.
+  // Con un video muestra además el tiempo, en chiquito.
   const SCRUB_HIDE_MS = 1800;
   function scrubBar(initial) {
     const bar = h('span', { class: 'scrub-fill' });
@@ -869,16 +845,19 @@
       const snd = soundBtn(v);
       snd.hidden = !m.real; // los GIF no suenan: el botón aparece si resulta ser un video
       const badge = h('span', { class: 'mbadge', text: m.real ? 'VIDEO' : 'GIF' });
-      // Videos: reproductor con pausa y tiempo. GIF: solo la barra limpia que aparece al tocar.
-      const ctl = m.real ? miniPlayer(v) : scrubBar(v);
-      if (!m.real) ctl.watch(box);
-      box.append(v, badge, snd, ctl.el);
+      // GIF y videos: la barra mínima que aparece al tocar (en los videos, con el tiempo).
+      const ctl = scrubBar(null);
+      ctl.bind(v, !!m.real);
+      ctl.watch(box);
+      box.append(v, h('span', { class: 'vw-paused', 'aria-hidden': 'true' }, icon('play', 40)), badge, snd, ctl.el);
       watchAudio(v, () => {
         m.real = true;
         badge.textContent = 'VIDEO';
         snd.hidden = false;
+        ctl.bind(v, true);
       });
-      onTaps(box, () => openViewer(feed, p, i), () => m.real && snd.click());
+      // Un toque rápido en el centro pausa (o sigue); dos toques, pantalla completa.
+      onTaps(box, () => openViewer(feed, p, i), (tap) => pauseTap(tap) && togglePause(v, box));
     } else {
       box.append(embedLink(m, p));
     }
@@ -1327,11 +1306,11 @@
         });
         videos.push(vid);
         s.append(vid, h('span', { class: 'vw-paused', 'aria-hidden': 'true' }, icon('play', 40)));
-        // Un toque pausa (o sigue); dos toques salen de la pantalla completa. En horizontal, tocar la
-        // parte de abajo solo muestra los controles. Justo después de arrastrar para adelantar, no pausa.
-        onTaps(s, () => exitViewer(), () => {
-          if (Date.now() - (vid._seekedAt || 0) < 700) return;
-          if (isLandscape() && lastDownY > window.innerHeight * (1 - LAND_CTL_ZONE)) return;
+        // Un toque rápido en el centro pausa (o sigue); dos toques salen de la pantalla completa. Tocar
+        // abajo muestra los botones de Android (ver viewerGestures) o, en horizontal, los controles.
+        // Justo después de arrastrar para adelantar, no pausa.
+        onTaps(s, () => exitViewer(), (tap) => {
+          if (Date.now() - (vid._seekedAt || 0) < 700 || !pauseTap(tap)) return;
           togglePause(vid, s);
         });
       } else {
@@ -1480,7 +1459,8 @@
     viewer.el.querySelectorAll('.vw-sound').forEach(paintSound);
   }
 
-  // Un toque en pantalla completa pausa el video o el GIF; otro toque lo sigue desde donde quedó.
+  // Un toque rápido en el centro pausa el video o el GIF; otro lo sigue desde donde quedó (en pantalla
+  // completa y en el feed). Se ve el triángulo de reproducir en el centro.
   function togglePause(vid, slideEl) {
     if (vid.paused) {
       vid._userPaused = false;
@@ -1493,10 +1473,9 @@
   }
 
   // Con el teléfono horizontal todo se esconde (el nombre del autor, siempre). Tocar la parte de abajo
-  // de la pantalla muestra un momento la barra y los botones; tocar en otro lado pausa el video.
+  // de la pantalla muestra un momento la barra y los botones; un toque rápido en el centro pausa.
   const CONTROLS_MS = 2600;
   const LAND_CTL_ZONE = 0.35; // la parte de abajo: el 35 % de la altura
-  let lastDownY = 0;
   function showControls() {
     const v = viewer;
     if (!v) return;
@@ -1505,15 +1484,14 @@
     v.ctlTimer = setTimeout(() => v.el.classList.remove('ctl'), CONTROLS_MS);
   }
   function viewerPointerDown(e) {
-    lastDownY = e.clientY;
     if (!isLandscape() || e.clientY > window.innerHeight * (1 - LAND_CTL_ZONE)) showControls();
   }
 
   // ---- Gestos con el dedo en pantalla completa:
   // · Mantener el dedo sobre un video o GIF y arrastrarlo a los lados lo adelanta o lo atrasa
   //   (se apaga en Ajustes; seekSpan = segundos al cruzar la pantalla de lado a lado).
-  // · En la app, subir el dedo desde la parte de abajo muestra los botones de Android en vez de pasar
-  //   de post; solo un arrastre largo (más de LONG_SWIPE_MS) pasa al siguiente.
+  // · En la app, subir el dedo desde la parte de abajo (o tocarla) muestra los botones de Android en
+  //   vez de pasar de post; solo un arrastre largo (más de LONG_SWIPE_MS) pasa al siguiente.
   const SEEK_HOLD_MS = 280;
   const LONG_SWIPE_MS = 650;
   const bottomZone = () => Math.max(80, window.innerHeight * 0.12);
@@ -1533,7 +1511,15 @@
         g = null;
         if (e.touches.length !== 1 || e.target.closest('.scrub, input, .vw-edge')) return;
         const t = e.touches[0];
-        g = { x0: t.clientX, y0: t.clientY, at: Date.now(), mode: '', bottom: !!RS.android && t.clientY > window.innerHeight - bottomZone() };
+        g = {
+          x0: t.clientX,
+          y0: t.clientY,
+          at: Date.now(),
+          mode: '',
+          moved: false,
+          bottom: !!RS.android && t.clientY > window.innerHeight - bottomZone(),
+          onControl: !!e.target.closest('button, a, input')
+        };
         const slideEl = e.target.closest('.vw-slide');
         const vid = slideEl && slideEl.querySelector('video');
         if (vid && S.settings.seekDrag && !e.target.closest('button, a')) g.timer = setTimeout(() => startSeek(g, vid), SEEK_HOLD_MS);
@@ -1552,7 +1538,10 @@
           moveSeek(g, dx);
           return;
         }
-        if (Math.hypot(dx, dy) > 10) clearTimeout(g.timer);
+        if (Math.hypot(dx, dy) > 10) {
+          clearTimeout(g.timer);
+          g.moved = true;
+        }
         if (!g.bottom || g.mode === 'native' || g.mode === 'done') return;
         if (g.mode === '') {
           // Hacia abajo o hacia los lados se desliza como siempre; hacia arriba, se frena.
@@ -1575,10 +1564,12 @@
       },
       { passive: false }
     );
-    const end = () => {
+    const end = (e) => {
       if (!g) return;
       clearTimeout(g.timer);
       if (g.mode === 'seek') endSeek(g);
+      // Un toque rápido abajo (con el teléfono vertical) muestra los botones de Android.
+      else if (e.type === 'touchend' && g.bottom && !g.moved && !g.onControl && !isLandscape() && Date.now() - g.at < 600) peekBars();
       g = null;
     };
     v.el.addEventListener('touchend', end, { passive: true });
@@ -1925,6 +1916,7 @@
       this.renderExtra = o.extra;
       this.renderSub = o.sub;
       this.renderEmpty = o.empty;
+      this.doneText = o.doneText || null; // listas guardadas: qué decir al terminar
       this.onMode = o.onMode;
       this.items = [];
       this.ids = new Set();
@@ -2048,8 +2040,8 @@
         const res = await this.mediaSrc.next();
         if (res.done) {
           this.done = true;
-          if (res.capped) this.endText = 'Llegaste al límite: JoyReactor solo deja ver los ' + RS.GIF_LIMIT + ' más recientes de cada tipo por hashtag. Prueba con «Barajar».';
-          else this.endText = 'No hay más ' + (this.kinds.length > 1 ? 'GIF ni videos' : this.kinds[0] === 'gif' ? 'GIF' : 'videos') + '. Quita el filtro de arriba para ver todos los posts.';
+          if (res.capped) this.endText = 'Llegaste al límite: JoyReactor solo deja ver los ' + RS.GIF_LIMIT + ' más recientes de cada tipo por hashtag. Prueba a barajarlos con el botón de arriba.';
+          else this.endText = 'No hay más ' + (this.kinds.length > 1 ? 'GIF ni videos' : this.kinds[0] === 'gif' ? 'GIF' : 'videos') + '.';
         }
         return this.add(res.posts.filter((p) => RS.matchesKinds(p, this.kinds)).map((post) => ({ post })));
       }
@@ -2135,7 +2127,7 @@
         if (this.emptyStreak >= 4) {
           this.done = true;
           this.endText = this.tag
-            ? 'Ya no encuentro más posts de #' + this.tag + ' que no hayas visto aquí. Toca «Barajar» para empezar otra vez.'
+            ? 'Ya no encuentro más posts de #' + this.tag + ' que no hayas visto aquí. Desliza hacia abajo arriba del todo para barajar otra vez.'
             : 'No encontré más posts nuevos con tu mezcla. Añade más hashtags o desactiva «No repetir lo que ya vi».';
         }
         return n;
@@ -2147,7 +2139,10 @@
       }
       const chunk = this.staticItems.slice(this.cursor, end);
       this.cursor += chunk.length;
-      if (this.cursor >= this.staticItems.length) this.done = true;
+      if (this.cursor >= this.staticItems.length) {
+        this.done = true;
+        if (this.doneText) this.endText = this.doneText(this.staticItems.length);
+      }
       return this.add(chunk);
     }
 
@@ -2400,7 +2395,7 @@
     search: 'search',
     random: 'random', mix: 'random',
     following: 'following', favorites: 'following',
-    likes: 'likes', history: 'likes', visited: 'likes', settings: 'likes', hidden: 'likes', stats: 'likes', week: 'likes', topusers: 'likes', tree: 'likes'
+    likes: 'likes', history: 'likes', visited: 'likes', settings: 'likes', hidden: 'likes', stats: 'likes', week: 'likes', recap: 'likes', topusers: 'likes', tree: 'likes'
   };
   let lastNavWasBack = false;
 
@@ -2439,6 +2434,7 @@
     if (name === 'visited') return routeVisited();
     if (name === 'stats') return routeStats();
     if (name === 'week' || name === 'topusers') return routeWeek();
+    if (name === 'recap') return routeRecap();
     if (name === 'tree') return routeTree(parts[1] || '');
     if (name === 'hidden') return routeHidden();
     if (name === 'news') return routeNews();
@@ -2619,6 +2615,7 @@
         head: (f) => [h('h1', { text: 'Inicio' }), bellLink(), viewToggle(f)],
         extra: () => [
           updateBanner(),
+          recapBanner(),
           storiesRow(),
           sortChips(type, (t) => {
             S.settings.homeSort = t;
@@ -2721,6 +2718,18 @@
         }
       }, icon(notify ? 'bell' : 'belloff', 18), notify ? 'Avisando' : 'Avisarme');
 
+      // Guardarlo como perfil: se ve como el de un usuario (miniaturas y Favoritos) y sale en Seguidos › Perfiles.
+      const prof = !!(tagProfileOf(name) || (info && tagProfileOf(info.name)));
+      const profBtn = h('button', {
+        class: 'hbtn' + (prof ? ' prof' : ''),
+        'aria-pressed': String(prof),
+        onclick: () => {
+          setTagProfile(name, info, !prof);
+          toast(prof ? '#' + canon + ' ya no es un perfil' : '#' + canon + ' guardado como perfil: está en Seguidos › Perfiles');
+          route();
+        }
+      }, icon(prof ? 'usercheck' : 'userplus', 18), prof ? 'Perfil guardado' : 'Guardar como perfil');
+
       // JoyReactor ordena los hashtags como carpetas: fandoms › anime › Touhou Project › Cirno.
       // Arriba van las categorías que lo contienen y abajo las que tiene dentro.
       const path = info ? (info.path && info.path.length ? info.path : info.parent ? [info.parent] : []) : [];
@@ -2767,7 +2776,7 @@
           h('div', { class: 'grow' }, h('h2', { text: canon }), h('span', { class: 'meta', text: blocked ? 'Bloqueado · sus posts no salen en ningún feed' : meta })),
           blockBtn
         ),
-        h('div', { class: 'hero-actions' }, favBtn, mixBtn, bellBtn),
+        h('div', { class: 'hero-actions four' }, favBtn, mixBtn, bellBtn, profBtn),
         pathRow,
         subsRow,
         treeLink
@@ -2804,113 +2813,123 @@
       ]);
       return;
     }
-    // Un hashtag abre siempre con todos sus posts, lo más reciente primero. «Barajar» los pone en
-    // orden aleatorio y los botones GIF y video de arriba son filtros que hay que tocar a propósito.
+    // Un hashtag abre con todos sus posts, lo más reciente primero. Las pestañas eligen qué se ve (Todos,
+    // Videos y GIF y, si lo guardaste como perfil, Favoritos) y el botón de barajar los pone en orden
+    // aleatorio. Guardado como perfil se ve como el de un usuario: en miniaturas.
+    const profile = !!tagProfileOf(name);
     const type = 'ALL';
     const random = q.get('order') === 'random';
-    const order = random ? 'random' : 'recent';
-    const media = q.get('media') || 'all';
-    const showGif = media.includes('g') && media !== 'all';
-    const showVideo = media.includes('v');
-    const kinds = [showGif && 'gif', showVideo && 'video'].filter(Boolean);
-    const key = 'tag:' + name.toLowerCase() + ':' + type + ':' + order + ':' + (kinds.join('+') || 'all');
+    const tab = profile && q.get('show') === 'fav' ? 'fav' : /[gv]/.test(q.get('media') || '') ? 'anim' : 'all';
+    const kinds = tab === 'anim' ? ['gif', 'video'] : [];
+    const key = 'tag:' + name.toLowerCase() + ':' + (random ? 'random' : 'recent') + ':' + tab + (profile ? ':perfil' : '');
     const url = (o) => {
-      const g = o.gif === undefined ? showGif : o.gif;
-      const v = o.video === undefined ? showVideo : o.video;
+      const t = o.tab || tab;
       const rnd = o.random === undefined ? random : o.random;
-      return '#/tag/' + enc(name) + '?order=' + (rnd ? 'random' : 'recent') + '&media=' + ((g ? 'g' : '') + (v ? 'v' : '') || 'all');
+      return '#/tag/' + enc(name) + '?order=' + (rnd ? 'random' : 'recent') + (t === 'anim' ? '&media=gv' : t === 'fav' ? '&show=fav' : '');
     };
-    const what = showGif && showVideo ? 'GIF y videos' : showGif ? 'Solo GIF' : showVideo ? 'Solo videos' : 'Todos los posts';
-    const emptyWhat = showGif && showVideo ? 'GIF ni videos' : showGif ? 'GIF' : 'videos';
-    const note = what + ' de #' + name + (random ? ', en orden aleatorio.' : ', lo más reciente primero.');
-    const gifLabel = showGif ? 'Quitar el filtro GIF' : 'Mostrar solo GIF';
-    const videoLabel = showVideo ? 'Quitar el filtro de videos' : 'Mostrar solo videos';
+    // Favoritos: tus me gusta con este hashtag (barajados, si toca).
+    const favItems = () => {
+      const list = likedWithTag(name).map((x) => ({ post: x.post }));
+      return random ? RS.shuffle(list) : list;
+    };
+    const fmtBlocked = () => (kinds.length ? S.mix.exclude.filter(RS.isFormatTag) : []);
+    const unblockFormats = (list) => {
+      list.forEach((t) => setBlocked(t, false));
+      const stale = feeds.get(key);
+      feeds.delete(key);
+      if (stale) stale.destroy();
+      toast('Desbloqueado: #' + list.join(', #'));
+      route();
+    };
     const f = cached(key, () =>
       new Feed({
         key,
-        kind: random ? 'random' : 'pager',
+        kind: tab === 'fav' ? 'static' : random ? 'random' : 'pager',
         tag: name,
         type,
         kinds,
+        items: tab === 'fav' ? favItems() : [],
+        reload: tab === 'fav' ? favItems : null,
+        doneText: (n) => (n === 1 ? 'Es el único post de #' + name + ' que te gustó.' : 'Son los ' + n + ' posts de #' + name + ' que te gustaron.'),
+        mode: profile ? 'grid' : 'feed',
         back: true,
-        head: (f) => [
-          backBtn('/home'),
-          h('h1', { text: '#' + name }),
-          h('button', { class: 'ib gifbtn' + (showGif ? ' active' : ''), 'aria-pressed': String(showGif), 'aria-label': gifLabel, title: gifLabel, onclick: () => navReplace(url({ gif: !showGif })) }, 'GIF'),
-          h('button', { class: 'ib gifbtn' + (showVideo ? ' active' : ''), 'aria-pressed': String(showVideo), 'aria-label': videoLabel, title: videoLabel, onclick: () => navReplace(url({ video: !showVideo })) }, icon('film', 20)),
-          viewToggleCompact(f)
-        ],
+        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), profile ? null : viewToggleCompact(f)],
         extra: (f) => {
-          // «Todo» (lo más reciente primero) o «Barajar». Con «Barajar» puesto, tocarlo otra vez vuelve a mezclar.
-          const chips = h('nav', { class: 'chips', 'aria-label': 'Orden' },
-            h('button', { class: 'chip' + (random ? '' : ' on'), 'aria-pressed': String(!random), onclick: () => random && navReplace(url({ random: false })) }, 'Todo'),
-            h('button', {
-              class: 'chip' + (random ? ' on' : ''),
-              'aria-pressed': String(random),
-              onclick: () => {
-                if (!random) return navReplace(url({ random: true }));
-                toast('Barajado otra vez');
-                f.reset();
-              }
-            }, icon('shuffle', 16), 'Barajar')
-          );
           // Bloquear #gif (o #video…) esconde casi todos los GIF y videos: se avisa arriba.
-          const fmtBlocked = kinds.length ? S.mix.exclude.filter(RS.isFormatTag) : [];
-          const warn = fmtBlocked.length
+          const blocked = fmtBlocked();
+          const warn = blocked.length
             ? h('section', { class: 'notice', style: { margin: '12px 16px 0' } },
-                h('strong', { text: 'Tienes bloqueado #' + fmtBlocked.join(', #') }),
+                h('strong', { text: 'Tienes bloqueado #' + blocked.join(', #') }),
                 h('span', { text: 'Por eso faltan GIF o videos aquí: casi todos llevan esa etiqueta.' }),
-                h('div', { class: 'row-btns' },
-                  h('button', {
-                    class: 'btn blue',
-                    onclick: () => {
-                      fmtBlocked.forEach((t) => setBlocked(t, false));
-                      const stale = feeds.get(key);
-                      feeds.delete(key);
-                      if (stale) stale.destroy();
-                      toast('Desbloqueado: #' + fmtBlocked.join(', #'));
-                      route();
-                    }
-                  }, 'Desbloquear')
-                )
+                h('div', { class: 'row-btns' }, h('button', { class: 'btn blue', onclick: () => unblockFormats(blocked) }, 'Desbloquear'))
               )
             : null;
           f.hero = tagHero(name, () => f.total);
-          return [
-            f.hero,
-            warn,
-            note ? h('p', { class: 'countline', style: { padding: '12px 16px 0' }, text: note }) : null,
-            chips
-          ];
+          return [f.hero, warn];
         },
-        empty: kinds.length
-          ? () => {
-              // Si bloqueaste #gif (o parecido), todos los GIF desaparecen: se explica y se ofrece desbloquear.
-              const fmtBlocked = S.mix.exclude.filter(RS.isFormatTag);
-              if (fmtBlocked.length)
-                return emptyBox('ban', 'No se ven porque bloqueaste #' + fmtBlocked.join(', #'), 'Los GIF y los videos de JoyReactor llevan esas etiquetas.',
-                  h('button', {
-                    class: 'btn',
-                    onclick: () => {
-                      fmtBlocked.forEach((t) => setBlocked(t, false));
-                      const stale = feeds.get(key);
-                      feeds.delete(key);
-                      if (stale) stale.destroy();
-                      toast('Desbloqueado: #' + fmtBlocked.join(', #'));
-                      route();
-                    }
-                  }, 'Desbloquear'));
-              // Este hashtag no tiene GIF ni videos: en vez de una pantalla vacía, se muestran todos sus posts.
-              setTimeout(() => {
-                if (current && feeds.get(key) === current.feed) navReplace(url({ gif: false, video: false }));
-              }, 0);
-              toast('#' + name + ' no tiene ' + emptyWhat + ': te muestro todos sus posts');
-              return emptyBox('play', 'No hay ' + emptyWhat, '#' + name + ' no tiene ' + emptyWhat + '.');
-            }
-          : null
+        sub: () => tagTabs(tab, profile, random, url),
+        empty: () => {
+          if (tab === 'fav') return emptyBox('heart', 'Todavía no hay favoritos', 'Aquí salen los posts de #' + name + ' que te gustaron.');
+          if (tab !== 'anim') return emptyBox('hash', 'No hay posts aquí', '');
+          // Si bloqueaste #gif (o parecido), todos los GIF desaparecen: se explica y se ofrece desbloquear.
+          const blocked = fmtBlocked();
+          if (blocked.length)
+            return emptyBox('ban', 'No se ven porque bloqueaste #' + blocked.join(', #'), 'Los GIF y los videos de JoyReactor llevan esas etiquetas.',
+              h('button', { class: 'btn', onclick: () => unblockFormats(blocked) }, 'Desbloquear'));
+          return emptyBox('film', 'Sin videos ni GIF', '#' + name + ' no tiene videos ni GIF.');
+        }
       })
     );
     showFeed(f);
+  }
+
+  // Pestañas de un hashtag, como las del perfil, y a la derecha el botón de barajar (encendido = barajado).
+  function tagTabs(tab, profile, random, url) {
+    const t = (id, ic, label) =>
+      h('button', { class: 'ptab' + (tab === id ? ' on' : ''), role: 'tab', 'aria-selected': String(tab === id), onclick: () => tab !== id && navReplace(url({ tab: id })) }, icon(ic, 20), label);
+    const shuffleLabel = random ? 'Volver al orden normal' : 'Barajar los posts';
+    return h('div', { class: 'ptabs', role: 'tablist', 'aria-label': 'Qué posts ver' },
+      t('all', 'grid', 'Todos'),
+      t('anim', 'film', 'Videos y GIF'),
+      profile ? t('fav', 'heart', 'Favoritos') : null,
+      h('button', {
+        class: 'ptab shuf' + (random ? ' on' : ''),
+        'aria-pressed': String(random),
+        'aria-label': shuffleLabel,
+        title: shuffleLabel,
+        onclick: () => {
+          navReplace(url({ random: !random }));
+          toast(random ? 'Lo más reciente primero' : 'Barajado: desliza hacia abajo para barajar otra vez');
+        }
+      }, icon('shuffle', 20))
+    );
+  }
+
+  // ---- Hashtags guardados como perfil (Seguidos › Perfiles): se ven como el perfil de un usuario, en
+  // miniaturas y con Favoritos. S.tagProfiles: nombre en minúsculas -> { name, aliases, addedAt, pic }.
+  function tagProfileOf(t) {
+    const k = tkey(t);
+    return S.tagProfiles[k] || Object.values(S.tagProfiles).find((x) => (x.aliases || []).some((a) => tkey(a) === k)) || null;
+  }
+  function setTagProfile(name, info, on) {
+    const old = tagProfileOf(name) || (info && tagProfileOf(info.name));
+    if (!on) {
+      if (old) delete S.tagProfiles[tkey(old.name)];
+    } else if (!old) {
+      const canon = info ? info.name : name;
+      const x = { name: canon, aliases: tkey(canon) === tkey(name) ? [] : [name], addedAt: Date.now() };
+      if (info) x.pic = info.pic || 0;
+      S.tagProfiles[tkey(canon)] = x;
+    }
+    persist('tagProfiles', 0);
+  }
+  /** Tus me gusta que llevan este hashtag (o uno de sus sinónimos), del más reciente al más viejo. */
+  function likedWithTag(name) {
+    const p = tagProfileOf(name);
+    const names = new Set([tkey(name)].concat(p ? [p.name].concat(p.aliases || []).map(tkey) : []));
+    return Object.values(S.likes)
+      .filter((x) => x.post && x.post.tags.some((t) => names.has(tkey(t))))
+      .sort((a, b) => b.at - a.at);
   }
 
   // ================================================================ Usuario
@@ -3482,7 +3501,7 @@
   function followTabs(active) {
     return pageTabs('Qué sigues', active, [
       { id: 'tags', href: '#/following', ic: 'hash', label: 'Hashtags', n: Object.keys(S.favorites).length },
-      { id: 'users', href: '#/following?tab=users', ic: 'user', label: 'Usuarios', n: Object.keys(S.following).length }
+      { id: 'users', href: '#/following?tab=users', ic: 'user', label: 'Perfiles', n: Object.keys(S.following).length + Object.keys(S.tagProfiles).length }
     ]);
   }
 
@@ -3567,18 +3586,48 @@
     mount([h('header', { class: 'top' }, h('h1', { text: 'Seguidos' })), tabsEl, sb.el, sb.results, lists]);
   }
 
+  // Seguidos › Perfiles: los usuarios que sigues y los hashtags que guardaste como perfil, lo último primero.
   function routeFollowingUsers() {
     const listEl = h('div');
     const tabsEl = h('div');
+    const tagRow = (x) =>
+      h('div', { class: 'result' },
+        h('a', { href: '#/tag/' + enc(x.name) },
+          tagPic(x.name, 'htile', '#', x.pic),
+          h('span', { class: 'rtext' }, h('span', { class: 'n', text: '#' + x.name }), h('span', { class: 'm', text: 'Hashtag guardado como perfil' }))
+        ),
+        h('button', {
+          class: 'small-btn follow on',
+          'aria-label': 'Quitar #' + x.name + ' de tus perfiles',
+          onclick: () => {
+            setTagProfile(x.name, null, false);
+            draw();
+            toast('#' + x.name + ' ya no es un perfil', 'Deshacer', () => {
+              S.tagProfiles[tkey(x.name)] = x;
+              persist('tagProfiles', 0);
+              draw();
+            });
+          }
+        }, 'Guardado')
+      );
     const draw = () => {
       fill(tabsEl, followTabs('users'));
       const list = Object.values(S.following).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+      const tagList = Object.values(S.tagProfiles);
+      const all = list.map((x) => ({ x, at: x.addedAt || 0 })).concat(tagList.map((x) => ({ x, at: x.addedAt || 0, tag: true }))).sort((a, b) => b.at - a.at);
+      const people = list.length === 1 ? 'a 1 usuario' : 'a ' + list.length + ' usuarios';
+      const tags = tagList.length === 1 ? '1 hashtag' : tagList.length + ' hashtags';
+      const count = !tagList.length
+        ? 'Sigues ' + people + '.'
+        : list.length
+          ? 'Sigues ' + people + ' y guardaste ' + tags + ' como perfil.'
+          : 'Guardaste ' + tags + ' como perfil.';
       fill(listEl,
-        list.length
-          ? h('p', { class: 'countline', style: { paddingTop: '10px' }, text: list.length === 1 ? 'Sigues a 1 usuario.' : 'Sigues a ' + list.length + ' usuarios.' })
-          : emptyBox('users', 'Todavía no sigues a nadie', 'Toca el nombre de quien publicó un post para ver su perfil y después toca Seguir.'),
-        list.map((x) =>
-          personRow(x.name, x.userId, 'Lo sigues desde ' + (ago(x.addedAt) || 'antes'), null,
+        all.length
+          ? h('p', { class: 'countline', style: { paddingTop: '10px' }, text: count })
+          : emptyBox('users', 'Todavía no tienes perfiles', 'Toca el nombre de quien publicó un post y después Seguir. Un hashtag también puede ser un perfil: entra a él y toca «Guardar como perfil».'),
+        all.map(({ x, tag }) =>
+          tag ? tagRow(x) : personRow(x.name, x.userId, 'Lo sigues desde ' + (ago(x.addedAt) || 'antes'), null,
             h('button', {
               class: 'ib bellb' + (x.notify ? ' on' : ''),
               'aria-pressed': String(!!x.notify),
@@ -3608,7 +3657,12 @@
 
   // ================================================================ Favoritos: me gusta e historial
 
-  const settingsLink = () => iconLink('gear', 'Ajustes', '#/settings');
+  // Ajustes, con un puntito mientras haya un resumen de la semana sin mirar.
+  const settingsLink = () => {
+    const a = iconLink('gear', recapUnseen() ? 'Ajustes: tu resumen de la semana está listo' : 'Ajustes', '#/settings');
+    if (recapUnseen()) a.classList.add('has-dot');
+    return a;
+  };
 
   function favTabs(active) {
     return pageTabs('Favoritos', active, [
@@ -3697,22 +3751,25 @@
     saveStats();
   }
 
-  // Los 10 usuarios y hashtags con más tiempo. Un hashtag se descarta si casi todo su tiempo viene de
-  // otro que tiene dentro (fandoms ← anime ← Touhou Project): así quedan los específicos.
+  // Un hashtag se descarta si casi todo su tiempo viene de otro que tiene dentro (fandoms ← anime ←
+  // Touhou Project): así quedan los específicos. pathsOf(nombre) = sus carpetas de arriba.
+  function specificTags(cand, pathsOf) {
+    const isAbove = (a, b) => (pathsOf(b) || []).some((x) => tkey(x) === tkey(a)); // ¿a contiene a b?
+    return cand.filter(([name, ms]) => !cand.some(([other, ms2]) => other !== name && isAbove(name, other) && ms2 >= ms * 0.6));
+  }
+  const topOf = (obj, n) => Object.entries(obj || {}).sort((a, b) => b[1] - a[1]).slice(0, n);
+
+  // Los 10 usuarios y hashtags con más tiempo.
   async function summarize(t, lenient) {
-    const top = (obj, n) => Object.entries(obj || {}).sort((a, b) => b[1] - a[1]).slice(0, n);
-    const users = top(t.users, 10).map(([name, ms]) => ({ name, userId: (t.ids || {})[name] || 0, ms }));
-    const cand = top(t.tags, 30);
+    const users = topOf(t.users, 10).map(([name, ms]) => ({ name, userId: (t.ids || {})[name] || 0, ms }));
+    const cand = topOf(t.tags, 30);
     let paths = {};
     try {
       paths = await RS.fetchTagPaths(cand.map(([n]) => n));
     } catch (e) {
       if (!lenient) throw e; // sin conexión: el resumen final se calcula más tarde
     }
-    const low = (x) => String(x).toLowerCase();
-    const isAbove = (a, b) => (paths[b] || []).some((x) => low(x) === low(a)); // ¿a contiene a b?
-    const tags = cand
-      .filter(([name, ms]) => !cand.some(([other, ms2]) => other !== name && isAbove(name, other) && ms2 >= ms * 0.6))
+    const tags = specificTags(cand, (b) => paths[b])
       .slice(0, 10)
       .map(([name, ms]) => ({ name, ms }));
     return { users, tags };
@@ -3727,10 +3784,222 @@
         w.prev = w.week ? { users: w.users.map((u) => u.name), tags: w.tags.map((x) => x.name) } : null;
         Object.assign(w, { week: t.key, at: Date.now(), users: sum.users, tags: sum.tags, pending: null });
         persist('weekly', 0);
+        syncWeekNative();
+        // Ya está el resumen: el aviso de Inicio y el puntito de ⚙ aparecen sin salir y volver a entrar.
+        if (current && current.feed && /^(home|likes|history)/.test(current.feed.key)) current.feed.refresh();
       })
       .catch(() => {})
       .finally(() => (finishing = null));
     return finishing;
+  }
+
+  // ---- Resumen de los lunes: el lunes a las 9 Android avisa con una notificación (con lo que le pasa
+  // syncWeekNative cada vez que usas la app); dentro de la app hay un aviso arriba de Inicio y un
+  // puntito en ⚙ hasta que lo mires. Se mira como historias (#/recap) o como lista (#/week).
+  const RECAP_DAYS = 21; // un resumen más viejo ya no se anuncia
+  const recapUnseen = () => !!S.weekly.week && S.weekly.seen !== S.weekly.week && Date.now() - Number(S.weekly.week) < RECAP_DAYS * 86400000;
+  function markRecapSeen(week) {
+    if (!week || S.weekly.seen === week) return;
+    S.weekly.seen = week;
+    persist('weekly', 0);
+    syncWeekNative();
+  }
+  /** Tiempo con la app abierta en la semana que empieza en `week` (lunes 0:00, en ms). */
+  function weekUsage(week) {
+    const days = stats().days;
+    let ms = 0;
+    for (let i = 0; i < 7; i++) {
+      const d = days[dayKey(Number(week) + i * 86400000 + 12 * 3600000)];
+      if (d) ms += d.ms;
+    }
+    return ms;
+  }
+  // Lo que necesita la notificación de una semana: tiempo total, usuario #1 y hashtag #1.
+  function weekBrief(week, users, tags) {
+    const u = users[0];
+    const t = tags[0];
+    return { week: String(week), total: weekUsage(week), user: u ? u.name : '', userMs: u ? u.ms : 0, tag: t ? t.name : '', tagMs: t ? t.ms : 0 };
+  }
+  // Una semana sin calcular todavía: el hashtag #1 sale del árbol que ya está guardado en el teléfono.
+  function liveBrief(t) {
+    const users = topOf(t.users, 1).map(([name, ms]) => ({ name, ms }));
+    const tags = specificTags(topOf(t.tags, 30), (b) => (knownTree(b) || {}).p).map(([name, ms]) => ({ name, ms }));
+    return weekBrief(t.key, users, tags);
+  }
+  function syncWeekNative() {
+    if (!RS.android || typeof RS.android.syncWeek !== 'function') return;
+    const t = stats().time;
+    const w = S.weekly;
+    try {
+      RS.android.syncWeek(
+        JSON.stringify({
+          cur: t.key ? liveBrief(t) : null,
+          pend: w.pending ? liveBrief(w.pending) : null,
+          last: w.week ? weekBrief(w.week, w.users, w.tags) : null,
+          seen: w.seen || ''
+        })
+      );
+    } catch (e) {
+      /* puente antiguo */
+    }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) syncWeekNative();
+  });
+
+  // Aviso arriba de Inicio: Ver abre las historias; Luego lo saca de Inicio (el puntito de ⚙ sigue).
+  function recapBanner() {
+    const w = S.weekly;
+    if (!recapUnseen() || w.later === w.week) return null;
+    const u = w.users[0];
+    const t = w.tags[0];
+    const who = u && t ? 'Tu #1 fue @' + u.name + ' y tu hashtag, #' + t.name + '.' : u ? 'Tu #1 fue @' + u.name + '.' : t ? 'Tu hashtag #1 fue #' + t.name + '.' : '';
+    return h('section', { class: 'notice recap-note' },
+      h('strong', {}, icon('trophy', 19), 'Tu resumen de la semana está listo'),
+      who ? h('span', { text: who }) : null,
+      h('div', { class: 'row-btns' },
+        h('a', { class: 'btn', href: '#/recap' }, 'Ver'),
+        h('button', {
+          class: 'btn quiet',
+          onclick: () => {
+            w.later = w.week;
+            persist('weekly', 0);
+            if (current && current.feed) current.feed.refresh();
+          }
+        }, 'Luego')
+      )
+    );
+  }
+
+  // Historias del resumen: se pasan tocando (a la derecha sigue, a la izquierda vuelve) o solas cada
+  // STORY_MS. Al terminar queda la lista en Ajustes › Resumen de la semana.
+  const STORY_MS = 6000;
+  function routeRecap() {
+    weekTime();
+    const page = h('div', { class: 'recap' }, h('div', { class: 'status' }, icon('spinner', 20, 'spin'), 'Preparando tu resumen…'));
+    mount(page);
+    (async () => {
+      if (S.weekly.pending) await finishWeek();
+      const w = S.weekly;
+      let sum = w.week ? { week: w.week, users: w.users, tags: w.tags, prev: w.prev } : null;
+      if (w.pending) {
+        // Sin conexión: un resumen provisional con lo que hay en el teléfono.
+        const s2 = await summarize(w.pending, true);
+        sum = { week: w.pending.key, users: s2.users, tags: s2.tags, prev: w.week ? { users: w.users.map((u) => u.name), tags: w.tags.map((x) => x.name) } : null };
+      }
+      if (!page.isConnected) return;
+      if (!sum) {
+        const next = new Date(weekStart(Date.now()) + 7 * 86400000).toLocaleDateString('es', { day: 'numeric', month: 'long' });
+        fill(page,
+          h('button', { class: 'vw-btn rc-x', 'aria-label': 'Cerrar', onclick: () => goBack('#/home') }, icon('x', 24)),
+          emptyBox('trophy', 'Tu primer resumen estará listo el lunes ' + next, 'Se arma con el tiempo que miras los posts de cada usuario y de cada hashtag.')
+        );
+        return;
+      }
+      markRecapSeen(sum.week);
+      playStories(page, sum);
+    })().catch(() => fill(page, emptyBox('alert', 'No pude armar el resumen', 'Prueba otra vez en un rato.')));
+  }
+
+  function storySlides(sum) {
+    const day = (t) => new Date(t).toLocaleDateString('es', { day: 'numeric', month: 'long' });
+    const total = weekUsage(sum.week);
+    const before = weekUsage(Number(sum.week) - 7 * 86400000);
+    const diff = total - before;
+    const k = (text) => h('span', { class: 'rc-k', text });
+    const list = (rows) => h('ol', { class: 'rc-list' }, rows);
+    const slides = [];
+    slides.push([
+      k('Tu semana'),
+      h('span', { class: 'rc-big', text: fmtDur(total) }),
+      h('span', { class: 'rc-sub', text: 'mirando JoyReactor' + (before && Math.abs(diff) >= 60000 ? ', ' + fmtDur(Math.abs(diff)) + (diff > 0 ? ' más' : ' menos') + ' que la semana anterior.' : '.') }),
+      h('span', { class: 'rc-dim', text: 'Del ' + day(Number(sum.week)) + ' al ' + day(Number(sum.week) + 6 * 86400000) })
+    ]);
+    const u = sum.users[0];
+    if (u) {
+      slides.push([
+        k('Tu usuario #1'),
+        h('span', { class: 'rc-av' }, avatar({ user: u.name, userId: u.userId })),
+        h('span', { class: 'rc-big', text: '@' + u.name }),
+        h('span', { class: 'rc-sub', text: fmtDur(u.ms) + ' mirando sus posts' })
+      ]);
+      slides.push([
+        k(sum.users.length === 1 ? 'Tu usuario' : 'Tus ' + sum.users.length + ' usuarios'),
+        list(sum.users.map((x, i) => h('li', {}, h('b', { text: String(i + 1) }), h('span', { class: 'ellipsis', text: '@' + x.name }), h('span', { text: fmtDur(x.ms) }))))
+      ]);
+    }
+    if (sum.tags.length) {
+      slides.push([
+        k(sum.tags.length === 1 ? 'Tu hashtag' : 'Tus ' + sum.tags.length + ' hashtags'),
+        list(sum.tags.map((x, i) => h('li', {}, h('b', { text: String(i + 1) }), h('span', { class: 'ellipsis', text: '#' + x.name }), h('span', { text: fmtDur(x.ms) }))))
+      ]);
+    }
+    // Quién subió o bajó respecto de la semana anterior (lo que más se movió primero).
+    if (sum.prev) {
+      const moves = [];
+      const scan = (items, prev, mark) =>
+        items.forEach((x, i) => {
+          const j = prev.indexOf(x.name);
+          if (j < 0) moves.push({ label: mark + x.name, d: 99, text: 'Nuevo' });
+          else if (j !== i) moves.push({ label: mark + x.name, d: j - i, text: (j > i ? '+' : '−') + Math.abs(j - i) });
+        });
+      scan(sum.users, sum.prev.users || [], '@');
+      scan(sum.tags, sum.prev.tags || [], '#');
+      moves.sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+      if (moves.length) {
+        slides.push([
+          k('Subieron y bajaron'),
+          list(moves.slice(0, 7).map((m) => h('li', {}, h('b', { text: m.d === 99 ? '★' : m.d > 0 ? '▲' : '▼' }), h('span', { class: 'ellipsis', text: m.label }), h('span', { class: 'mv ' + (m.d === 99 ? 'new' : m.d > 0 ? 'up' : 'down'), text: m.text })))),
+          h('span', { class: 'rc-dim', text: 'respecto de la semana anterior' })
+        ]);
+      }
+    }
+    return slides;
+  }
+
+  function playStories(page, sum) {
+    const slides = storySlides(sum);
+    let i = 0;
+    let timer = null;
+    const bars = h('div', { class: 'rc-bars' }, slides.map(() => h('span', {}, h('i'))));
+    const body = h('div', { class: 'rc-body' });
+    const done = () => {
+      clearTimeout(timer);
+      if (page.isConnected) navReplace('#/week');
+    };
+    const show = () => {
+      clearTimeout(timer);
+      Array.from(bars.children).forEach((b, j) => (b.className = j < i ? 'done' : j === i ? 'cur' : ''));
+      fill(body, h('div', { class: 'rc-slide' }, slides[i]));
+      timer = setTimeout(next, STORY_MS);
+    };
+    const next = () => {
+      if (!page.isConnected) return clearTimeout(timer);
+      if (i >= slides.length - 1) return done();
+      i++;
+      show();
+    };
+    page.addEventListener('click', (e) => {
+      if (e.target.closest('button, a')) return;
+      if (e.clientX < window.innerWidth * 0.3 && i > 0) {
+        i--;
+        show();
+      } else next();
+    });
+    fill(page,
+      bars,
+      h('button', {
+        class: 'vw-btn rc-x',
+        'aria-label': 'Cerrar el resumen',
+        onclick: () => {
+          clearTimeout(timer);
+          goBack('#/home');
+        }
+      }, icon('x', 24)),
+      body,
+      h('div', { class: 'rc-foot' }, h('span', { text: 'Toca para seguir' }), h('button', { class: 'link-btn', onclick: done }, 'Ver la lista'))
+    );
+    show();
   }
 
   function moveOf(prev, name, i) {
@@ -3779,6 +4048,7 @@
     weekTime();
     finishWeek();
     const w = S.weekly;
+    markRecapSeen(w.week);
     const day = (t) => new Date(t).toLocaleDateString('es', { day: 'numeric', month: 'long' });
     const nextMonday = weekStart(Date.now()) + 7 * 86400000;
     const label = (text) => h('h2', { class: 'sec section-label', style: { padding: '18px 16px 4px' }, text });
@@ -3786,6 +4056,7 @@
     const final = w.week
       ? [
           h('p', { class: 'countline', style: { padding: '14px 16px 0' }, text: 'Semana del ' + day(Number(w.week)) + ' al ' + day(Number(w.week) + 6 * 86400000) + '. Es el tiempo que miraste los posts de cada uno; se calcula una vez, al terminar la semana.' }),
+          h('div', { style: { padding: '12px 16px 0' } }, h('a', { class: 'small-btn', href: '#/recap' }, icon('play', 16), 'Verlo como historias')),
           label('Tus 10 usuarios'),
           w.users.length ? rankUsers(w.users, w.prev && w.prev.users) : h('p', { class: 'countline', text: 'Esa semana no hubo datos.' }),
           label('Tus 10 hashtags'),
@@ -4114,9 +4385,9 @@
     });
     const watching = watchList();
 
-    const navLine = (ic, title, text, href) =>
+    const navLine = (ic, title, text, href, dot) =>
       h('a', { class: 'line navline', href },
-        h('span', { class: 'navline-ic' }, icon(ic, 20)),
+        h('span', { class: 'navline-ic' + (dot ? ' has-dot' : '') }, icon(ic, 20)),
         h('div', { class: 'grow' }, h('span', { class: 'sname', text: title }), h('span', { class: 'smeta', text })),
         icon('chevright', 18)
       );
@@ -4127,7 +4398,9 @@
       h('div', { class: 'setgroup' },
         h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Tu actividad' }),
         navLine('down', 'Posts ocultos', nHidden ? (nHidden === 1 ? '1 post' : fmt(nHidden) + ' posts') + ' con «no me gusta». Aquí puedes recuperarlos.' : 'Los posts con «no me gusta». Aquí puedes recuperarlos.', '#/hidden'),
-        navLine('trophy', 'Resumen de la semana', 'Los 10 usuarios y hashtags que más tiempo miraste.', '#/week'),
+        recapUnseen()
+          ? navLine('trophy', 'Resumen de la semana', 'Ya está el de la semana pasada: toca para verlo.', '#/recap', true)
+          : navLine('trophy', 'Resumen de la semana', 'Los 10 usuarios y hashtags que más tiempo miraste.', '#/week'),
         navLine('chart', 'Tus estadísticas', 'Cuánto y cómo usas la app (solo en este teléfono).', '#/stats')
       ),
       h('div', { class: 'setgroup' },
@@ -4800,7 +5073,9 @@
     }
     initTabs();
     initPullToRefresh();
+    weekTime(); // si ya empezó otra semana, el resumen de la anterior se calcula al abrir la app
     finishWeek();
+    syncWeekNative();
     window.addEventListener('hashchange', route);
     route();
     // Si Android cerró Firefox y no se revisó en un buen rato, reviso al abrir la app.

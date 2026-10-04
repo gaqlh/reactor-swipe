@@ -4,8 +4,11 @@
     {
       "name": "reactor-swipe-dev",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["tools/dev-server.mjs"],
-      "port": 5178
+      "runtimeArgs": [
+        "tools/dev-server.mjs"
+      ],
+      "port": 5178,
+      "autoPort": true
     }
   ]
 }

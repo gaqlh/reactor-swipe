@@ -557,7 +557,10 @@
     // Árbol de los hashtags: nombre en minúsculas -> { p: [carpeta de arriba, la siguiente, …], at } (ver leafTags en app.js).
     tagTree: {},
     // Resumen de la semana ya calculado (los 10 usuarios y hashtags que más tiempo miraste).
-    weekly: { week: '', at: 0, users: [], tags: [], prev: null, pending: null },
+    // seen: semana cuyo resumen ya miraste (historias o la lista); later: semana en que tocaste «Luego» en Inicio.
+    weekly: { week: '', at: 0, users: [], tags: [], prev: null, pending: null, seen: '', later: '' },
+    // Hashtags guardados como perfil (Seguidos › Perfiles): nombre en minúsculas -> { name, aliases, addedAt, pic }.
+    tagProfiles: {},
     eraCache: {}
   };
   RS.KEYS = Object.keys(DEFAULTS);
@@ -722,6 +725,7 @@
     }
     return arr;
   }
+  RS.shuffle = shuffle;
 
   /** Fuentes activas de la mezcla con su peso. Vacía = todo JoyReactor. */
   RS.mixSources = function (st) {

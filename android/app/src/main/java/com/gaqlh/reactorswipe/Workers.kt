@@ -68,5 +68,6 @@ object Scheduler {
             ExistingPeriodicWorkPolicy.KEEP,
             PeriodicWorkRequestBuilder<UpdateWorker>(12, TimeUnit.HOURS).setConstraints(online).build()
         )
+        Weekly.schedule(ctx)
     }
 }

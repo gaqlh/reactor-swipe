@@ -42,6 +42,13 @@ class Bridge(private val activity: MainActivity) {
         Scheduler.ensure(ctx)
     }
 
+    /** Resumen de los lunes: tiempo y top de la semana (y si ya lo miraste en la app). */
+    @JavascriptInterface
+    fun syncWeek(json: String) {
+        Store.saveWeek(ctx, json)
+        Weekly.onSeen(ctx)
+    }
+
     @JavascriptInterface
     fun notificationsAllowed(): Boolean = Notifs.canNotify(ctx)
 

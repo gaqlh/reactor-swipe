@@ -17,8 +17,10 @@ object Notifs {
 
     private const val CHANNEL_NEWS = "news"
     private const val CHANNEL_UPDATES = "updates"
+    private const val CHANNEL_WEEKLY = "weekly"
     private const val ID_NEWS = 1
     private const val ID_UPDATE = 2
+    private const val ID_WEEKLY = 3
     private const val ACCENT = 0xFFF5A524.toInt()
 
     fun ensureChannels(ctx: Context) {
@@ -31,6 +33,11 @@ object Notifs {
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_UPDATES, "Actualizaciones", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "Versiones nuevas de Reactor Swipe"
+            }
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_WEEKLY, "Resumen de la semana", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "Los lunes: cuánto miraste y tu top de la semana"
             }
         )
     }
@@ -68,6 +75,35 @@ object Notifs {
 
     fun cancelNews(ctx: Context) {
         NotificationManagerCompat.from(ctx).cancel(ID_NEWS)
+    }
+
+    /** Resumen de los lunes: tocarla abre las historias del resumen. */
+    @SuppressLint("MissingPermission")
+    fun weekly(ctx: Context, total: Long, user: String, userMs: Long, tag: String) {
+        if (!canNotify(ctx)) return
+        ensureChannels(ctx)
+        val title = if (total >= 60_000L) "Tu semana: ${Weekly.dur(total)}" else "Tu resumen de la semana está listo"
+        val who = when {
+            user.isNotEmpty() && tag.isNotEmpty() -> "Tu #1 fue @$user (${Weekly.dur(userMs)}) y tu hashtag, #$tag. "
+            user.isNotEmpty() -> "Tu #1 fue @$user (${Weekly.dur(userMs)}). "
+            tag.isNotEmpty() -> "Tu hashtag #1 fue #$tag. "
+            else -> ""
+        }
+        val text = who + "Toca para ver tu top 10."
+        val n = NotificationCompat.Builder(ctx, CHANNEL_WEEKLY)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(ACCENT)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(open(ctx, "#/recap", ID_WEEKLY))
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(ctx).notify(ID_WEEKLY, n)
+    }
+
+    fun cancelWeekly(ctx: Context) {
+        NotificationManagerCompat.from(ctx).cancel(ID_WEEKLY)
     }
 
     @SuppressLint("MissingPermission")
