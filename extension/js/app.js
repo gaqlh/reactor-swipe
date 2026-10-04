@@ -173,7 +173,7 @@
 
   // ================================================================ Estado del usuario
 
-  const S = { ui: { likesMode: 'grid' } };
+  const S = { ui: {} };
   let pass = () => true;
   const timers = {};
 
@@ -2439,10 +2439,14 @@
     likes: 'likes', history: 'likes', visited: 'likes', settings: 'likes', hidden: 'likes', stats: 'likes', week: 'likes', recap: 'likes', topusers: 'likes', tree: 'likes'
   };
   let lastNavWasBack = false;
+  let lastNavFromTab = false; // se llegó tocando una pestaña de abajo
+  let tabTapped = false;
 
   function route() {
     const { parts, q, key } = parseHash();
     lastNavWasBack = false;
+    lastNavFromTab = tabTapped;
+    tabTapped = false;
     if (goingBack) {
       goingBack = false;
       lastNavWasBack = true;
@@ -3801,9 +3805,8 @@
       reload: likedItems,
       memoryKey: 'likes',
       anchor: feedMemory.get('likes'),
-      mode: S.ui.likesMode,
-      onMode: (m) => (S.ui.likesMode = m),
-      head: (f) => [h('h1', { text: 'Favoritos' }), settingsLink(), viewToggle(f)],
+      mode: 'grid',
+      head: () => [h('h1', { text: 'Favoritos' }), settingsLink()],
       extra: () => [
         favTabs('likes'),
         all.length ? h('p', { class: 'countline', style: { paddingTop: '12px' }, text: all.length + (all.length === 1 ? ' post te gustó' : ' posts te gustaron') }) : null
@@ -3811,6 +3814,13 @@
       empty: () => emptyBox('heart', 'Todavía no tienes me gusta', 'Toca el corazón en cualquier post.')
     }));
     showFeed(f);
+    gridOnArrival(f);
+  }
+
+  // Me gusta e Historial se abren siempre en miniaturas; tocar una abre ese post en grande. Si llegas
+  // con «atrás» (p. ej. desde un hashtag), quedan como estaban.
+  function gridOnArrival(f) {
+    if (f.mode !== 'grid' && (!lastNavWasBack || lastNavFromTab)) f.setMode('grid', f.anchorId || f.topVisibleId());
   }
 
   // ================================================================ Resumen de la semana
@@ -4210,9 +4220,8 @@
       reload: historyItems,
       memoryKey: 'history',
       anchor: feedMemory.get('history'),
-      mode: S.ui.historyMode || 'grid',
-      onMode: (m) => (S.ui.historyMode = m),
-      head: (f) => [h('h1', { text: 'Favoritos' }), settingsLink(), viewToggle(f)],
+      mode: 'grid',
+      head: () => [h('h1', { text: 'Favoritos' }), settingsLink()],
       extra: () => [
         favTabs('history'),
         historyChips('posts'),
@@ -4234,6 +4243,7 @@
       empty: () => emptyBox('clock', 'Tu historial está vacío', 'Aquí se guardan los posts que miras más de 10 segundos (hasta ' + max + '; los más viejos se van borrando).')
     }));
     showFeed(f);
+    gridOnArrival(f);
   }
 
   function routeVisited() {
@@ -5169,7 +5179,16 @@
     document.querySelectorAll('#tabs [data-icon]').forEach((s) => s.replaceWith(icon(s.dataset.icon, 24)));
     document.querySelectorAll('#tabs a').forEach((a) =>
       a.addEventListener('click', (e) => {
+        // Favoritos con un post en grande (Me gusta o Historial): vuelve a las miniaturas de esa lista.
+        const f = current && current.feed;
+        if (a.dataset.tab === 'likes' && f && f.mode === 'feed' && (f.source === 'likes' || f.source === 'history') && f.root.isConnected) {
+          e.preventDefault();
+          f.setMode('grid', f.topVisibleId());
+          return;
+        }
+        tabTapped = true;
         if (a.getAttribute('href') === location.hash || (a.dataset.tab === 'home' && /^#\/home/.test(location.hash))) {
+          tabTapped = false;
           e.preventDefault();
           window.scrollTo({ top: 0, behavior: 'smooth' });
         }

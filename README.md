@@ -9,7 +9,7 @@ App de **Android** que convierte JoyReactor en un feed tipo Instagram. Todo se g
 - **Abajo, cinco pestañas**: Inicio, Buscar, Aleatorio, **Seguidos** (hashtags y perfiles) y **Favoritos** (tus me gusta y el historial). Ajustes se abre con ⚙ desde Favoritos.
 - **Un post por pantalla**: deslizas hacia arriba y pasa al siguiente. Los posts con varias imágenes o videos se deslizan hacia los lados (carrusel con puntitos).
 - **GIF y videos, en toda la app**: la barra de avance es una línea mínima que aparece al tocar (en los videos, con el tiempo) y **un toque rápido en el centro** pausa o sigue (en el feed, en el centro del video; en pantalla completa, en el centro de la pantalla). Dos toques abren la pantalla completa.
-- **Miniaturas** con un botón. Cada miniatura tiene su ♥ y su 👎, y al tocarla se abre ese post.
+- **Miniaturas** con un botón. Cada miniatura tiene su ♥ y su 👎, y al tocarla se abre ese post. **Me gusta** e **Historial** se abren siempre en miniaturas, sin botones de vista: tocar una abre el post en grande y tocar Favoritos abajo vuelve a las miniaturas.
 - **Deslizar hacia abajo** desde arriba del todo recarga la página.
 - **«Atrás» te deja donde estabas**: en el mismo post, en la misma vista y, si venías de pantalla completa, otra vez en pantalla completa. Si abriste un post desde las miniaturas, vuelves a ellas.
 - **Inicio** muestra primero los posts nuevos de la gente que sigues y de los hashtags guardados como perfil (de la última semana y que no viste), empezando por quien más me gusta te ha dado.
