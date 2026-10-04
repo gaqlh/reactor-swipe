@@ -462,6 +462,26 @@
     return out;
   };
 
+  /**
+   * Lo que hay dentro de un hashtag (sus subcarpetas), de a 36 por página, de las más grandes a las
+   * más chicas: { name, count, total, children: [{ name, count, inner }] }. inner = cuántas tiene dentro.
+   * (Para la herramienta temporal «Árbol de hashtags».)
+   */
+  RS.fetchTagChildren = async function (name, page) {
+    const d = await gql(
+      `query($n:String,$p:Int){ tag(name:$n){ name count tagPager(type:BEST){ count tags(page:$p){ name count tagPager(type:BEST){ count } } } } }`,
+      { n: name, p: page || 1 }
+    );
+    const t = d.tag;
+    if (!t) throw new Error('No existe el hashtag «' + name + '»');
+    return {
+      name: t.name,
+      count: t.count || 0,
+      total: t.tagPager.count || 0,
+      children: (t.tagPager.tags || []).map((c) => ({ name: c.name, count: c.count || 0, inner: (c.tagPager && c.tagPager.count) || 0 }))
+    };
+  };
+
   const userCache = new Map();
   RS.fetchUserInfo = function (username) {
     const key = String(username).toLowerCase();

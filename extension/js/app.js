@@ -2400,7 +2400,7 @@
     search: 'search',
     random: 'random', mix: 'random',
     following: 'following', favorites: 'following',
-    likes: 'likes', history: 'likes', visited: 'likes', settings: 'likes', hidden: 'likes', stats: 'likes', week: 'likes', topusers: 'likes'
+    likes: 'likes', history: 'likes', visited: 'likes', settings: 'likes', hidden: 'likes', stats: 'likes', week: 'likes', topusers: 'likes', tree: 'likes'
   };
   let lastNavWasBack = false;
 
@@ -2439,6 +2439,7 @@
     if (name === 'visited') return routeVisited();
     if (name === 'stats') return routeStats();
     if (name === 'week' || name === 'topusers') return routeWeek();
+    if (name === 'tree') return routeTree(parts[1] || '');
     if (name === 'hidden') return routeHidden();
     if (name === 'news') return routeNews();
     if (name === 'settings') return routeSettings();
@@ -2725,6 +2726,7 @@
       const path = info ? (info.path && info.path.length ? info.path : info.parent ? [info.parent] : []) : [];
       const subs = info ? info.subTags : [];
       const tagLink = (t, cls) => h('a', { class: 'tag' + (cls ? ' ' + cls : '') + (favOf(t) ? ' fav' : ''), href: '#/tag/' + enc(t), text: t });
+      const treeLink = info ? h('a', { class: 'tree-link', href: '#/tree/' + enc(canon) }, icon('chevright', 14), 'Ver en el árbol') : null;
       const pathRow = path.length
         ? h('div', { class: 'tree' },
             h('span', { class: 'section-label', text: 'Está dentro de' }),
@@ -2767,7 +2769,8 @@
         ),
         h('div', { class: 'hero-actions' }, favBtn, mixBtn, bellBtn),
         pathRow,
-        subsRow
+        subsRow,
+        treeLink
       );
     };
 
@@ -4128,6 +4131,10 @@
         navLine('chart', 'Tus estadísticas', 'Cuánto y cómo usas la app (solo en este teléfono).', '#/stats')
       ),
       h('div', { class: 'setgroup' },
+        h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Herramientas temporales' }),
+        navLine('hash', 'Árbol de hashtags', 'Cómo se reparten las carpetas: qué hashtags hay dentro de cada uno.', '#/tree')
+      ),
+      h('div', { class: 'setgroup' },
         h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Avisos de posts nuevos' }),
         h('div', { class: 'line' },
           h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Avisarme con notificación' }), h('span', { class: 'smeta', text: watching.length ? 'Vigilando: ' + watching.join(', ') : 'Activa la campanita en los hashtags o usuarios que sigues para elegir qué vigilar.' })),
@@ -4501,6 +4508,138 @@
         )
       )
     ]);
+  }
+
+  // ================================================================ Árbol de hashtags (herramienta temporal)
+  //
+  // Para entender cómo JoyReactor reparte los hashtags en carpetas: se elige uno (o una raíz) y se ve
+  // lo que tiene dentro, abriendo cada carpeta en el lugar. Cada nivel se pide al abrirlo, de a 36.
+
+  const TREE_ROOTS = ['fandoms', 'games', 'erotic', 'art', 'cats', 'gif', 'cosplay'];
+
+  // Una carpeta del árbol: tocar la flecha la abre o la cierra; tocar el nombre la pone arriba.
+  function treeNode(node, depth) {
+    const kids = h('div', { class: 'tn-kids', hidden: true });
+    let loaded = 0;
+    let total = 0;
+    let open = false;
+    const toggle = h('button', { class: 'tn-toggle', 'aria-label': 'Abrir ' + node.name, 'aria-expanded': 'false', disabled: !node.inner }, node.inner ? icon('chevright', 16) : h('span', { class: 'tn-dot' }));
+    const loadPage = async (more) => {
+      const page = Math.floor(loaded / 36) + 1;
+      const wait = h('div', { class: 'tn-wait', style: { '--d': depth + 1 } }, icon('spinner', 16, 'spin'), 'Cargando…');
+      kids.append(wait);
+      if (more) more.remove();
+      try {
+        const res = await RS.fetchTagChildren(node.name, page);
+        total = res.total;
+        loaded += res.children.length;
+        wait.remove();
+        kids.append(...res.children.map((c) => treeNode(c, depth + 1)));
+        if (loaded < total && res.children.length) {
+          const btn = h('button', { class: 'tn-more', style: { '--d': depth + 1 } }, 'Ver ' + Math.min(36, total - loaded) + ' más (quedan ' + fmt(total - loaded) + ')');
+          btn.addEventListener('click', () => loadPage(btn));
+          kids.append(btn);
+        }
+      } catch (e) {
+        fill(wait, icon('alert', 16), errText(e));
+      }
+    };
+    toggle.addEventListener('click', () => {
+      open = !open;
+      kids.hidden = !open;
+      toggle.setAttribute('aria-expanded', String(open));
+      toggle.classList.toggle('open', open);
+      if (open && !loaded) loadPage();
+    });
+    const row = h('div', { class: 'tn-row', style: { '--d': depth } },
+      toggle,
+      h('a', { class: 'tn-name', href: '#/tree/' + enc(node.name) }, node.name),
+      h('span', { class: 'tn-meta', text: fmt(node.count) + ' posts' + (node.inner ? ' · ' + fmt(node.inner) + ' dentro' : '') })
+    );
+    return h('div', { class: 'tn' }, row, kids);
+  }
+
+  function routeTree(name) {
+    const body = h('div', { class: 'tree-page' });
+    const results = h('div', { class: 'results' });
+    const input = h('input', { type: 'search', placeholder: 'Buscar un hashtag', 'aria-label': 'Buscar un hashtag para ver su árbol', autocomplete: 'off', enterkeyhint: 'search' });
+    let timer = null;
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      const q = input.value.trim().replace(/^#/, '');
+      if (q.length < 2) return fill(results);
+      timer = setTimeout(async () => {
+        try {
+          const list = await RS.autocomplete(q);
+          fill(results, list.slice(0, 8).map((t) => h('div', { class: 'result' }, h('a', { href: '#/tree/' + enc(t.name) }, tagPic(t.name, 'htile', '#', t.image ? RS.numId(t.id) : 0), h('span', { class: 'rtext' }, h('span', { class: 'n', text: t.name }), h('span', { class: 'm', text: fmt(t.count) + ' posts' }))))));
+        } catch (e) {
+          fill(results, h('div', { class: 'status', text: errText(e) }));
+        }
+      }, 250);
+    });
+    input.addEventListener('keydown', (e) => {
+      const q = input.value.trim().replace(/^#/, '');
+      if (e.key === 'Enter' && q) nav('#/tree/' + enc(q));
+    });
+
+    mount([
+      h('header', { class: 'top has-back' }, backBtn('/settings'), h('h1', { text: 'Árbol de hashtags' })),
+      h('p', { class: 'countline', style: { padding: '12px 16px 0' }, text: 'Herramienta temporal. Toca la flecha para abrir una carpeta y el nombre para ponerla arriba.' }),
+      h('div', { class: 'search' }, h('label', {}, icon('search', 20), input)),
+      results,
+      body
+    ]);
+
+    if (!name) {
+      // Sin hashtag elegido: las carpetas de más arriba (raíces) y las de lo que sigues.
+      const roots = new Set(TREE_ROOTS);
+      fill(body, h('h2', { class: 'sec section-label', style: { padding: '14px 16px 6px' }, text: 'Carpetas de más arriba' }), h('div', { class: 'status' }, icon('spinner', 20, 'spin'), 'Cargando…'));
+      (async () => {
+        try {
+          const follow = favList().map((f) => f.name);
+          const paths = follow.length ? await RS.fetchTagPaths(follow) : {};
+          for (const f of follow) {
+            const p = paths[f] || [];
+            roots.add(p.length ? p[p.length - 1] : f);
+          }
+          const infos = await Promise.all(Array.from(roots).map((r) => RS.fetchTagChildren(r, 1).catch(() => null)));
+          if (!body.isConnected) return;
+          const nodes = infos.filter(Boolean).sort((a, b) => b.count - a.count).map((x) => treeNode({ name: x.name, count: x.count, inner: x.total }, 0));
+          fill(body, h('h2', { class: 'sec section-label', style: { padding: '14px 16px 6px' }, text: 'Carpetas de más arriba' }), h('div', { class: 'tree-list' }, nodes));
+        } catch (e) {
+          fill(body, emptyBox('alert', 'No se pudo cargar', errText(e)));
+        }
+      })();
+      return;
+    }
+
+    fill(body, h('div', { class: 'status' }, icon('spinner', 20, 'spin'), 'Cargando…'));
+    (async () => {
+      try {
+        const [info, first] = await Promise.all([RS.fetchTagInfo(name), RS.fetchTagChildren(name, 1)]);
+        if (!body.isConnected) return;
+        const path = info && info.path ? info.path : [];
+        const self = treeNode({ name: first.name, count: first.count, inner: first.total }, 0);
+        fill(body,
+          h('h2', { class: 'sec section-label', style: { padding: '14px 16px 6px' }, text: 'Está dentro de' }),
+          h('div', { class: 'crumbs tree-crumbs' },
+            path.length
+              ? path.map((t, i) => [i ? h('span', { class: 'sep', 'aria-hidden': 'true', text: '›' }) : null, h('a', { class: 'tag', href: '#/tree/' + enc(t), text: t })])
+              : h('span', { class: 'countline', style: { padding: 0 }, text: 'Nada: es una carpeta de más arriba.' })
+          ),
+          h('div', { class: 'tree-actions' },
+            h('a', { class: 'small-btn', href: '#/tag/' + enc(first.name) }, icon('hash', 16), 'Abrir #' + first.name),
+            h('a', { class: 'small-btn', href: '#/tree' }, 'Ver las raíces')
+          ),
+          h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: first.total ? 'Lo que tiene dentro (' + fmt(first.total) + ')' : 'No tiene nada dentro' }),
+          h('div', { class: 'tree-list' }, self)
+        );
+        // Se abre solo el primer nivel.
+        if (first.total) self.querySelector('.tn-toggle').click();
+      } catch (e) {
+        fill(body, emptyBox('alert', 'No se pudo cargar', errText(e)));
+      }
+    })();
   }
 
   // ================================================================ Deslizar hacia abajo para recargar
