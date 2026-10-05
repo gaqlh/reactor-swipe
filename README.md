@@ -11,12 +11,13 @@ App de **Android** que convierte JoyReactor en un feed tipo Instagram. Todo se g
 - **GIF y videos, en toda la app**: la barra de avance es una línea mínima que aparece al tocar (en los videos, con el tiempo) y **un toque rápido en el centro** pausa o sigue (en el feed, en el centro del video; en pantalla completa, en el centro de la pantalla). Dos toques abren la pantalla completa.
 - **Arriba, como mucho dos botones**, los mismos en todas las pantallas. La vista es **un solo botón**: con un post por pantalla muestra ⊞ y pasa a miniaturas; en miniaturas muestra ▭ y vuelve a un post por pantalla.
 - **La cabecera se esconde** al pasar al post siguiente (cada post gana ese alto) y vuelve al subir, aunque sea un poco.
-- **Miniaturas** con un botón. Cada miniatura tiene su ♥ y su 👎, y al tocarla se abre ese post. **Me gusta** e **Historial** se abren siempre en miniaturas, sin botones de vista: tocar una abre el post en grande y tocar Favoritos abajo vuelve a las miniaturas.
+- **Miniaturas** con un botón. Cada miniatura tiene su ♥ y su 👎, y al tocarla se abre ese post. **Me gusta** e **Historial** se abren siempre en miniaturas, limpias (sin botones), y sin botones de vista: tocar una abre el post en grande y tocar Favoritos abajo vuelve a las miniaturas. **Mantener presionada una miniatura 2 segundos** empieza a seleccionar: cada toque marca o desmarca y arriba quedan cuántas van y **Eliminar** (con Deshacer).
 - **Deslizar hacia abajo** desde arriba del todo recarga la página.
 - **«Atrás» te deja donde estabas**: en el mismo post, en la misma vista y, si venías de pantalla completa, otra vez en pantalla completa. Si abriste un post desde las miniaturas, vuelves a ellas.
-- **Inicio** muestra primero los posts nuevos de la gente que sigues y de los hashtags que sigues como cuenta (de la última semana y que no viste), empezando por quien más me gusta te ha dado.
+- **Inicio** muestra primero los posts nuevos de la gente que sigues y de los hashtags que sigues como cuenta (de la última semana y que no viste), empezando por quien más me gusta te ha dado. Arriba solo sale el aviso de **versión nueva**; los demás (resumen de la semana, restaurar el respaldo) esperan en la **campanita**, que los cuenta.
+- **Historias** arriba del Inicio: lo que publicaron en las **últimas 24 horas** la gente y los hashtags que sigues. El aro es naranja mientras quede algo sin ver; tocar una abre esos posts en pantalla completa, desde el primero sin ver. Pasadas 24 horas desaparecen.
 - **Aleatorio a tu medida**: eliges qué entra y cuánto pesa cada cosa (la línea de colores de arriba abre Personalizar). También hay calidad mínima, época, «no repetir lo ya visto» y hashtags excluidos.
-- **Buscar** hashtags y usuarios, con las búsquedas recientes como en Instagram. Tolera errores de tipeo («touhuo» encuentra #Touhou Project) y encuentra palabras del medio («scarlet» → #Remilia Scarlet si ya la viste): lo exacto arriba y debajo «Parecidos». Enter abre el primero.
+- **Buscar** hashtags y usuarios, con las búsquedas recientes como en Instagram. Tolera errores de tipeo («touhuo» encuentra #Touhou Project) y encuentra palabras del medio («scarlet» → #Remilia Scarlet si ya la viste): lo exacto arriba y debajo «Parecidos». Enter abre el primero. Sin escribir muestra tus búsquedas recientes, los **perfiles que visitaste** y **Te pueden gustar** (los hashtags que más salen en tus me gusta y que no sigues, con + para seguirlos).
 
 ### Pantalla completa (doble toque)
 
@@ -27,7 +28,7 @@ App de **Android** que convierte JoyReactor en un feed tipo Instagram. Todo se g
 - La barra de avance es una línea mínima que aparece al tocar; en los videos muestra además el tiempo.
 - **Tocar la parte de abajo** (o subir el dedo desde ahí) muestra los **botones de Android** unos 3 segundos, sin pasar de post; solo un arrastre largo pasa al siguiente. Tampoco se esconden si tocas la pantalla mientras están.
 - **Girar el teléfono**: con un GIF o video a la vista en el feed, ponerlo horizontal lo abre en pantalla completa; al volver a vertical se cierra en el mismo post. En horizontal se esconde todo (también el nombre del autor): tocar la parte de abajo muestra un momento la barra y los botones, y un toque rápido en el centro pausa.
-- Las estrellas del autor y el rating del post no se muestran; se activan en Ajustes.
+- Las estrellas del autor y el rating del post no se muestran, ni aquí ni en el feed; se activan en Ajustes › Cómo se ve.
 
 ### Hashtags
 
@@ -46,22 +47,24 @@ App de **Android** que convierte JoyReactor en un feed tipo Instagram. Todo se g
 - **Perfil** en miniaturas, como en Instagram, con las pestañas **Todos**, **Videos y GIF** y **Favoritos** (los posts suyos que te gustaron: JoyReactor no deja ver los favoritos de otras personas).
 - Botones **Seguir** y **Avisarme** (notificación cuando publique). También se sigue sin salir del post: **Seguir** aparece al lado del nombre del autor, en la tarjeta y en pantalla completa, mientras no lo sigas.
 - **Reputación** de 1 a 5 estrellas (calidad, trayectoria y actividad), plegada: se abre al tocarla. Las estrellas también salen junto al nombre en cada post.
-- **Historial de perfiles**: los últimos 50 que visitaste (Favoritos › Historial › Perfiles).
+- **Historial de perfiles**: los últimos 50 que visitaste (Buscar › Perfiles que visitaste).
 
 ### Favoritos, historial y estadísticas
 
 - **Me gusta** con una animación del corazón. **No me gusta** oculta el post para siempre (los ocultos se recuperan en Ajustes).
 - **Historial** de los posts que miraste más de 10 segundos (100 por defecto; se puede cambiar a 50, 200 o 500). Lo que ya está en Favoritos no sale ahí.
-- **Resumen de la semana**: los 10 usuarios y los 10 hashtags que más **tiempo** miraste, contando solo el hashtag más específico de cada post. Se calcula una vez al terminar la semana. **El lunes a las 9** llega una notificación (cuánto miraste, tu usuario #1 y tu hashtag #1) que abre el resumen como **historias**. En la app hay además un aviso arriba de Inicio y un puntito en ⚙ hasta que lo mires; después queda en Ajustes › Resumen de la semana.
+- **Resumen de la semana**: los 10 usuarios y los 10 hashtags que más **tiempo** miraste, contando solo el hashtag más específico de cada post. Se calcula una vez al terminar la semana. **El lunes a las 9** llega una notificación (cuánto miraste, tu usuario #1 y tu hashtag #1) que abre el resumen como **historias**. En la app hay además un aviso en la campanita de Inicio y un puntito en ⚙ hasta que lo mires; después queda en Ajustes › Resumen de la semana.
 - **Estadísticas** de uso: tiempo por día y por hora, qué ves, tus hashtags y usuarios más vistos.
 - **Fechas de los posts** ocultas por defecto; se activan en Ajustes.
+- **Seguidos**: cada hashtag con su campanita y **Siguiendo** (tocarlo deja de seguir, con Deshacer); debajo del nombre, cuánto pesa en tu Aleatorio.
+- **Ajustes** en cinco grupos: Tu actividad, Lo que no quieres ver (hashtags bloqueados, posts ocultos, NSFW), Avisos, Cómo se ve y Respaldo y versión. Las opciones de un interruptor (cada cuánto revisar, la sensibilidad) solo se ven si está encendido.
 
 ### Lo demás
 
 - **Sin posts basura**: los posts que JoyReactor retiró por derechos de autor no salen en ningún lado. La app anota qué páginas solo tienen retirados para no volver a pedirlas, y el número de posts de un usuario o hashtag ya no cuenta los retirados ni los que JoyReactor cuenta pero no entrega.
 - **Avisos** de posts nuevos en los hashtags y usuarios con campanita, aunque la app esté cerrada.
 - **Actualizaciones**: cuando hay versión nueva llega un aviso y son 2 toques (**Actualizar** e **Instalar**). En Ajustes › Versión, **Actualizar** busca y, si hay una nueva, la descarga y abre el instalador.
-- **Respaldo automático**: cuando cambia algo importante (o una vez al día) la app escribe un respaldo en **Descargas › ReactorSwipe**, que no se borra al desinstalar. Si reinstalas, Inicio ofrece **Restaurar** (o Ajustes › Respaldo › Restaurar) y eliges ese archivo. Ojo: desinstalar la app borra todo lo que guarda; para actualizar no hace falta desinstalar.
+- **Respaldo automático**: cuando cambia algo importante (o una vez al día) la app escribe un respaldo en **Descargas › ReactorSwipe**, que no se borra al desinstalar. Si reinstalas, la campanita de Inicio ofrece **Restaurar** (o Ajustes › Respaldo y versión › Restaurar) y eliges ese archivo. Ojo: desinstalar la app borra todo lo que guarda; para actualizar no hace falta desinstalar.
 
 ## Instalarla (una sola vez)
 
