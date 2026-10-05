@@ -118,19 +118,6 @@ img, video { display: block; }
   flex-shrink: 0;
 }
 .pill.primary { background: var(--accent); color: var(--accent-ink); border-radius: 20px; }
-.vtoggle { display: flex; gap: 2px; padding: 3px; border-radius: 13px; background: var(--surface); flex-shrink: 0; }
-.vtoggle button {
-  width: 44px;
-  height: 38px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--text-2);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.vtoggle button.on { background: #34302b; color: var(--text); }
 
 /* ---------- Barra inferior ---------- */
 #tabs {
@@ -453,7 +440,6 @@ html.snap .feed-sub { position: static; }
 }
 .hbtn.fav { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
 .hbtn.fav .i { fill: var(--accent); }
-.hbtn.mix { background: var(--blue-soft); border-color: var(--blue-line); color: var(--blue); }
 .hbtn.bell { background: var(--green-soft); border-color: #22483a; color: var(--green); }
 .section-label { font-size: 12px; font-weight: 800; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-2); }
 .related { display: flex; gap: 7px; overflow-x: auto; scrollbar-width: none; }
@@ -461,9 +447,6 @@ html.snap .feed-sub { position: static; }
 .related .tag { flex-shrink: 0; }
 
 /* ---------- Mezcla ---------- */
-.mixcard { margin: 14px 16px 6px; padding: 14px; border-radius: 16px; background: var(--surface); border: 1px solid #2b2723; display: flex; flex-direction: column; gap: 10px; color: var(--text); }
-.mixcard h2 { font-size: 15px; font-weight: 800; }
-.mixcard .sub { font-size: 12.5px; color: var(--text-2); }
 .bar { display: flex; height: 12px; gap: 2px; border-radius: 6px; overflow: hidden; background: var(--surface-2); }
 .bar span { display: block; min-width: 3px; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 12px; }
@@ -781,8 +764,6 @@ a.rank-name { color: #8ec5ff; }
 .rep-note { font-size: 11.5px; color: var(--text-3); }
 
 /* Bloquear hashtags */
-.ib.blockb { color: var(--text-2); }
-.ib.blockb.on { background: var(--danger-soft); color: var(--danger-text); }
 
 /* Tus 10 usuarios */
 .tops { padding: 12px 0 6px; border-bottom: 1px solid var(--line); }
@@ -1029,7 +1010,6 @@ button.htag.more { padding: 0 8px; border-radius: 9px; background: var(--surface
 .rep-top .grow { font-size: 13px; color: var(--text-2); }
 
 /* ---------- 1.3.1: Árbol de hashtags (herramienta temporal) ---------- */
-.tree-link { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 700; }
 .tree-page { padding-bottom: 24px; }
 .tree-crumbs { padding: 0 16px; flex-wrap: wrap; }
 .tree-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px 0; }
@@ -1056,7 +1036,6 @@ button.htag.more { padding: 0 8px; border-radius: 9px; background: var(--surface
 .slide .scrub-time { bottom: 9px; right: 60px; }
 
 /* Hashtag: cuatro botones en dos filas (Seguir, Mezclar, Avisarme y Guardar como perfil) */
-.hero-actions.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .hbtn.prof { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
 
 /* Pestañas del hashtag: a la derecha, el botón de barajar (encendido = barajado) */
@@ -1122,3 +1101,75 @@ button.htag.more { padding: 0 8px; border-radius: 9px; background: var(--surface
 /* ---------- 1.4.5 ---------- */
 /* Buscar: los resultados parecidos (con errores de tipeo) van debajo, con su título */
 .similar-label { display: block; padding: 14px 16px 4px; }
+
+/* ---------- 1.5.0 ---------- */
+/* La cabecera se esconde al pasar de post (un post por pantalla); cada post gana ese alto */
+.top { transition: transform 0.22s ease; }
+html.snap.top-off .top { transform: translateY(-100%); }
+html.snap.top-off { scroll-padding-top: 0; --card-h: calc(100vh - var(--tabs-h) - env(safe-area-inset-bottom)); }
+@supports (height: 100dvh) {
+  html.snap.top-off { --card-h: calc(100dvh - var(--tabs-h) - env(safe-area-inset-bottom)); }
+}
+
+/* Aleatorio: la mezcla en una línea fina que abre Personalizar */
+.mixline { margin: 12px 16px 4px; display: flex; flex-direction: column; gap: 8px; color: var(--text); }
+.mixline .bar { height: 6px; }
+.mixline-row { display: flex; align-items: center; gap: 8px; }
+.mixline-row .legend { flex: 1 1 auto; min-width: 0; }
+.mixline-row > .i { color: var(--text-3); }
+
+/* Cabecera del hashtag: Seguir, la campanita y ⋯ */
+.hero-actions.trio { grid-template-columns: minmax(0, 1fr) 52px 52px; }
+.hbtn.go { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.hbtn .as { font-size: 12px; font-weight: 600; opacity: 0.75; }
+button.tag { border: 0; font-family: inherit; cursor: pointer; touch-action: manipulation; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.tag.holding {
+  background-image: linear-gradient(var(--accent), var(--accent));
+  background-position: left bottom;
+  background-size: 0% 2px;
+  background-repeat: no-repeat;
+  animation: hold-fill 0.5s linear forwards;
+}
+.htag.holding { animation-duration: 0.5s; }
+
+/* «Seguir» al lado del autor */
+.fol-inline { flex-shrink: 0; height: 32px; padding: 0 4px; border: 0; background: transparent; color: var(--accent); font-size: 14px; font-weight: 800; }
+.head .who-link { flex: 0 1 auto; }
+.fol-inline.vw-fol { height: auto; padding: 0 0 0 8px; font-size: 14px; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8); }
+
+/* Menú que sube desde abajo (seguir como hashtag o como cuenta, menú de un hashtag, ⋯) */
+.sheet { position: fixed; inset: 0; z-index: 105; display: flex; flex-direction: column; justify-content: flex-end; background: rgba(0, 0, 0, 0.55); opacity: 0; transition: opacity 0.2s; }
+.sheet.open { opacity: 1; }
+.sheet-pan {
+  width: 100%;
+  max-width: var(--maxw);
+  margin: 0 auto;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 6px 0 calc(14px + env(safe-area-inset-bottom));
+  border-radius: 20px 20px 0 0;
+  background: var(--surface);
+  border-top: 1px solid var(--line-2);
+  transform: translateY(30px);
+  transition: transform 0.2s ease;
+}
+.sheet.open .sheet-pan { transform: none; }
+.sheet-grab { display: block; width: 38px; height: 4px; margin: 4px auto 8px; border-radius: 2px; background: var(--line-2); }
+.sheet-title { padding: 4px 20px 8px; font-size: 17px; font-weight: 800; }
+.sheet-label { display: block; padding: 12px 20px 4px; font-size: 12px; font-weight: 800; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-3); }
+.sheet-head { display: flex; align-items: center; gap: 14px; padding: 6px 20px 12px; border-bottom: 1px solid var(--line); }
+.sheet-head .grow { display: flex; flex-direction: column; gap: 2px; }
+.sheet-head strong { font-size: 18px; font-weight: 800; overflow-wrap: anywhere; }
+.sh-pic { width: 52px; height: 52px; border-radius: 50%; overflow: hidden; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 800; }
+.sh-pic img { width: 100%; height: 100%; object-fit: cover; }
+.sh-meta { font-size: 14px; color: var(--text); font-variant-numeric: tabular-nums; }
+.sh-more { font-size: 13px; color: var(--text-2); }
+.sh-more:empty { display: none; }
+.sheet-row { width: 100%; min-height: 56px; display: flex; align-items: center; gap: 14px; padding: 10px 20px; border: 0; background: transparent; color: var(--text); text-align: left; font: inherit; }
+.sheet-row:active { background: var(--surface-2); }
+.sheet-row > .i:first-child { color: var(--text-2); }
+.sheet-row .grow { display: flex; flex-direction: column; gap: 2px; }
+.sheet-row .sr-l { font-size: 15.5px; font-weight: 700; }
+.sheet-row .sr-s { font-size: 13px; color: var(--text-2); line-height: 1.35; }
+.sheet-row.on > .i:first-child, .sheet-row.on .sr-l, .sheet-row.on > .i:last-child { color: var(--accent); }
+.sheet-row.danger, .sheet-row.danger > .i:first-child { color: var(--danger-text); }

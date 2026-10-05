@@ -54,7 +54,8 @@
     chevright: '<path d="M9 5l7 7-7 7"/>',
     users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M18 14.2a6.5 6.5 0 0 1 3.5 5.8"/>',
     userplus: '<circle cx="10" cy="8" r="4"/><path d="M3 20.5a7 7 0 0 1 12.5-4.3"/><path d="M19 14v6M16 17h6"/>',
-    usercheck: '<circle cx="10" cy="8" r="4"/><path d="M3 20.5a7 7 0 0 1 12.5-4.3"/><path d="M15.5 18l2 2 4-4.5"/>'
+    usercheck: '<circle cx="10" cy="8" r="4"/><path d="M3 20.5a7 7 0 0 1 12.5-4.3"/><path d="M15.5 18l2 2 4-4.5"/>',
+    dots: '<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>'
   };
 
   // Cada ícono se interpreta una sola vez como SVG y después se clona.
@@ -182,7 +183,7 @@
     timers[key] = setTimeout(() => {
       timers[key] = null;
       RS.save({ [key]: S[key] });
-      if (key === 'favorites' || key === 'following' || key === 'settings' || key === 'mix') syncNative();
+      if (key === 'favorites' || key === 'following' || key === 'tagProfiles' || key === 'settings' || key === 'mix') syncNative();
       // Cambió algo que no se debe perder: el respaldo automático se pone al día en un rato.
       if (BACKUP_KEYS.has(key)) {
         clearTimeout(backupTimer);
@@ -194,13 +195,16 @@
   let backupTimer = null;
 
   // App de Android: los avisos los revisa Android en segundo plano, así que le paso qué vigilar
-  // y cómo (hashtags y usuarios con campanita, ajustes y hashtags excluidos).
+  // y cómo (hashtags y usuarios con campanita, ajustes y hashtags excluidos). Los hashtags que sigues
+  // como cuenta (S.tagProfiles) van con los demás hashtags.
   function syncNative() {
     if (!RS.android) return;
     try {
       RS.android.syncConfig(
         JSON.stringify({
-          favorites: Object.values(S.favorites).map((f) => ({ name: f.name, kind: f.kind, notify: !!f.notify })),
+          favorites: Object.values(S.favorites)
+            .map((f) => ({ name: f.name, kind: f.kind, notify: !!f.notify }))
+            .concat(Object.values(S.tagProfiles).filter((t) => t.notify && !favOf(t.name)).map((t) => ({ name: t.name, kind: 'hashtag', notify: true }))),
           following: Object.values(S.following).map((f) => ({ name: f.name, notify: !!f.notify })),
           settings: S.settings,
           exclude: S.mix.exclude,
@@ -397,7 +401,7 @@
     const draw = () =>
       fill(el,
         withTitle === false ? null : h('span', { class: 't', text: 'Hashtags bloqueados' }),
-        h('span', { class: 'd', text: 'Los posts con estos hashtags no salen en ningún feed ni en los avisos. También puedes bloquear un hashtag desde su página, con el botón ⊘.' }),
+        h('span', { class: 'd', text: 'Los posts con estos hashtags no salen en ningún feed ni en los avisos. También puedes bloquear un hashtag manteniéndolo presionado, o desde el botón ⋯ de su página.' }),
         S.mix.exclude.length
           ? h('div', { class: 'wrap' },
               S.mix.exclude.map((x) =>
@@ -1026,11 +1030,11 @@
       });
   }
 
-  // Botón de hashtag: un toque lo abre; mantenerlo presionado 3 s lo sigue (Seguidos).
+  // Botón de hashtag: un toque lo abre; mantenerlo presionado abre su menú (openTagSheet).
   // (Es un botón y no un enlace: Android cancela la pulsación larga sobre los enlaces.)
   function tagButton(t, onOpen, parent) {
-    return holdToFavorite(
-      h('button', { type: 'button', class: 'htag' + (favOf(t) ? ' fav' : ''), 'data-tag': t, draggable: 'false', onclick: onOpen }, '#' + t, parent ? h('small', { class: 'tparent', text: parent }) : null),
+    return holdForMenu(
+      h('button', { type: 'button', class: 'htag' + (isFollowedTag(t) ? ' fav' : ''), 'data-tag': t, draggable: 'false', onclick: onOpen }, '#' + t, parent ? h('small', { class: 'tparent', text: parent }) : null),
       t
     );
   }
@@ -1068,9 +1072,9 @@
     return row;
   }
 
-  // Mantener presionado un hashtag 3 segundos lo sigue (se ve una línea que se llena).
-  const HOLD_MS = 3000;
-  function holdToFavorite(el, tag) {
+  // Mantener presionado un hashtag medio segundo abre su menú (se ve una línea que se llena).
+  const HOLD_MS = 500;
+  function holdForMenu(el, tag) {
     let timer = null;
     let x0 = 0;
     let y0 = 0;
@@ -1084,21 +1088,12 @@
       x0 = e.clientX;
       y0 = e.clientY;
       el.classList.add('holding');
-      timer = setTimeout(async () => {
+      timer = setTimeout(() => {
         timer = null;
         el.classList.remove('holding');
         el.dataset.held = '1';
-        buzz(40);
-        if (favOf(tag)) {
-          toast('Ya sigues #' + tag);
-          return;
-        }
-        const fav = await addFavorite(tag);
-        if (!fav) return;
-        toast(savedText(tag, fav));
-        document.querySelectorAll('.htag[data-tag]').forEach((a) => {
-          if (favOf(a.dataset.tag)) a.classList.add('fav');
-        });
+        buzz(30);
+        openTagSheet(tag);
       }, HOLD_MS);
     });
     el.addEventListener('pointermove', (e) => {
@@ -1117,6 +1112,210 @@
     );
     el.addEventListener('contextmenu', (e) => e.preventDefault());
     return el;
+  }
+
+  // ---- Menú que sube desde abajo. Tocar fuera, «atrás» o Esc lo cierra.
+  let sheetEl = null;
+  function openSheet(label, ...kids) {
+    closeSheet();
+    const el = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': label },
+      h('div', { class: 'sheet-pan' }, h('span', { class: 'sheet-grab', 'aria-hidden': 'true' }), ...kids)
+    );
+    el.addEventListener('click', (e) => e.target === el && closeSheet());
+    document.body.append(el);
+    void el.offsetWidth; // para que se vea subir (sin requestAnimationFrame, que se congela si no se ve)
+    el.classList.add('open');
+    sheetEl = el;
+    return el;
+  }
+  function closeSheet() {
+    if (!sheetEl) return false;
+    const el = sheetEl;
+    sheetEl = null;
+    el.classList.remove('open');
+    setTimeout(() => el.remove(), 220);
+    return true;
+  }
+  document.addEventListener('keydown', (e) => e.key === 'Escape' && closeSheet());
+  const sheetRow = (ic, label, sub, onclick, cls, right) =>
+    h('button', { type: 'button', class: 'sheet-row' + (cls ? ' ' + cls : ''), onclick },
+      icon(ic, 22),
+      h('span', { class: 'grow' }, h('span', { class: 'sr-l', text: label }), sub ? h('span', { class: 'sr-s', text: sub }) : null),
+      right || null
+    );
+
+  // ---- Un hashtag se sigue de dos formas: como hashtag (S.favorites: se ve barajado y entra en tu
+  // Aleatorio y en las historias de Inicio) o como cuenta (S.tagProfiles: se ve como un perfil, en orden
+  // y en miniaturas, y lo nuevo va primero en Inicio). Las dos salen en Seguidos.
+  function followedAs(name, info) {
+    const fav = favOf(name) || (info && favOf(info.name)) || null;
+    const prof = tagProfileOf(name) || (info && tagProfileOf(info.name)) || null;
+    return { fav, prof };
+  }
+  const isFollowedTag = (t) => !!(favOf(t) || tagProfileOf(t));
+
+  /** as: 'tag' (como hashtag), 'account' (como cuenta) o null (dejar de seguir). */
+  async function followTagAs(name, as, notify) {
+    let info;
+    try {
+      info = await RS.fetchTagInfo(name);
+    } catch (e) {
+      toast(errText(e));
+      return;
+    }
+    if (!info) return toast('No existe el hashtag «' + name + '»');
+    const { fav, prof } = followedAs(name, info);
+    const before = {
+      fav: fav && Object.assign({}, fav),
+      mix: fav && S.mix.sources[fav.name] ? Object.assign({}, S.mix.sources[fav.name]) : null,
+      prof: prof && Object.assign({}, prof)
+    };
+    // Al cambiar de forma se conserva la campanita.
+    const bell = !!(notify || (fav && fav.notify) || (prof && prof.notify));
+    if (fav && as !== 'tag') removeFavorite(fav.name);
+    if (prof && as !== 'account') setTagProfile(prof.name, info, false);
+    if (as === 'tag' && !fav) {
+      if (!(await addFavorite(name, bell ? { notify: true } : null))) return;
+    }
+    if (as === 'account' && !prof) {
+      setTagProfile(name, info, true);
+      if (bell) setProfileNotify(info.name, true, true);
+    }
+    const avisos = notify ? (S.settings.notify ? ' y te avisaré de posts nuevos' : ' (los avisos están desactivados en Ajustes)') : '';
+    if (as === 'tag') toast('Sigues #' + info.name + ' como hashtag' + avisos);
+    else if (as === 'account') toast('Sigues #' + info.name + ' como cuenta' + avisos + ': está en Seguidos › Perfiles');
+    else {
+      toast('Dejaste de seguir #' + info.name, 'Deshacer', () => {
+        restoreFollow(before);
+        followChanged(name, !!before.prof, info.name);
+      });
+    }
+    followChanged(name, !!prof !== (as === 'account'), info.name);
+  }
+  function restoreFollow(b) {
+    if (b.fav) {
+      S.favorites[b.fav.name] = b.fav;
+      S.mix.sources[b.fav.name] = b.mix || { on: true, w: 5 };
+      refreshFavIndex();
+      persist('favorites');
+      persist('mix');
+      invalidateRandom();
+    }
+    if (b.prof) {
+      S.tagProfiles[tkey(b.prof.name)] = b.prof;
+      persist('tagProfiles', 0);
+      invalidateHome();
+    }
+  }
+  // Después de seguir o dejar de seguir un hashtag se pintan sus etiquetas y, si estás en su página, se
+  // redibuja la cabecera; si pasó a ser cuenta (o dejó de serlo) se vuelve a abrir, que cambia la vista.
+  function followChanged(name, kindChanged, canon) {
+    document.querySelectorAll('[data-tag]').forEach((a) => a.classList.toggle('fav', isFollowedTag(a.dataset.tag)));
+    const hero = viewEl.querySelector('.tag-hero');
+    if (!hero) return;
+    const { parts } = parseHash();
+    const names = [tkey(name), tkey(canon || name)];
+    const here = parts[0] === 'tag' && !!parts[1] && (names.includes(tkey(parts[1])) || (!!hero._canon && names.includes(tkey(hero._canon))));
+    if (!here || !kindChanged) return hero._redraw && hero._redraw();
+    // Cuenta = en orden y en miniaturas; hashtag = barajado: se vuelve a abrir con su vista de siempre.
+    const hash = '#/tag/' + enc(parts[1]);
+    if (location.hash === hash) route();
+    else navReplace(hash);
+  }
+  function setProfileNotify(name, on, quiet) {
+    const p = tagProfileOf(name);
+    if (!p) return;
+    p.notify = on;
+    persist('tagProfiles', 0);
+    if (on && !quiet) {
+      toast(
+        S.settings.notify ? 'Te avisaré de posts nuevos en #' + p.name : 'Avisos desactivados en Ajustes',
+        S.settings.notify ? null : 'Ajustes',
+        () => nav('#/settings')
+      );
+    }
+  }
+
+  // Bloquear (o desbloquear) un hashtag desde su menú: sus posts salen en el acto del feed a la vista.
+  async function blockTag(name, on) {
+    const info = await RS.fetchTagInfo(name).catch(() => null);
+    const canon = info ? info.name : name;
+    const redo = () => {
+      const f = current && current.feed;
+      const { parts } = parseHash();
+      if (parts[0] === 'tag' && parts[1] && [tkey(name), tkey(canon)].includes(tkey(parts[1]))) return route();
+      if (f && f.kind !== 'static') f.items.filter((it) => !pass(it.post)).forEach((it) => f.drop(it.post.id));
+      const hero = viewEl.querySelector('.tag-hero');
+      if (hero && hero._redraw) hero._redraw();
+    };
+    if (!on) {
+      setBlocked(name, false);
+      if (canon !== name) setBlocked(canon, false);
+      toast('#' + canon + ' desbloqueado');
+    } else {
+      setBlocked(canon, true);
+      toast('#' + canon + ' bloqueado: sus posts ya no salen en ningún lado', 'Deshacer', () => {
+        setBlocked(canon, false);
+        redo();
+      });
+    }
+    redo();
+  }
+
+  // Cabecera de los menús de un hashtag: su imagen, cuántos posts tiene y lo que importa saber de él.
+  function tagSheetHead(name) {
+    const title = h('strong', { text: '#' + name });
+    const meta = h('span', { class: 'sh-meta', text: 'Cargando…' });
+    const more = h('span', { class: 'sh-more' });
+    RS.fetchTagInfo(name)
+      .then((info) => {
+        if (!info) return fill(meta, 'Ese hashtag no existe');
+        title.textContent = '#' + info.name;
+        meta.textContent = [
+          fmt(validCount(tagJunkKey(info.name), info.count)) + (info.count === 1 ? ' post' : ' posts'),
+          info.subscribers ? fmt(info.subscribers) + ' suscriptores' : '',
+          info.nsfw ? 'NSFW' : ''
+        ].filter(Boolean).join(' · ');
+        const liked = likedWithTag(info.name).length;
+        const { fav, prof } = followedAs(name, info);
+        more.textContent = [
+          info.path.length ? 'Dentro de ' + info.path.slice(-2).join(' › ') : '',
+          info.kind === 'category' ? 'tiene hashtags dentro' : '',
+          liked ? (liked === 1 ? '1 de tus me gusta' : fmt(liked) + ' de tus me gusta') : '',
+          prof ? 'lo sigues como cuenta' : fav ? 'lo sigues como hashtag' : '',
+          isBlocked(info.name) ? 'bloqueado' : ''
+        ].filter(Boolean).join(' · ');
+      })
+      .catch((e) => fill(meta, errText(e)));
+    return h('div', { class: 'sheet-head' }, tagPic(name, 'sh-pic', '#'), h('div', { class: 'grow' }, title, meta, more));
+  }
+
+  // Seguir como hashtag o como cuenta; si ya lo sigues, también «Dejar de seguir».
+  function followRows(name, notify) {
+    const { fav, prof } = followedAs(name);
+    const pick = (as, on) => () => {
+      closeSheet();
+      if (!on) followTagAs(name, as, notify);
+    };
+    return [
+      sheetRow('hash', 'Como hashtag', 'Lo ves barajado. Entra en tu Aleatorio y en las historias de Inicio.', pick('tag', !!fav), fav ? 'on' : '', fav ? icon('check', 20) : null),
+      sheetRow('userplus', 'Como cuenta', 'Lo ves como un perfil: en orden y en miniaturas. Lo nuevo, primero en Inicio.', pick('account', !!prof), prof ? 'on' : '', prof ? icon('check', 20) : null),
+      fav || prof ? sheetRow('x', 'Dejar de seguir', null, pick(null, false), 'danger') : null
+    ];
+  }
+  function openFollowSheet(name, notify) {
+    openSheet('Seguir #' + name, h('div', { class: 'sheet-title', text: 'Seguir #' + name + ' como…' }), ...followRows(name, notify));
+  }
+  function blockRow(name) {
+    const blocked = isBlocked(name);
+    return sheetRow('ban', (blocked ? 'Desbloquear #' : 'Bloquear #') + name, blocked ? null : 'Sus posts no salen en ningún feed ni en los avisos.', () => {
+      closeSheet();
+      blockTag(name, !blocked);
+    }, blocked ? '' : 'danger');
+  }
+  // Menú de un hashtag (al mantenerlo presionado): qué es, seguirlo y bloquearlo.
+  function openTagSheet(name) {
+    openSheet('#' + name, tagSheetHead(name), h('span', { class: 'sheet-label', text: 'Seguir' }), ...followRows(name, false), blockRow(name));
   }
 
   // ---- Reputación del autor (ver RS.reputation en shared.js).
@@ -1148,6 +1347,24 @@
     return row;
   }
 
+  // «Seguir» al lado del autor (en la tarjeta y en pantalla completa) mientras no lo sigas: un toque y
+  // desaparece de todos sus posts.
+  function followInline(p, cls) {
+    if (!p.user || isFollowed(p.user)) return null;
+    return h('button', {
+      type: 'button',
+      class: cls || 'fol-inline',
+      'data-follow': userKey(p.user),
+      'aria-label': 'Seguir a ' + p.user,
+      onclick: (e) => {
+        e.stopPropagation();
+        setFollow(p.user, p.userId, true);
+        document.querySelectorAll('[data-follow="' + CSS.escape(userKey(p.user)) + '"]').forEach((b) => b.remove());
+        toast('Ahora sigues a ' + p.user + ': sus posts nuevos, primero en Inicio', 'Deshacer', () => setFollow(p.user, p.userId, false));
+      }
+    }, 'Seguir');
+  }
+
   function buildCard(it, feed) {
     const p = it.post;
     const card = h('article', { class: 'card', 'data-id': p.id });
@@ -1160,6 +1377,8 @@
               h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: p.user }), repChip(p)), h('span', { class: 'when', text: ago(p.time) }))
             )
           : [avatar(p), h('div', { class: 'who' }, h('span', { class: 'user', text: 'anónimo' }), h('span', { class: 'when', text: ago(p.time) }))],
+        followInline(p),
+        h('span', { class: 'grow' }),
         h('span', { class: 'rating' + (p.rating < 0 ? ' neg' : ''), title: 'Rating en JoyReactor' }, icon('up', 14), String(p.rating).replace('.', ','))
       )
     );
@@ -1433,6 +1652,7 @@
               }
             }, icon('user', 15), p.user)
           : h('strong', { text: 'anónimo' }),
+        followInline(p, 'fol-inline vw-fol'),
         // Estrellas del autor y rating del post: solo si se activan en Ajustes.
         p.user ? h('span', { class: 'vw-score' }, repChip(p, 'media')) : null,
         h('span', { class: 'when', text: ' · ' + ago(p.time) }),
@@ -2299,7 +2519,7 @@
       const el = id && this.list.querySelector('[data-id="' + CSS.escape(id) + '"]');
       if (!el || !el.isConnected) return false;
       if (this.mode === 'grid') el.scrollIntoView({ block: 'center' });
-      else window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - this.headEl.offsetHeight);
+      else window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - headOffset(this));
       return true;
     }
 
@@ -2318,7 +2538,7 @@
       // Se alinea en el acto (sin esperar a requestAnimationFrame, que se congela si la página no se ve).
       const el = anchor && this.list.querySelector('[data-id="' + CSS.escape(anchor) + '"]');
       if (el && mode === 'grid') el.scrollIntoView({ block: 'center' });
-      else if (el) window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - this.headEl.offsetHeight);
+      else if (el) window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - headOffset(this));
       else window.scrollTo(0, 0);
       this.checkMore();
     }
@@ -2452,6 +2672,9 @@
   const feedMemory = new Map();
 
   function mount(nodes, feed) {
+    // Cada página empieza con la cabecera a la vista.
+    setTopHidden(false);
+    settledY = null;
     if (current && current.feed) {
       const prev = current.feed;
       prev.scrollY = window.scrollY;
@@ -2469,7 +2692,48 @@
 
   // En modo feed se ve un post por pantalla: el desplazamiento se «engancha» en cada post.
   function updateSnap() {
-    document.documentElement.classList.toggle('snap', !!(current && current.feed && current.feed.mode === 'feed'));
+    const snap = !!(current && current.feed && current.feed.mode === 'feed');
+    document.documentElement.classList.toggle('snap', snap);
+    if (!snap) setTopHidden(false);
+  }
+
+  // ---- Con un post por pantalla, la cabecera se esconde al pasar al post siguiente y vuelve al subir,
+  // aunque sea un poco y el post no cambie. Escondida, cada post gana su alto (--card-h en app.css) y se
+  // vuelve a alinear el que está a la vista.
+  let topHidden = false;
+  const headOffset = (f) => (topHidden ? 0 : f.headEl.offsetHeight);
+  let settledY = null; // dónde quedó quieta la página la última vez (null: recién se abrió)
+  let upward = 0; // cuánto se subió desde entonces, aunque después vuelva al mismo post
+  let settleTimer = null;
+  function setTopHidden(on, realign) {
+    if (topHidden === on) return;
+    const f = current && current.feed;
+    const id = realign && f && f.mode === 'feed' && f.root.isConnected ? f.topVisibleId() : null;
+    topHidden = on;
+    document.documentElement.classList.toggle('top-off', on);
+    if (id) f.scrollToPost(id);
+    settledY = window.scrollY;
+  }
+  window.addEventListener(
+    'scroll',
+    () => {
+      if (settledY != null) upward = Math.max(upward, settledY - window.scrollY);
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(settleTop, 140);
+    },
+    { passive: true }
+  );
+  function settleTop() {
+    const y = window.scrollY;
+    const up = upward;
+    const from = settledY;
+    upward = 0;
+    settledY = y;
+    const f = current && current.feed;
+    if (from == null || viewer || !f || f.mode !== 'feed' || !f.root.isConnected) return;
+    if (y < 80) setTopHidden(false, true);
+    else if (y > from + 40) setTopHidden(true, true);
+    else if (y < from - 40 || up > 30) setTopHidden(false, true);
   }
 
   function showFeed(f) {
@@ -2494,6 +2758,7 @@
     if (!f.items.length) f.loadMore();
     else f.checkMore();
     reviveVideos(f.root);
+    settledY = window.scrollY; // desde aquí se mide si bajaste o subiste (cabecera que se esconde)
   }
 
   function parseHash() {
@@ -2546,6 +2811,7 @@
     }
     replacing = false;
     closeViewer();
+    closeSheet();
 
     const name = parts[0] || 'home';
     document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === (TAB_OF[name] || 'home')));
@@ -2576,16 +2842,12 @@
   const backBtn = (fallback) => h('button', { class: 'ib', 'aria-label': 'Volver', onclick: () => backToGrid() || goBack('#' + fallback) }, icon('back', 24));
   const iconLink = (ic, label, href) => h('a', { class: 'ib', href, 'aria-label': label, title: label }, icon(ic, 22));
 
+  // Un solo botón para la vista, igual en todas las cabeceras: con un post por pantalla muestra las
+  // miniaturas (y las pone al tocarlo); en miniaturas muestra un post por pantalla.
   function viewToggle(feed) {
-    const b = (mode, ic, label) =>
-      h('button', { class: feed.mode === mode ? 'on' : '', 'aria-label': label, 'aria-pressed': String(feed.mode === mode), onclick: () => feed.setMode(mode) }, icon(ic, 20));
-    return h('div', { class: 'vtoggle' }, b('feed', 'feed', 'Vista feed'), b('grid', 'grid', 'Vista miniaturas'));
-  }
-
-  function viewToggleCompact(feed) {
     const toGrid = feed.mode !== 'grid';
     const label = toGrid ? 'Ver en miniaturas' : 'Ver un post por pantalla';
-    return h('button', { class: 'ib', 'aria-label': label, title: label, onclick: () => feed.setMode(toGrid ? 'grid' : 'feed') }, icon(toGrid ? 'grid' : 'feed', 21));
+    return h('button', { class: 'ib', 'aria-label': label, title: label, onclick: () => feed.setMode(toGrid ? 'grid' : 'feed') }, icon(toGrid ? 'grid' : 'feed', 22));
   }
 
   function fillBell(a) {
@@ -2798,7 +3060,7 @@
     const since = Date.now() - FOLLOWED_DAYS * 86400000;
     const sources = users
       .map((f) => ({ score: likes[userKey(f.name)] || 0, at: f.addedAt || 0, posts: byUser[f.name] || [], label: (p) => 'De @' + p.user + ', a quien sigues', icon: 'user' }))
-      .concat(tags.map((t) => ({ score: likedWithTag(t.name).length, at: t.addedAt || 0, posts: byTag[t.name] || [], label: () => 'De #' + t.name + ', que guardaste como perfil', icon: 'hash' })))
+      .concat(tags.map((t) => ({ score: likedWithTag(t.name).length, at: t.addedAt || 0, posts: byTag[t.name] || [], label: () => 'De #' + t.name + ', que sigues como cuenta', icon: 'hash' })))
       .sort((a, b) => b.score - a.score || b.at - a.at);
     const out = [];
     const ids = new Set();
@@ -2852,77 +3114,71 @@
 
   /** totalOf (opcional): cuántos posts dice la lista del hashtag, para descontar los retirados. */
   function tagHero(name, totalOf) {
-    const el = h('section', { class: 'hero' });
+    const el = h('section', { class: 'hero tag-hero' });
     let info = null;
     let overlap = null; // posts que comparte con lo bloqueado (ver blockedOverlap)
 
+    // Seguir (como hashtag o como cuenta), la campanita y «⋯» con lo demás: el Aleatorio, el árbol y bloquear.
     const draw = () => {
-      const fav = favOf(name) || (info && favOf(info.name));
+      const { fav, prof } = followedAs(name, info);
       const canon = fav ? fav.name : info ? info.name : name;
-      const inMix = !!(fav && S.mix.sources[canon] && S.mix.sources[canon].on);
-      const notify = !!(fav && fav.notify);
-      const c = colorFor(canon);
+      el._canon = canon;
+      const following = !!(fav || prof);
+      const notify = !!((fav && fav.notify) || (prof && prof.notify));
       const meta = info ? postsText(info, validCount(tagJunkKey(name), (totalOf && totalOf()) || info.count), overlap) : 'Cargando…';
 
-      const favBtn = h('button', {
-        class: 'hbtn' + (fav ? ' fav' : ''),
-        'aria-pressed': String(!!fav),
-        onclick: async () => {
-          if (fav) {
-            removeFavorite(canon);
-            toast('Dejaste de seguir #' + canon);
-          } else {
-            const nf = await addFavorite(name);
-            if (nf) toast(savedText(name, nf));
-          }
-          draw();
-        }
-      }, icon(fav ? 'check' : 'plus', 18), fav ? 'Siguiendo' : 'Seguir');
-
-      const mixBtn = h('button', {
-        class: 'hbtn' + (inMix ? ' mix' : ''),
-        'aria-pressed': String(inMix),
-        onclick: async () => {
-          if (!fav) {
-            if (await addFavorite(name)) toast('Ahora sigues #' + canon + ' y entra en tu Aleatorio');
-          } else {
-            setMixOn(canon, !inMix);
-            toast(inMix ? 'Fuera de tu Aleatorio' : 'Añadido a tu Aleatorio');
-          }
-          draw();
-        }
-      }, icon('shuffle', 18), inMix ? 'En mezcla' : 'Mezclar');
+      const followBtn = h('button', {
+        class: 'hbtn' + (following ? (prof ? ' prof' : ' fav') : ' go'),
+        'aria-haspopup': 'dialog',
+        onclick: () => openFollowSheet(name, false)
+      }, icon(following ? 'check' : 'plus', 18), following ? 'Siguiendo' : 'Seguir', following ? h('small', { class: 'as', text: prof ? 'cuenta' : 'hashtag' }) : null);
 
       const bellBtn = h('button', {
-        class: 'hbtn' + (notify ? ' bell' : ''),
+        class: 'hbtn ic' + (notify ? ' bell' : ''),
         'aria-pressed': String(notify),
-        onclick: async () => {
-          if (!fav) {
-            const f = await addFavorite(name, { notify: true });
-            if (f) setNotify(f.name, true);
-          } else setNotify(canon, !notify);
+        'aria-label': notify ? 'Dejar de avisarme de #' + canon : 'Avisarme de posts nuevos en #' + canon,
+        onclick: () => {
+          if (!following) return openFollowSheet(name, true);
+          if (fav) setNotify(fav.name, !notify);
+          else setProfileNotify(prof.name, !notify);
           draw();
         }
-      }, icon(notify ? 'bell' : 'belloff', 18), notify ? 'Avisando' : 'Avisarme');
+      }, icon(notify ? 'bell' : 'belloff', 20));
 
-      // Guardarlo como perfil: se ve como el de un usuario (miniaturas y Favoritos) y sale en Seguidos › Perfiles.
-      const prof = !!(tagProfileOf(name) || (info && tagProfileOf(info.name)));
-      const profBtn = h('button', {
-        class: 'hbtn' + (prof ? ' prof' : ''),
-        'aria-pressed': String(prof),
+      const moreBtn = h('button', {
+        class: 'hbtn ic',
+        'aria-haspopup': 'dialog',
+        'aria-label': 'Más opciones de #' + canon,
         onclick: () => {
-          setTagProfile(name, info, !prof);
-          toast(prof ? '#' + canon + ' ya no es un perfil' : '#' + canon + ' guardado como perfil: está en Seguidos › Perfiles');
-          route();
+          const inMix = !!(fav && S.mix.sources[fav.name] && S.mix.sources[fav.name].on);
+          openSheet('Más opciones de #' + canon,
+            tagSheetHead(canon),
+            fav
+              ? h('div', { class: 'sheet-row' },
+                  icon('shuffle', 22),
+                  h('span', { class: 'grow' }, h('span', { class: 'sr-l', text: 'En tu Aleatorio' }), h('span', { class: 'sr-s', text: 'Sus posts salen al barajar en Aleatorio.' })),
+                  switchBtn(inMix, 'En tu Aleatorio', (on) => {
+                    setMixOn(fav.name, on);
+                    toast(on ? 'Añadido a tu Aleatorio' : 'Fuera de tu Aleatorio');
+                  })
+                )
+              : null,
+            info ? sheetRow('hash', 'Ver en el árbol', 'Qué hashtags tiene dentro, como carpetas.', () => {
+              closeSheet();
+              nav('#/tree/' + enc(canon));
+            }) : null,
+            blockRow(canon)
+          );
         }
-      }, icon(prof ? 'usercheck' : 'userplus', 18), prof ? 'Perfil guardado' : 'Guardar como perfil');
+      }, icon('dots', 22));
 
       // JoyReactor ordena los hashtags como carpetas: fandoms › anime › Touhou Project › Cirno.
-      // Arriba van las categorías que lo contienen y abajo las que tiene dentro.
+      // Arriba van las categorías que lo contienen y abajo las que tiene dentro. Mantener presionada una
+      // abre su menú (seguirla o bloquearla sin entrar).
       const path = info ? (info.path && info.path.length ? info.path : info.parent ? [info.parent] : []) : [];
       const subs = info ? info.subTags : [];
-      const tagLink = (t, cls) => h('a', { class: 'tag' + (cls ? ' ' + cls : '') + (favOf(t) ? ' fav' : '') + (isBlocked(t) ? ' off' : ''), href: '#/tag/' + enc(t), text: t });
-      const treeLink = info ? h('a', { class: 'tree-link', href: '#/tree/' + enc(canon) }, icon('chevright', 14), 'Ver en el árbol') : null;
+      const tagLink = (t) =>
+        holdForMenu(h('button', { type: 'button', class: 'tag' + (isFollowedTag(t) ? ' fav' : '') + (isBlocked(t) ? ' off' : ''), 'data-tag': t, onclick: () => nav('#/tag/' + enc(t)) }, t), t);
       const pathRow = path.length
         ? h('div', { class: 'tree' },
             h('span', { class: 'section-label', text: 'Está dentro de' }),
@@ -2937,36 +3193,14 @@
         : null;
 
       const blocked = isBlocked(name) || isBlocked(canon);
-      const blockBtn = h('button', {
-        class: 'ib blockb' + (blocked ? ' on' : ''),
-        'aria-pressed': String(blocked),
-        'aria-label': (blocked ? 'Desbloquear #' : 'Bloquear #') + canon,
-        title: (blocked ? 'Desbloquear #' : 'Bloquear #') + canon,
-        onclick: () => {
-          if (blocked) {
-            setBlocked(name, false);
-            if (canon !== name) setBlocked(canon, false);
-            toast('#' + canon + ' desbloqueado');
-          } else {
-            setBlocked(canon, true);
-            toast('#' + canon + ' bloqueado: sus posts ya no salen en ningún lado', 'Deshacer', () => {
-              setBlocked(canon, false);
-              route();
-            });
-          }
-          route();
-        }
-      }, icon('ban', 22));
       fill(el,
         h('div', { class: 'hero-row' },
           tagPic(canon, 'hero-tile', '#', info ? info.pic || 0 : undefined),
-          h('div', { class: 'grow' }, h('h2', { text: canon }), h('span', { class: 'meta', text: blocked ? 'Bloqueado · sus posts no salen en ningún feed' : meta })),
-          blockBtn
+          h('div', { class: 'grow' }, h('h2', { text: canon }), h('span', { class: 'meta', text: blocked ? 'Bloqueado · sus posts no salen en ningún feed' : meta }))
         ),
-        h('div', { class: 'hero-actions four' }, favBtn, mixBtn, bellBtn, profBtn),
+        h('div', { class: 'hero-actions trio' }, followBtn, bellBtn, moreBtn),
         pathRow,
-        subsRow,
-        treeLink
+        subsRow
       );
     };
 
@@ -3006,12 +3240,12 @@
       ]);
       return;
     }
-    // Un hashtag abre con todos sus posts, lo más reciente primero. Las pestañas eligen qué se ve (Todos,
-    // Videos y GIF y, si lo guardaste como perfil, Favoritos) y el botón de barajar los pone en orden
-    // aleatorio. Guardado como perfil se ve como el de un usuario: en miniaturas.
+    // Un hashtag abre con todos sus posts barajados; si lo sigues como cuenta, en orden (lo más reciente
+    // primero) y en miniaturas, como el perfil de un usuario. El botón de barajar cambia entre los dos.
+    // Las pestañas eligen qué se ve (Todos, Videos y GIF y, en las cuentas, Favoritos).
     const profile = !!tagProfileOf(name);
     const type = 'ALL';
-    const random = q.get('order') === 'random';
+    const random = q.get('order') ? q.get('order') === 'random' : !profile;
     const tab = profile && q.get('show') === 'fav' ? 'fav' : /[gv]/.test(q.get('media') || '') ? 'anim' : 'all';
     const kinds = tab === 'anim' ? ['gif', 'video'] : [];
     const key = 'tag:' + name.toLowerCase() + ':' + (random ? 'random' : 'recent') + ':' + tab + (profile ? ':perfil' : '');
@@ -3046,7 +3280,7 @@
         doneText: (n) => (n === 1 ? 'Es el único post de #' + name + ' que te gustó.' : 'Son los ' + n + ' posts de #' + name + ' que te gustaron.'),
         mode: profile ? 'grid' : 'feed',
         back: true,
-        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), profile ? null : viewToggleCompact(f)],
+        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), profile ? null : viewToggle(f)],
         extra: (f) => {
           // Bloquear #gif (o #video…) esconde casi todos los GIF y videos: se avisa arriba.
           const blocked = fmtBlocked();
@@ -3150,7 +3384,7 @@
         'aria-pressed': String(on),
         onclick: () => {
           setFollow(shown, u ? u.id : 0, !on);
-          toast(on ? 'Dejaste de seguir a ' + shown : 'Ahora sigues a ' + shown + ': está en Seguidos › Usuarios');
+          toast(on ? 'Dejaste de seguir a ' + shown : 'Ahora sigues a ' + shown + ': está en Seguidos › Perfiles');
           draw();
         }
       }, icon(on ? 'usercheck' : 'userplus', 19), on ? 'Siguiendo' : 'Seguir');
@@ -3294,6 +3528,7 @@
     favList()
       .filter((f) => f.notify)
       .map((f) => RS.label(f.name, f.kind))
+      .concat(Object.values(S.tagProfiles).filter((t) => t.notify && !favOf(t.name)).map((t) => '#' + t.name))
       .concat(Object.values(S.following).filter((f) => f.notify).map((f) => '@' + f.name));
 
   const USER_HISTORY_MAX = 50;
@@ -3579,12 +3814,6 @@
 
   // ================================================================ Aleatorio
 
-  function qualityLabel() {
-    const q = { ALL: 'todo', GOOD: 'bueno', BEST: 'top' }[S.mix.quality] || 'bueno';
-    const e = { any: '', year: ' · último año', month: ' · último mes' }[S.mix.era] || '';
-    return 'Calidad mínima: ' + q + e;
-  }
-
   function mixSummary() {
     const srcs = RS.mixSources(S);
     if (!srcs.length) {
@@ -3594,14 +3823,17 @@
         h('div', { class: 'row-btns' }, h('a', { class: 'btn blue', href: Object.keys(S.favorites).length ? '#/mix' : '#/following' }, icon('sliders', 18), 'Personalizar'))
       );
     }
+    // Tu mezcla en una línea fina: tocarla abre Personalizar.
     const total = srcs.reduce((a, s) => a + s.w, 0);
     const parts = srcs
       .map((s) => ({ name: s.name, kind: s.kind, pct: Math.round((s.w / total) * 100), color: mixColor(s.name) }))
       .sort((a, b) => b.pct - a.pct);
-    return h('a', { class: 'mixcard', href: '#/mix' },
-      h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px' } }, h('h2', { class: 'grow', text: 'Tu mezcla' }), h('span', { class: 'sub', text: qualityLabel() })),
+    return h('a', { class: 'mixline', href: '#/mix', 'aria-label': 'Tu mezcla: ' + parts.map((p) => RS.label(p.name, p.kind) + ' ' + p.pct + '%').join(', ') + '. Toca para personalizarla.' },
       h('div', { class: 'bar' }, parts.map((p) => h('span', { style: { width: p.pct + '%', background: p.color } }))),
-      h('div', { class: 'legend' }, parts.map((p) => h('span', {}, h('i', { style: { background: p.color } }), RS.label(p.name, p.kind), ' ', h('em', { text: p.pct + '%' }))))
+      h('div', { class: 'mixline-row' },
+        h('div', { class: 'legend' }, parts.map((p) => h('span', {}, h('i', { style: { background: p.color } }), RS.label(p.name, p.kind), ' ', h('em', { text: p.pct + '%' })))),
+        icon('chevright', 18)
+      )
     );
   }
 
@@ -3612,8 +3844,7 @@
         kind: 'random',
         head: (f) => [
           h('h1', { text: 'Aleatorio' }),
-          h('button', { class: 'ib', 'aria-label': 'Barajar otra vez', title: 'Barajar otra vez', onclick: () => f.reset() }, icon('refresh', 22)),
-          h('a', { class: 'pill', href: '#/mix' }, icon('sliders', 18), 'Personalizar')
+          h('button', { class: 'ib', 'aria-label': 'Barajar otra vez', title: 'Barajar otra vez', onclick: () => f.reset() }, icon('refresh', 22))
         ],
         extra: () => mixSummary()
       })
@@ -3831,7 +4062,7 @@
       fill(lists,
         favs.length
           ? h('p', { class: 'countline', style: { paddingTop: '10px' }, text: favs.length === 1 ? 'Sigues 1 hashtag.' : 'Sigues ' + favs.length + ' hashtags y categorías.' })
-          : emptyBox('hash', 'Todavía no sigues ningún hashtag', 'Búscalo arriba y toca +, entra a un hashtag y toca Seguir, o mantén presionado un hashtag 3 segundos.'),
+          : emptyBox('hash', 'Todavía no sigues ningún hashtag', 'Búscalo arriba y toca +, entra a un hashtag y toca Seguir, o mantén presionado un hashtag.'),
         favs.map(row),
         h('p', { class: 'foot-note', text: 'Las categorías son hashtags que tienen otros dentro, como carpetas (#anime tiene dentro #Touhou Project). Se siguen igual. La campanita avisa de posts nuevos y el icono de mezcla decide si entra en tu Aleatorio.' })
       );
@@ -3841,7 +4072,7 @@
     mount([h('header', { class: 'top' }, h('h1', { text: 'Seguidos' })), tabsEl, sb.el, sb.results, lists]);
   }
 
-  // Seguidos › Perfiles: los usuarios que sigues y los hashtags que guardaste como perfil, lo último primero.
+  // Seguidos › Perfiles: los usuarios que sigues y los hashtags que sigues como cuenta, lo último primero.
   function routeFollowingUsers() {
     const listEl = h('div');
     const tabsEl = h('div');
@@ -3849,22 +4080,31 @@
       h('div', { class: 'result' },
         h('a', { href: '#/tag/' + enc(x.name) },
           tagPic(x.name, 'htile', '#', x.pic),
-          h('span', { class: 'rtext' }, h('span', { class: 'n', text: '#' + x.name }), h('span', { class: 'm', text: 'Hashtag guardado como perfil' }))
+          h('span', { class: 'rtext' }, h('span', { class: 'n', text: '#' + x.name }), h('span', { class: 'm', text: 'Hashtag que sigues como cuenta' }))
         ),
         h('button', {
+          class: 'ib bellb' + (x.notify ? ' on' : ''),
+          'aria-pressed': String(!!x.notify),
+          'aria-label': (x.notify ? 'Dejar de avisar de posts nuevos en #' : 'Avisarme de posts nuevos en #') + x.name,
+          onclick: () => {
+            setProfileNotify(x.name, !x.notify);
+            draw();
+          }
+        }, icon(x.notify ? 'bell' : 'belloff', 21)),
+        h('button', {
           class: 'small-btn follow on',
-          'aria-label': 'Quitar #' + x.name + ' de tus perfiles',
+          'aria-label': 'Dejar de seguir #' + x.name,
           onclick: () => {
             setTagProfile(x.name, null, false);
             draw();
-            toast('#' + x.name + ' ya no es un perfil', 'Deshacer', () => {
+            toast('Dejaste de seguir #' + x.name, 'Deshacer', () => {
               S.tagProfiles[tkey(x.name)] = x;
               persist('tagProfiles', 0);
               invalidateHome();
               draw();
             });
           }
-        }, 'Guardado')
+        }, 'Siguiendo')
       );
     const draw = () => {
       fill(tabsEl, followTabs('users'));
@@ -3876,12 +4116,12 @@
       const count = !tagList.length
         ? 'Sigues ' + people + '.'
         : list.length
-          ? 'Sigues ' + people + ' y guardaste ' + tags + ' como perfil.'
-          : 'Guardaste ' + tags + ' como perfil.';
+          ? 'Sigues ' + people + ' y ' + tags + ' como cuenta.'
+          : 'Sigues ' + tags + ' como cuenta.';
       fill(listEl,
         all.length
           ? h('p', { class: 'countline', style: { paddingTop: '10px' }, text: count })
-          : emptyBox('users', 'Todavía no tienes perfiles', 'Toca el nombre de quien publicó un post y después Seguir. Un hashtag también puede ser un perfil: entra a él y toca «Guardar como perfil».'),
+          : emptyBox('users', 'Todavía no tienes perfiles', 'Toca Seguir al lado del nombre de quien publicó un post. Un hashtag también puede ser una cuenta: entra a él, toca Seguir y elige «Como cuenta».'),
         all.map(({ x, tag }) =>
           tag ? tagRow(x) : personRow(x.name, x.userId, 'Lo sigues desde ' + (ago(x.addedAt) || 'antes'), null,
             h('button', {
@@ -3933,7 +4173,7 @@
       h('button', { class: 'chip' + (active === id ? ' on' : ''), 'aria-pressed': String(active === id), onclick: () => active !== id && navReplace(href) }, icon(ic, 16), label + ' · ' + n);
     return h('nav', { class: 'chips', 'aria-label': 'Qué historial ver' },
       chip('posts', '#/history', 'image', 'Posts', (S.history || []).filter((x) => !S.likes[x.id]).length),
-      chip('users', '#/visited', 'user', 'Usuarios', (S.userHistory || []).length)
+      chip('users', '#/visited', 'user', 'Perfiles', (S.userHistory || []).length)
     );
   }
 
@@ -4511,8 +4751,7 @@
 
   function routeNews() {
     if (S.news.unread) bg({ type: 'news-read' });
-    const watching = watchList();
-    const items = (S.news.items || []).map((x) => ({ post: x.post, label: (x.kind === 'user' ? 'Nuevo de ' : 'Nuevo en ') + RS.label(x.tag, x.kind), icon: 'bell', color: 'var(--green)' }));
+    const items =(S.news.items || []).map((x) => ({ post: x.post, label: (x.kind === 'user' ? 'Nuevo de ' : 'Nuevo en ') + RS.label(x.tag, x.kind), icon: 'bell', color: 'var(--green)' }));
 
     const checkBtn = h('button', { class: 'ib', 'aria-label': 'Comprobar ahora', title: 'Comprobar ahora' }, icon('refresh', 22));
     checkBtn.addEventListener('click', async () => {
@@ -4539,18 +4778,21 @@
       anchor: feedMemory.get('news'),
       back: true,
       head: (f) => [backBtn('/home'), h('h1', { text: 'Novedades' }), checkBtn, viewToggle(f)],
-      extra: () =>
-        watching.length
+      // Lo que se vigila se vuelve a leer cada vez (pudiste tocar una campanita desde la última visita).
+      extra: () => {
+        const list = watchList();
+        return list.length
           ? h('p', { class: 'countline', style: { paddingTop: '12px' } },
-              'Vigilando ' + watching.join(', ') + '. Última revisión: ' + (S.news.lastCheck ? ago(S.news.lastCheck) : 'todavía no') + '. ',
+              'Vigilando ' + list.join(', ') + '. Última revisión: ' + (S.news.lastCheck ? ago(S.news.lastCheck) : 'todavía no') + '. ',
               h('a', { href: '#/settings', text: S.settings.notify ? 'Avisos cada ' + S.settings.interval + ' min' : 'Avisos desactivados' })
             )
           : h('div', { class: 'notice' },
               h('strong', { text: 'Elige de qué quieres enterarte' }),
               h('span', { text: 'Toca la campanita en los hashtags o usuarios que sigues y te avisaré cuando salgan posts nuevos.' }),
               h('div', { class: 'row-btns' }, h('a', { class: 'btn blue', href: '#/following' }, icon('bell', 18), 'Ir a Seguidos'))
-            ),
-      empty: () => emptyBox('bell', 'Sin novedades por ahora', watching.length ? 'Cuando salgan posts nuevos en lo que vigilas aparecerán aquí.' : null)
+            );
+      },
+      empty: () => emptyBox('bell', 'Sin novedades por ahora', watchList().length ? 'Cuando salgan posts nuevos en lo que vigilas aparecerán aquí.' : null)
     }));
     showFeed(f);
   }
@@ -4795,7 +5037,7 @@
             save();
           })
         ),
-        h('p', { class: 'smeta', style: { padding: '0 16px 16px' }, text: 'De los perfiles que visitas se guardan los últimos ' + USER_HISTORY_MAX + ' (Favoritos › Historial › Usuarios).' })
+        h('p', { class: 'smeta', style: { padding: '0 16px 16px' }, text: 'De los perfiles que visitas se guardan los últimos ' + USER_HISTORY_MAX + ' (Favoritos › Historial › Perfiles).' })
       ),
       h('div', { class: 'setgroup' },
         h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Hashtags bloqueados' }),
@@ -4816,7 +5058,7 @@
           })
         ),
         h('div', { class: 'line' },
-          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Mostrar la fecha de los posts' }), h('span', { class: 'smeta', text: 'Cuándo se publicó cada post («hace 3 h»). Viene apagado.' })),
+          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Mostrar la fecha de los posts' }), h('span', { class: 'smeta', text: 'Cuándo se publicó cada post («hace 3 h»).' })),
           switchBtn(st.showDates, 'Mostrar la fecha de los posts', (on) => {
             st.showDates = on;
             save();
@@ -4842,7 +5084,7 @@
           })
         ),
         h('div', { class: 'line' },
-          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Estrellas y rating' }), h('span', { class: 'smeta', text: 'La reputación del autor (★) y el rating del post en JoyReactor (↑, la suma de los votos). Viene apagado.' })),
+          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Estrellas y rating' }), h('span', { class: 'smeta', text: 'La reputación del autor (★) y el rating del post en JoyReactor (↑, la suma de los votos).' })),
           switchBtn(st.showScores, 'Estrellas y rating en pantalla completa', (on) => {
             st.showScores = on;
             save();
@@ -5384,10 +5626,11 @@
       if (location.hash === hash) route();
       else location.hash = hash;
     },
-    // Botón «atrás» de Android: 1) cierra la pantalla completa, 2) vuelve a las miniaturas si abriste
-    // un post desde ahí, 3) vuelve a la página anterior, 4) desde otra sección vuelve a Inicio,
-    // 5) desde Inicio sale de la app.
+    // Botón «atrás» de Android: 1) cierra el menú que sube desde abajo, 2) cierra la pantalla completa,
+    // 3) vuelve a las miniaturas si abriste un post desde ahí, 4) vuelve a la página anterior, 5) desde
+    // otra sección vuelve a Inicio, 6) desde Inicio sale de la app.
     handleBack() {
+      if (closeSheet()) return 'handled';
       if (viewer) {
         exitViewer();
         return 'handled';

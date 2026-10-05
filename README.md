@@ -9,11 +9,13 @@ App de **Android** que convierte JoyReactor en un feed tipo Instagram. Todo se g
 - **Abajo, cinco pestañas**: Inicio, Buscar, Aleatorio, **Seguidos** (hashtags y perfiles) y **Favoritos** (tus me gusta y el historial). Ajustes se abre con ⚙ desde Favoritos.
 - **Un post por pantalla**: deslizas hacia arriba y pasa al siguiente. Los posts con varias imágenes o videos se deslizan hacia los lados (carrusel con puntitos).
 - **GIF y videos, en toda la app**: la barra de avance es una línea mínima que aparece al tocar (en los videos, con el tiempo) y **un toque rápido en el centro** pausa o sigue (en el feed, en el centro del video; en pantalla completa, en el centro de la pantalla). Dos toques abren la pantalla completa.
+- **Arriba, como mucho dos botones**, los mismos en todas las pantallas. La vista es **un solo botón**: con un post por pantalla muestra ⊞ y pasa a miniaturas; en miniaturas muestra ▭ y vuelve a un post por pantalla.
+- **La cabecera se esconde** al pasar al post siguiente (cada post gana ese alto) y vuelve al subir, aunque sea un poco.
 - **Miniaturas** con un botón. Cada miniatura tiene su ♥ y su 👎, y al tocarla se abre ese post. **Me gusta** e **Historial** se abren siempre en miniaturas, sin botones de vista: tocar una abre el post en grande y tocar Favoritos abajo vuelve a las miniaturas.
 - **Deslizar hacia abajo** desde arriba del todo recarga la página.
 - **«Atrás» te deja donde estabas**: en el mismo post, en la misma vista y, si venías de pantalla completa, otra vez en pantalla completa. Si abriste un post desde las miniaturas, vuelves a ellas.
-- **Inicio** muestra primero los posts nuevos de la gente que sigues y de los hashtags guardados como perfil (de la última semana y que no viste), empezando por quien más me gusta te ha dado.
-- **Aleatorio a tu medida**: eliges qué entra y cuánto pesa cada cosa. También hay calidad mínima, época, «no repetir lo ya visto» y hashtags excluidos.
+- **Inicio** muestra primero los posts nuevos de la gente que sigues y de los hashtags que sigues como cuenta (de la última semana y que no viste), empezando por quien más me gusta te ha dado.
+- **Aleatorio a tu medida**: eliges qué entra y cuánto pesa cada cosa (la línea de colores de arriba abre Personalizar). También hay calidad mínima, época, «no repetir lo ya visto» y hashtags excluidos.
 - **Buscar** hashtags y usuarios, con las búsquedas recientes como en Instagram. Tolera errores de tipeo («touhuo» encuentra #Touhou Project) y encuentra palabras del medio («scarlet» → #Remilia Scarlet si ya la viste): lo exacto arriba y debajo «Parecidos». Enter abre el primero.
 
 ### Pantalla completa (doble toque)
@@ -32,18 +34,19 @@ App de **Android** que convierte JoyReactor en un feed tipo Instagram. Todo se g
 - En cada post salen **solo los hashtags más específicos** de cada cadena, con su carpeta en chiquito al lado, sin los de formato (#gif, #video). Si quedan más de 4, «+N» muestra todos.
 - **Categorías**: en JoyReactor los hashtags forman un árbol, como carpetas (fandoms › anime › Touhou Project). La página de cada hashtag muestra dónde está («Está dentro de») y qué tiene dentro («Subcategorías»).
 - **Árbol de hashtags** (herramienta temporal, en Ajustes y en cada hashtag): recorre las carpetas y lo que tiene dentro cada una.
-- La **página de cada hashtag** tiene pestañas, como un perfil: **Todos** (lo más reciente primero) y **Videos y GIF**, que muestra todos los posts que traen un GIF o un video, tengan o no la etiqueta #gif o #video. El botón de **barajar** (a la derecha de las pestañas) los pone en orden aleatorio; deslizar hacia abajo los vuelve a barajar.
-- **Guardar como perfil**: un hashtag que elijas se ve como el perfil de un usuario, en miniaturas y con una pestaña más, **Favoritos** (tus me gusta con ese hashtag). Sale en **Seguidos › Perfiles**, junto a los usuarios que sigues.
-- **Seguir** un hashtag con el botón de su página o manteniéndolo presionado 3 segundos (también en pantalla completa). Los que sigues salen como «historias» arriba del Inicio.
-- **Bloquear hashtags** con el botón ⊘: sus posts no salen en ningún feed ni en los avisos. La lista está en Ajustes.
+- La **página de cada hashtag** tiene pestañas, como un perfil: **Todos** y **Videos y GIF**, que muestra todos los posts que traen un GIF o un video, tengan o no la etiqueta #gif o #video. Un hashtag se abre **barajado**; el botón de **barajar** (a la derecha de las pestañas) cambia a lo más reciente primero y al revés. Deslizar hacia abajo vuelve a barajar.
+- Arriba tiene tres botones: **Seguir**, la **campanita** (avisos de posts nuevos) y **⋯** (meterlo o sacarlo del Aleatorio, ver el árbol y bloquearlo).
+- **Seguir** pregunta cómo: **como hashtag** (se ve barajado, entra en tu Aleatorio y sale como «historia» arriba del Inicio; está en Seguidos › Hashtags) o **como cuenta** (se ve como el perfil de un usuario: en orden, en miniaturas y con una pestaña más, **Favoritos**, con tus me gusta de ese hashtag; está en Seguidos › Perfiles y lo nuevo va primero en Inicio). Tocar «Siguiendo» deja cambiar de forma o dejar de seguir.
+- **Mantener presionado un hashtag** medio segundo (en un post, en pantalla completa o en las subcategorías de la cabecera) abre su menú: cuántos posts tiene, en qué carpeta está, cuántos de tus me gusta lo llevan, seguirlo (como hashtag o como cuenta) y bloquearlo, sin entrar a él.
+- **Bloquear hashtags** desde ese menú o desde ⋯: sus posts no salen en ningún feed ni en los avisos (con «Deshacer»). La lista está en Ajustes.
 - **El número de posts** de un hashtag descuenta lo bloqueado: una subcategoría bloqueada (algo que tiene dentro) se descuenta entera, y de otros hashtags bloqueados, los posts que comparten. JoyReactor cuenta los compartidos solo hasta 1000; si llega, el número sale como «como mucho». Las subcategorías bloqueadas salen tachadas.
 
 ### Usuarios
 
 - **Perfil** en miniaturas, como en Instagram, con las pestañas **Todos**, **Videos y GIF** y **Favoritos** (los posts suyos que te gustaron: JoyReactor no deja ver los favoritos de otras personas).
-- Botones **Seguir** y **Avisarme** (notificación cuando publique).
+- Botones **Seguir** y **Avisarme** (notificación cuando publique). También se sigue sin salir del post: **Seguir** aparece al lado del nombre del autor, en la tarjeta y en pantalla completa, mientras no lo sigas.
 - **Reputación** de 1 a 5 estrellas (calidad, trayectoria y actividad), plegada: se abre al tocarla. Las estrellas también salen junto al nombre en cada post.
-- **Historial de perfiles**: los últimos 50 que visitaste (Favoritos › Historial › Usuarios).
+- **Historial de perfiles**: los últimos 50 que visitaste (Favoritos › Historial › Perfiles).
 
 ### Favoritos, historial y estadísticas
 

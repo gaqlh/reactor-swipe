@@ -835,11 +835,14 @@
    * La primera vez que revisa uno solo toma nota de lo que hay (no avisa de lo viejo).
    */
   RS.checkNews = async function () {
-    const st = await RS.load(['favorites', 'following', 'settings', 'news', 'dislikes', 'mix']);
+    const st = await RS.load(['favorites', 'following', 'tagProfiles', 'settings', 'news', 'dislikes', 'mix']);
     const news = st.news;
     const result = { total: 0, per: {} };
+    // Hashtags con campanita (también los que sigues como cuenta) y usuarios con campanita.
+    const tagNames = new Set(Object.values(st.favorites).map((f) => f.name.toLowerCase()));
     const targets = Object.values(st.favorites)
       .filter((f) => f.notify)
+      .concat(Object.values(st.tagProfiles || {}).filter((t) => t.notify && !tagNames.has(t.name.toLowerCase())).map((t) => ({ name: t.name, kind: 'hashtag' })))
       .concat(Object.values(st.following).filter((f) => f.notify).map((f) => ({ name: f.name, kind: 'user', user: true })));
     news.lastCheck = Date.now();
     if (!targets.length) {
