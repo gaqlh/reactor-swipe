@@ -183,8 +183,15 @@
       timers[key] = null;
       RS.save({ [key]: S[key] });
       if (key === 'favorites' || key === 'following' || key === 'settings' || key === 'mix') syncNative();
+      // Cambió algo que no se debe perder: el respaldo automático se pone al día en un rato.
+      if (BACKUP_KEYS.has(key)) {
+        clearTimeout(backupTimer);
+        backupTimer = setTimeout(() => autoBackup(false).catch(() => {}), 20000);
+      }
     }, delay == null ? 250 : delay);
   }
+  const BACKUP_KEYS = new Set(['likes', 'dislikes', 'favorites', 'following', 'tagProfiles', 'mix']);
+  let backupTimer = null;
 
   // App de Android: los avisos los revisa Android en segundo plano, así que le paso qué vigilar
   // y cómo (hashtags y usuarios con campanita, ajustes y hashtags excluidos).
@@ -503,17 +510,67 @@
 
   // ================================================================ Observadores (videos y vistos)
 
+  // ---- Reproductores de video. Chrome en Android deja tener pocos a la vez (unos 75 por página): si se
+  // acaban, los GIF y videos nuevos no arrancan. Por eso en los feeds quedan cargados solo los últimos
+  // MAX_LOADED que estuvieron cerca de la pantalla; al cargar uno más se suelta el más viejo
+  // (releaseVideo), y si vuelves a él se carga otra vez (casi siempre desde lo ya descargado). La
+  // pantalla completa suelta sola los posts lejanos (emptyPage) y todo al cerrarse.
+  const MAX_LOADED = 30;
+  const loaded = new Set(); // en orden: el primero es el que hace más que no se ve
+  function releaseVideo(v) {
+    loaded.delete(v);
+    if (!v.getAttribute('src')) return;
+    v.pause();
+    v.removeAttribute('src');
+    v.load();
+  }
+  const releaseIn = (root) => root.querySelectorAll('video').forEach(releaseVideo);
+  function loadVideo(v) {
+    if (!v.getAttribute('src') && v.dataset.src) v.src = v.dataset.src;
+    loaded.delete(v);
+    loaded.add(v);
+    for (const old of loaded) {
+      if (loaded.size <= MAX_LOADED) break;
+      if (old._near && old.isConnected) continue; // el que está a la vista (o casi) no se suelta
+      releaseVideo(old);
+    }
+  }
+  // Si un video no carga (red o reproductor), se vuelve a intentar una vez, un momento después.
+  function retryOnError(v, url) {
+    v.addEventListener('error', () => {
+      if (v._retried || !v.getAttribute('src')) return;
+      v._retried = true;
+      setTimeout(() => {
+        if (!v.isConnected || !v.getAttribute('src')) return;
+        v.src = url;
+        v.load();
+        if (!v._userPaused && (viewer ? v.closest('.viewer') : !v._thumb)) v.play().catch(() => {});
+      }, 1500);
+    });
+  }
   const nearIO = new IntersectionObserver(
     (entries) => {
       for (const e of entries) {
-        if (!e.isIntersecting) continue;
         const v = e.target;
-        if (!v.getAttribute('src') && v.dataset.src) v.src = v.dataset.src;
-        nearIO.unobserve(v);
+        v._near = e.isIntersecting;
+        if (e.isIntersecting && v.dataset.src) loadVideo(v);
       }
     },
     { rootMargin: '900px 0px' }
   );
+  // Al volver a mostrar una página guardada, sus videos se vuelven a vigilar desde cero (si no, el
+  // observador puede no avisar y el video a la vista no arranca).
+  function reviveVideos(root) {
+    root.querySelectorAll('video').forEach((v) => {
+      if (!v.dataset.src) return;
+      nearIO.unobserve(v);
+      nearIO.observe(v);
+      if (!v._thumb) {
+        playIO.unobserve(v);
+        playIO.observe(v);
+      }
+    });
+  }
   // Lo que pausaste con un toque sigue pausado mientras esté a la vista; al irse, la próxima vez arranca solo.
   const playIO = new IntersectionObserver(
     (entries) => {
@@ -602,11 +659,13 @@
     v.setAttribute('loop', '');
     v.preload = thumb ? 'metadata' : 'none';
     v.dataset.src = RS.videoUrl(m) + (thumb ? '#t=0.1' : '');
+    v._thumb = !!thumb;
     if (!thumb) v.poster = RS.posterUrl(m);
     if (m.w && m.h) {
       v.width = m.w;
       v.height = m.h;
     }
+    retryOnError(v, v.dataset.src);
     nearIO.observe(v);
     if (!thumb) playIO.observe(v);
     return v;
@@ -1303,6 +1362,7 @@
         onTaps(s, () => exitViewer());
       } else if (m.kind === 'video') {
         const vid = h('video', { src: RS.videoUrl(m), loop: true, playsinline: true, poster: RS.posterUrl(m), preload: 'auto' });
+        retryOnError(vid, RS.videoUrl(m));
         vid.muted = viewer.muted;
         vid._real = !!m.real;
         watchAudio(vid, () => {
@@ -1710,7 +1770,7 @@
     if (v.feed && v.onAdd) v.feed.listeners.delete(v.onAdd);
     v.near.disconnect();
     v.seen.disconnect();
-    v.el.querySelectorAll('video').forEach((x) => x.pause());
+    releaseIn(v.el);
     v.el.remove();
     document.body.classList.remove('noscroll');
     setFullscreen(false);
@@ -1788,6 +1848,29 @@
     { passive: true }
   );
   setInterval(noteTop, 700);
+
+  // Respaldo de playIO: cada 1,5 s, el GIF o video del post a la vista tiene que estar cargado y
+  // reproduciéndose (salvo que lo hayas pausado). En Android el observador a veces no avisa al deslizar
+  // rápido o al volver a la app, y el video se quedaba quieto.
+  function keepPlaying() {
+    const f = current && current.feed;
+    if (!f || viewer || document.hidden || f.mode !== 'feed' || !f.root.isConnected) return;
+    const id = f.topVisibleId();
+    const card = id && f.list.querySelector('[data-id="' + CSS.escape(id) + '"]');
+    if (!card) return;
+    const slides = card.querySelectorAll('.slide');
+    const sl = slides[currentIndex(card)] || slides[0];
+    const v = sl && sl.querySelector('video');
+    if (!v || v._userPaused) return;
+    const r = v.getBoundingClientRect();
+    if (r.bottom < 60 || r.top > window.innerHeight - 60) return;
+    if (v.dataset.src) {
+      v._near = true;
+      loadVideo(v);
+    }
+    if (v.paused) v.play().catch(() => {});
+  }
+  setInterval(keepPlaying, 1500);
 
   function realignTracks(root) {
     root.querySelectorAll('.track, .vw-track').forEach((t) => {
@@ -2308,7 +2391,7 @@
 
     destroy() {
       this.io.disconnect();
-      pauseIn(this.root);
+      releaseIn(this.root);
     }
   }
 
@@ -2410,6 +2493,7 @@
     }
     if (!f.items.length) f.loadMore();
     else f.checkMore();
+    reviveVideos(f.root);
   }
 
   function parseHash() {
@@ -2677,6 +2761,7 @@
         head: (f) => [h('h1', { text: 'Inicio' }), bellLink(), viewToggle(f)],
         extra: () => [
           updateBanner(),
+          restoreBanner(),
           recapBanner(),
           storiesRow(),
           sortChips(type, (t) => {
@@ -3288,6 +3373,51 @@
 
   // ================================================================ Buscar
 
+  // Nombres de hashtags y usuarios que la app ya conoce (lo que sigues, buscaste, te gustó, viste o
+  // bloqueaste): sirven para encontrarlos aunque se escriban con errores. Se arman una vez por minuto.
+  let knownCache = null;
+  function knownNames() {
+    if (knownCache && Date.now() - knownCache.at < 60000) return knownCache;
+    const tags = new Map();
+    const users = new Map();
+    const tag = (t) => t && !RS.isFormatTag(t) && !tags.has(String(t).toLowerCase()) && tags.set(String(t).toLowerCase(), String(t));
+    const user = (u, id) => {
+      if (!u) return;
+      const k = String(u).toLowerCase();
+      const old = users.get(k);
+      if (!old || (!old.userId && id)) users.set(k, { name: String(u), userId: id || (old && old.userId) || 0 });
+    };
+    Object.values(S.favorites).forEach((f) => tag(f.name));
+    Object.values(S.tagProfiles).forEach((x) => tag(x.name));
+    S.mix.exclude.forEach(tag);
+    (S.searches || []).forEach((x) => (x.type === 'user' ? user(x.name, x.pic) : tag(x.name)));
+    Object.values(S.following).forEach((f) => user(f.name, f.userId));
+    (S.userHistory || []).forEach((x) => user(x.name, x.userId));
+    for (const x of Object.values(S.likes).concat(S.history || [])) {
+      if (!x.post) continue;
+      x.post.tags.forEach(tag);
+      user(x.post.user, x.post.userId);
+    }
+    const st = stats();
+    Object.keys(st.tags).forEach(tag);
+    Object.keys(st.users).forEach((u) => user(u));
+    Object.keys(st.time.tags || {}).forEach(tag);
+    Object.keys(st.time.users || {}).forEach((u) => user(u, (st.time.ids || {})[u]));
+    // Del árbol guardado solo se conocen bien escritas las carpetas de arriba.
+    for (const k of Object.keys(S.tagTree)) for (const p of S.tagTree[k].p || []) tag(p);
+    knownCache = { at: Date.now(), tags: Array.from(tags.values()), users: Array.from(users.values()) };
+    return knownCache;
+  }
+  // Los más parecidos a lo escrito (ver RS.fuzzyScore), del más parecido al menos.
+  function closest(q, list, nameOf, max) {
+    return list
+      .map((x) => ({ x, s: RS.fuzzyScore(q, nameOf(x)) }))
+      .filter((r) => r.s < Infinity)
+      .sort((a, b) => a.s - b.s)
+      .slice(0, max)
+      .map((r) => r.x);
+  }
+
   function searchBox(placeholder, autofocus, onFav, withUsers, opts) {
     opts = opts || {};
     const input = h('input', { type: 'search', placeholder, 'aria-label': placeholder, autocomplete: 'off', enterkeyhint: 'search' });
@@ -3305,15 +3435,28 @@
         const my = ++seq;
         try {
           const qUser = q.replace(/^@/, '');
-          const [list, user] = await Promise.all([
-            q.startsWith('@') || opts.usersOnly ? Promise.resolve([]) : RS.autocomplete(q),
+          const onlyUsers = q.startsWith('@') || opts.usersOnly;
+          const known = knownNames();
+          // Lo que se predice como siempre (el autocompletado de JoyReactor) y, debajo, lo parecido:
+          // con errores de tipeo, con una palabra del medio o con lo escrito a medias.
+          const [found, user] = await Promise.all([
+            onlyUsers ? Promise.resolve({ exact: [], similar: [] }) : RS.searchTags(q, closest(q, known.tags, (t) => t, 8)),
             withUsers ? RS.fetchUserInfo(qUser).catch(() => null) : Promise.resolve(null)
           ]);
           if (my !== seq) return;
           const rows = [];
           if (user) rows.push(userRow(user, opts.onPick, opts.onFollow));
-          rows.push(...list.slice(0, 15).map((t) => resultRow(t, onFav, opts.onPick)));
+          rows.push(...found.exact.slice(0, 15).map((t) => resultRow(t, onFav, opts.onPick)));
+          const likeUsers = withUsers
+            ? closest(qUser, known.users, (u) => u.name, 3).filter((u) => !user || u.name.toLowerCase() !== user.name.toLowerCase())
+            : [];
+          if (found.similar.length || likeUsers.length) {
+            rows.push(h('h2', { class: 'section-label similar-label', text: rows.length ? 'Parecidos' : 'Quizás buscabas' }));
+            rows.push(...found.similar.map((t) => resultRow(t, onFav, opts.onPick)));
+            rows.push(...likeUsers.map((u) => personRow(u.name, u.userId, 'Usuario', () => opts.onPick && opts.onPick({ type: 'user', name: u.name, pic: u.userId }), followPill(u.name, u.userId, opts.onFollow))));
+          }
           fill(results, ...(rows.length ? rows : [h('div', { class: 'status', text: 'Sin resultados para «' + q + '»' })]));
+          results.dataset.q = q;
         } catch (e) {
           fill(results, h('div', { class: 'status', text: errText(e) }));
         }
@@ -3322,6 +3465,9 @@
     input.addEventListener('keydown', (e) => {
       const q = input.value.trim().replace(/^#/, '');
       if (e.key !== 'Enter' || !q) return;
+      // Enter abre el primer resultado (si lo escrito no existe tal cual, el más parecido).
+      const first = results.dataset.q === q && results.querySelector('.result a');
+      if (first) return first.click();
       if (opts.usersOnly) return nav('#/user/' + enc(q.replace(/^@/, '')));
       if (opts.onPick) opts.onPick({ type: 'tag', name: q });
       nav('#/tag/' + enc(q));
@@ -4411,12 +4557,90 @@
 
   // ================================================================ Ajustes y respaldo
 
-  async function exportBackup() {
+  // Lo que va en un respaldo: todo menos lo que la app vuelve a pedir sola (árbol de hashtags, páginas
+  // con posts retirados, épocas del Aleatorio).
+  const NO_BACKUP = new Set(['eraCache', 'tagTree', 'junkScan']);
+  async function backupData() {
     flush();
-    const data = await RS.load(RS.KEYS.filter((k) => k !== 'eraCache'));
+    const data = await RS.load(RS.KEYS.filter((k) => !NO_BACKUP.has(k)));
     data._app = 'reactor-swipe';
     data._version = 1;
     data._exported = new Date().toISOString();
+    return data;
+  }
+
+  // ---- Respaldo automático (app de Android). Al desinstalar, Android borra todo lo que la app guarda;
+  // por eso, cada vez que la app pasa a segundo plano y cambió algo importante (o una vez al día), se
+  // escribe un respaldo en Descargas › ReactorSwipe, que no se borra. Al reinstalar, se restaura desde
+  // ahí (restoreBanner en Inicio o Ajustes › Respaldo › Restaurar).
+  const BACKUP_EVERY = 24 * 3600000;
+  const hasUserData = () =>
+    Object.keys(S.likes).length + Object.keys(S.favorites).length + Object.keys(S.following).length + Object.keys(S.tagProfiles).length + Object.keys(S.dislikes).length > 0;
+  function backupSig() {
+    const likes = Object.values(S.likes);
+    return [likes.length, likes.reduce((m, x) => Math.max(m, x.at || 0), 0), Object.keys(S.favorites).length, Object.keys(S.following).length, Object.keys(S.tagProfiles).length, Object.keys(S.dislikes).length, S.mix.exclude.length].join('|');
+  }
+  let backingUp = null;
+  function autoBackup(force) {
+    if (!RS.android || typeof RS.android.autoBackup !== 'function') return Promise.reject(new Error('Respaldo no disponible'));
+    if (backingUp) return backingUp;
+    // Una app recién instalada y vacía no escribe nada: así no tapa un respaldo de antes.
+    if (!hasUserData()) return Promise.resolve(null);
+    const sig = backupSig();
+    if (!force && sig === S.backup.sig && Date.now() - S.backup.at < BACKUP_EVERY) return Promise.resolve(null);
+    const before = { at: S.backup.at, sig: S.backup.sig };
+    S.backup.at = Date.now();
+    S.backup.sig = sig;
+    backingUp = backupData()
+      .then((data) => RS.native('autoBackup', JSON.stringify(data)))
+      .catch((e) => {
+        Object.assign(S.backup, before);
+        throw e;
+      })
+      .finally(() => {
+        backingUp = null;
+        persist('backup', 0);
+      });
+    return backingUp;
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) autoBackup(false).catch(() => {});
+  });
+
+  // Elegir un archivo de respaldo y restaurarlo (fresh = la app está vacía: no hace falta preguntar).
+  function pickBackup(fresh) {
+    const input = h('input', { type: 'file', accept: 'application/json,.json', class: 'visually-hidden', 'aria-label': 'Archivo de respaldo' });
+    input.addEventListener('change', () => {
+      const file = input.files && input.files[0];
+      input.remove();
+      if (file) importBackup(file, fresh).catch((e) => toast(errText(e)));
+    });
+    document.body.append(input);
+    input.click();
+  }
+
+  // Inicio, con la app vacía (recién instalada o reinstalada): ofrece restaurar el respaldo.
+  function restoreBanner() {
+    if (!RS.android || hasUserData() || S.backup.skip) return null;
+    return h('section', { class: 'notice' },
+      h('strong', { text: '¿Reinstalaste la app?' }),
+      h('span', { text: 'Recupera tus me gusta, lo que sigues y tus perfiles desde el respaldo: está en Descargas › ReactorSwipe.' }),
+      h('div', { class: 'row-btns' },
+        h('button', { class: 'btn blue', onclick: () => pickBackup(true) }, icon('upload', 18), 'Restaurar'),
+        h('button', {
+          class: 'btn quiet',
+          onclick: () => {
+            S.backup.skip = true;
+            persist('backup', 0);
+            if (current && current.feed) current.feed.refresh();
+          }
+        }, 'Empezar de cero')
+      )
+    );
+  }
+
+  async function exportBackup() {
+    const data = await backupData();
     const name = 'reactor-swipe-respaldo-' + new Date().toISOString().slice(0, 10) + '.json';
     if (RS.android) {
       try {
@@ -4437,12 +4661,17 @@
     toast('Respaldo descargado');
   }
 
-  async function importBackup(file) {
-    const data = JSON.parse(await file.text());
-    if (!data || data._app !== 'reactor-swipe') throw new Error('Ese archivo no es un respaldo de Reactor Swipe.');
-    if (!confirm('Esto reemplaza tus me gusta, ocultos, lo que sigues, el historial y la mezcla actuales. ¿Continuar?')) return;
+  async function importBackup(file, fresh) {
+    let data = null;
+    try {
+      data = JSON.parse(await file.text());
+    } catch (e) {
+      data = null;
+    }
+    if (!data || data._app !== 'reactor-swipe') throw new Error('Ese archivo no es un respaldo de Reactor Swipe. Busca reactor-swipe-respaldo en Descargas › ReactorSwipe.');
+    if (!fresh && hasUserData() && !confirm('Esto reemplaza tus me gusta, ocultos, lo que sigues, el historial y la mezcla actuales. ¿Continuar?')) return;
     const out = {};
-    for (const k of RS.KEYS) if (k !== 'eraCache' && k in data) out[k] = data[k];
+    for (const k of RS.KEYS) if (!NO_BACKUP.has(k) && k in data) out[k] = data[k];
     await RS.save(out);
     location.reload();
   }
@@ -4624,10 +4853,28 @@
       h('div', { class: 'setgroup' },
         h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: 'Respaldo' }),
         h('div', { class: 'field' },
-          h('span', { class: 'd', style: { marginTop: '0' }, text: 'Tus me gusta, ocultos, lo que sigues, el historial y la mezcla viven solo en este teléfono. Guarda un respaldo para no perderlos o para pasarlos a otro.' }),
+          h('span', { class: 'd', style: { marginTop: '0' }, text: 'Tus me gusta, lo que sigues, tus perfiles, los ocultos, el historial y la mezcla viven solo en este teléfono: si desinstalas la app, Android los borra.' }),
+          RS.android
+            ? h('span', { class: 'd', text: 'Respaldo automático en Descargas › ReactorSwipe: ' + (S.backup.at ? 'el último fue ' + ago(S.backup.at) : 'todavía no hay') + '. Se actualiza solo cuando cambia algo. Si reinstalas la app, toca Restaurar y elige ese archivo.' })
+            : null,
           h('div', { class: 'inline-add' },
-            h('button', { class: 'btn', onclick: exportBackup }, icon('download', 18), 'Exportar'),
-            h('button', { class: 'btn ghost', onclick: () => fileInput.click() }, icon('upload', 18), 'Importar'),
+            RS.android
+              ? h('button', {
+                  class: 'btn',
+                  onclick: (e) => {
+                    const b = e.currentTarget;
+                    b.disabled = true;
+                    autoBackup(true)
+                      .then((r) => {
+                        toast(r ? 'Respaldo guardado en Descargas › ReactorSwipe' : 'Todavía no hay nada que respaldar');
+                        if (r) routeSettings();
+                      })
+                      .catch((err) => toast(errText(err)))
+                      .finally(() => (b.disabled = false));
+                  }
+                }, icon('download', 18), 'Respaldar ahora')
+              : h('button', { class: 'btn', onclick: exportBackup }, icon('download', 18), 'Exportar'),
+            h('button', { class: 'btn ghost', onclick: () => fileInput.click() }, icon('upload', 18), RS.android ? 'Restaurar' : 'Importar'),
             fileInput
           )
         )

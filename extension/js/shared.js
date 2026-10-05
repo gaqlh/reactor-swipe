@@ -645,6 +645,110 @@
     return d.tagAutocomplete || [];
   };
 
+  // ---- Buscar con margen de error. El autocompletado de JoyReactor solo encuentra los nombres que
+  // empiezan exactamente por lo escrito (y desde 3 letras): «touhuo» o «scarlet» no encuentran
+  // #Touhou Project ni #Remilia Scarlet.
+  const normName = (s) =>
+    String(s || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  // Distancia de edición con trasposiciones (dos letras cambiadas de lugar cuentan como un error).
+  function editDistance(a, b) {
+    const m = a.length;
+    const n = b.length;
+    if (!m) return n;
+    if (!n) return m;
+    let prev2 = null;
+    let prev = Array.from({ length: n + 1 }, (_, j) => j);
+    for (let i = 1; i <= m; i++) {
+      const cur = [i];
+      for (let j = 1; j <= n; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        let v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+        if (prev2 && i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) v = Math.min(v, prev2[j - 2] + 1);
+        cur.push(v);
+      }
+      prev2 = prev;
+      prev = cur;
+    }
+    return prev[n];
+  }
+  /**
+   * Qué tan parecido es un nombre a lo escrito: 0 empieza igual, 0,5 alguna palabra empieza igual,
+   * 0,8 lo contiene, 1 + errores si se parece con pocos errores de tipeo (1 hasta 4 letras, 2 hasta 8,
+   * 3 más); Infinity si no se parece.
+   */
+  RS.fuzzyScore = function (query, name) {
+    const q = normName(query);
+    const n = normName(name);
+    if (!q || !n) return Infinity;
+    if (n.startsWith(q)) return 0;
+    const words = n.split(/[\s\-_.,()/]+/).filter(Boolean);
+    if (words.some((w) => w.startsWith(q))) return 0.5;
+    if (q.length >= 3 && n.includes(q)) return 0.8;
+    const allow = q.length <= 4 ? 1 : q.length <= 8 ? 2 : 3;
+    let best = Infinity;
+    for (const target of [n].concat(words)) {
+      for (const len of [q.length - 1, q.length, q.length + 1]) {
+        if (len < 1) continue;
+        best = Math.min(best, editDistance(q, target.slice(0, len)));
+      }
+    }
+    best = Math.min(best, editDistance(q, n));
+    return best <= allow ? 1 + best : Infinity;
+  };
+
+  /**
+   * Hashtags para lo escrito, en una sola consulta: { exact, similar }. exact = lo que da el
+   * autocompletado de JoyReactor (como siempre); similar = lo que se parece, con margen de error: lo
+   * que encuentra con lo escrito más corto o con cada palabra, y los hashtags que la app ya conoce
+   * (known, nombres) que se parecen, con sus totales.
+   */
+  RS.searchTags = async function (input, known) {
+    const text = String(input || '').trim();
+    const low = text.toLowerCase();
+    const masks = [text];
+    const add = (m) => {
+      m = m.trim();
+      if (m.length >= 3 && !masks.some((x) => x.toLowerCase() === m.toLowerCase())) masks.push(m);
+    };
+    for (const w of text.split(/\s+/)) add(w);
+    for (let len = text.length - 1; len >= 3 && masks.length < 6; len--) add(text.slice(0, len));
+    const locals = (known || []).filter((n) => n.toLowerCase() !== low).slice(0, 8);
+    const vars = {};
+    const F = 'id name count nsfw image { id }';
+    const parts = masks.map((m, i) => {
+      vars['a' + i] = m;
+      return `a${i}: tagAutocomplete(mask:$a${i}){ ${F} }`;
+    });
+    locals.forEach((n, i) => {
+      vars['l' + i] = n;
+      parts.push(`l${i}: tag(name:$l${i}){ ${F} mainTag { ${F} } }`);
+    });
+    const decl = masks.map((m, i) => '$a' + i + ':String!').concat(locals.map((n, i) => '$l' + i + ':String')).join(',');
+    const d = await gql(`query(${decl}){ ${parts.join(' ')} }`, vars);
+    const exact = d.a0 || [];
+    const seen = new Set(exact.map((t) => t.name.toLowerCase()));
+    const pool = [];
+    const consider = (t) => {
+      if (!t || seen.has(t.name.toLowerCase())) return;
+      const score = RS.fuzzyScore(text, t.name);
+      if (score === Infinity) return;
+      seen.add(t.name.toLowerCase());
+      pool.push(Object.assign({ score }, t));
+    };
+    masks.slice(1).forEach((m, i) => (d['a' + (i + 1)] || []).forEach(consider));
+    locals.forEach((n, i) => {
+      const t = d['l' + i];
+      consider(t && (t.mainTag || t));
+    });
+    pool.sort((a, b) => a.score - b.score || (b.count || 0) - (a.count || 0));
+    return { exact, similar: pool.slice(0, 8) };
+  };
+
   // ---------------------------------------------------------------- Datos del usuario
 
   const DEFAULTS = {
@@ -675,6 +779,9 @@
     weekly: { week: '', at: 0, users: [], tags: [], prev: null, pending: null, seen: '', later: '' },
     // Hashtags guardados como perfil (Seguidos › Perfiles): nombre en minúsculas -> { name, aliases, addedAt, pic }.
     tagProfiles: {},
+    // Respaldo automático en Descargas (app de Android): cuándo se escribió el último, una firma de lo
+    // importante para saber si cambió, y skip = en una app vacía dijiste «Empezar de cero».
+    backup: { at: 0, sig: '', skip: false },
     eraCache: {}
   };
   RS.KEYS = Object.keys(DEFAULTS);

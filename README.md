@@ -14,7 +14,7 @@ App de **Android** que convierte JoyReactor en un feed tipo Instagram. Todo se g
 - **«Atrás» te deja donde estabas**: en el mismo post, en la misma vista y, si venías de pantalla completa, otra vez en pantalla completa. Si abriste un post desde las miniaturas, vuelves a ellas.
 - **Inicio** muestra primero los posts nuevos de la gente que sigues y de los hashtags guardados como perfil (de la última semana y que no viste), empezando por quien más me gusta te ha dado.
 - **Aleatorio a tu medida**: eliges qué entra y cuánto pesa cada cosa. También hay calidad mínima, época, «no repetir lo ya visto» y hashtags excluidos.
-- **Buscar** hashtags y usuarios, con las búsquedas recientes como en Instagram.
+- **Buscar** hashtags y usuarios, con las búsquedas recientes como en Instagram. Tolera errores de tipeo («touhuo» encuentra #Touhou Project) y encuentra palabras del medio («scarlet» → #Remilia Scarlet si ya la viste): lo exacto arriba y debajo «Parecidos». Enter abre el primero.
 
 ### Pantalla completa (doble toque)
 
@@ -58,7 +58,7 @@ App de **Android** que convierte JoyReactor en un feed tipo Instagram. Todo se g
 - **Sin posts basura**: los posts que JoyReactor retiró por derechos de autor no salen en ningún lado. La app anota qué páginas solo tienen retirados para no volver a pedirlas, y el número de posts de un usuario o hashtag ya no cuenta los retirados ni los que JoyReactor cuenta pero no entrega.
 - **Avisos** de posts nuevos en los hashtags y usuarios con campanita, aunque la app esté cerrada.
 - **Actualizaciones**: cuando hay versión nueva llega un aviso y son 2 toques (**Actualizar** e **Instalar**). En Ajustes › Versión, **Actualizar** busca y, si hay una nueva, la descarga y abre el instalador.
-- **Respaldo**: exportar e importar tus datos (se guarda en Descargas).
+- **Respaldo automático**: cuando cambia algo importante (o una vez al día) la app escribe un respaldo en **Descargas › ReactorSwipe**, que no se borra al desinstalar. Si reinstalas, Inicio ofrece **Restaurar** (o Ajustes › Respaldo › Restaurar) y eliges ese archivo. Ojo: desinstalar la app borra todo lo que guarda; para actualizar no hace falta desinstalar.
 
 ## Instalarla (una sola vez)
 

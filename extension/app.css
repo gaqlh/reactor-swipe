@@ -1118,3 +1118,7 @@ button.htag.more { padding: 0 8px; border-radius: 9px; background: var(--surface
 /* Subcategorías bloqueadas en la cabecera del hashtag: tachadas (su número ya se descontó) */
 .tag.off { color: var(--text-3); text-decoration: line-through; }
 .small-btn:disabled { opacity: 0.7; }
+
+/* ---------- 1.4.5 ---------- */
+/* Buscar: los resultados parecidos (con errores de tipeo) van debajo, con su título */
+.similar-label { display: block; padding: 14px 16px 4px; }

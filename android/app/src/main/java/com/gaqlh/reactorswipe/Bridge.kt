@@ -93,6 +93,10 @@ class Bridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun saveFile(name: String, content: String, cb: String) = async(cb) { saveToDownloads(name, content) }
 
+    /** Respaldo automático: siempre el mismo archivo en Descargas/ReactorSwipe (no se borra al desinstalar). */
+    @JavascriptInterface
+    fun autoBackup(content: String, cb: String) = async(cb) { writeAutoBackup(content) }
+
     @JavascriptInterface
     fun installUpdate(url: String, cb: String) = async(cb) { Updater.downloadAndInstall(activity, url) }
 
@@ -110,6 +114,39 @@ class Bridge(private val activity: MainActivity) {
                 )
             }
         }
+    }
+
+    /**
+     * Escribe el respaldo automático. Mientras la app siga instalada, vuelve a escribir el mismo archivo
+     * (su dirección queda en las preferencias). Después de reinstalar, Android no deja tocar el archivo de
+     * antes: se crea uno nuevo al lado («… (1).json») y el viejo queda como estaba.
+     */
+    private fun writeAutoBackup(content: String): JSONObject {
+        val prefs = Store.prefs(ctx)
+        val resolver = ctx.contentResolver
+        val bytes = content.toByteArray()
+        val known = prefs.getString("backupUri", null)
+        if (known != null) {
+            try {
+                val out = resolver.openOutputStream(Uri.parse(known), "wt") ?: throw IOException("Sin acceso al respaldo")
+                out.use { it.write(bytes) }
+                return JSONObject().put("ok", true)
+            } catch (e: Exception) {
+                // Lo borraron o ya no es nuestro: se crea otro.
+                prefs.edit().remove("backupUri").apply()
+            }
+        }
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, "reactor-swipe-respaldo.json")
+            put(MediaStore.Downloads.MIME_TYPE, "application/json")
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/ReactorSwipe")
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: throw IOException("No se pudo crear el respaldo en Descargas")
+        val out = resolver.openOutputStream(uri, "wt") ?: throw IOException("No se pudo escribir el respaldo")
+        out.use { it.write(bytes) }
+        prefs.edit().putString("backupUri", uri.toString()).apply()
+        return JSONObject().put("ok", true)
     }
 
     private fun saveToDownloads(name: String, content: String): JSONObject {

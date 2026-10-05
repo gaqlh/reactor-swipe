@@ -81,6 +81,7 @@ window.RSAndroid = {
   peekSystemBars() { window.__simPeek = (window.__simPeek || 0) + 1; },
   checkNow(cb) { setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ total: 0, per: {} })), 50); },
   saveFile(n, c, cb) { setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ ok: true, message: 'Simulado: ' + n })), 50); },
+  autoBackup(c, cb) { window.__simBackup = c; setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ ok: true })), 50); },
   installUpdate(u, cb) { setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ ok: true })), 50); }
 };
 window.__RS_DEV_PROXY = true;
