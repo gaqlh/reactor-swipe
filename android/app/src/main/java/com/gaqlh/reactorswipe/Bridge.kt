@@ -160,7 +160,7 @@ class Bridge(private val activity: MainActivity) {
      * Imágenes/ReactorSwipe, así sale en la galería. Si la imagen en tamaño completo no existe, usa la normal.
      */
     private fun saveToGallery(url: String, name: String): JSONObject {
-        if (!Regex("""^https://img\d*\.joyreactor\.com/pics/post/""").containsMatchIn(url)) throw IOException("Enlace no válido")
+        if (!Regex("""^https://(img\d*\.joyreactor\.com/pics/post/|media\.redgifs\.com/)""").containsMatchIn(url)) throw IOException("Enlace no válido")
         val safeName = name.replace(Regex("[^A-Za-z0-9._-]"), "_")
         var conn = openMedia(url)
         if (conn.responseCode != 200 && url.contains("/full/")) {
@@ -173,6 +173,7 @@ class Bridge(private val activity: MainActivity) {
             val video = ext == "mp4"
             val mime = when (ext) {
                 "mp4" -> "video/mp4"
+                "jpg" -> "image/jpeg"
                 "png" -> "image/png"
                 "gif" -> "image/gif"
                 "webp" -> "image/webp"
@@ -208,13 +209,18 @@ class Bridge(private val activity: MainActivity) {
         }
     }
 
+    // Los archivos de JoyReactor piden su Referer; los de RedGifs, ninguno (con otro dan 403).
     private fun openMedia(url: String): HttpURLConnection =
         (URL(url).openConnection() as HttpURLConnection).apply {
             instanceFollowRedirects = true
             connectTimeout = 20000
             readTimeout = 60000
-            setRequestProperty("Referer", "https://joyreactor.com/")
-            setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) ReactorSwipe")
+            if (url.contains("redgifs.com")) {
+                setRequestProperty("User-Agent", RedGifs.UA)
+            } else {
+                setRequestProperty("Referer", "https://joyreactor.com/")
+                setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) ReactorSwipe")
+            }
         }
 
     private fun saveToDownloads(name: String, content: String): JSONObject {

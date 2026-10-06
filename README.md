@@ -57,6 +57,16 @@ App de **Android** que convierte JoyReactor en un feed tipo Instagram. Todo se g
 - **Reputación** de 1 a 5 estrellas (calidad, trayectoria y actividad), plegada: se abre al tocarla. Las estrellas también salen junto al nombre en cada post.
 - **Historial de perfiles**: los últimos 50 que visitaste (Buscar › Perfiles que visitaste).
 
+### RedGifs
+
+- **Dos fuentes**: además de JoyReactor, la app muestra posts de **RedGifs**, mezclados (uno de RedGifs cada tres de JoyReactor) en Inicio, Buscar y los hashtags. En **Ajustes › Fuentes** eliges **Las dos**, solo **JoyReactor** o solo **RedGifs**.
+- **Cada post lleva un mini icono** con su fuente: **JR** (naranja) o **RG** (rosado). Con las dos fuentes lo llevan todos; con una sola, solo los de la otra.
+- **Pestaña RedGifs** en cada hashtag y en cada usuario, al lado de «Videos y GIF». En un hashtag muestra la etiqueta de RedGifs del mismo nombre; en un usuario, el creador de RedGifs que **unas** con él. Arriba de la pestaña dice con qué está unido y **Cambiar** (o **Unir**) busca en RedGifs mientras escribes.
+- **Mezclar**: en las cuentas (usuarios y hashtags que sigues como cuenta), un interruptor en la pestaña RedGifs mete esos posts en **Todos**, mezclados con los de JoyReactor.
+- **Seguir en RedGifs**, igual que en JoyReactor: los **creadores** (en Seguidos › Perfiles) y las **etiquetas**, como hashtag (al azar, en las historias) o como cuenta (en orden y en miniaturas). Tocar una etiqueta de un post de RedGifs abre su página. Lo que sigues sale en las historias y lo nuevo, primero en Inicio.
+- **Fotos propias** también para creadores y etiquetas de RedGifs (imagen quieta para los perfiles, GIF que se mueve para las etiquetas), con el mismo selector.
+- Los avisos de posts nuevos son solo de JoyReactor. Los posts de RedGifs se abren en RedGifs desde el botón de comentarios.
+
 ### Favoritos, historial y estadísticas
 
 - **Me gusta** con una animación del corazón. **No me gusta** oculta el post para siempre (los ocultos se recuperan en Ajustes).
@@ -135,4 +145,5 @@ Abre <http://localhost:5178/android.html> en vista de móvil: es la interfaz con
 - **Árbol de hashtags:** cada hashtag tiene su cadena de carpetas (`hierarchy`) y lo que tiene dentro (`tagPager`). La app guarda el árbol en el teléfono para mostrar solo lo más específico.
 - **Caché:** lo que encuentra la pestaña «Videos y GIF» de cada hashtag se guarda en el teléfono (IndexedDB, aparte de tus datos). Al volver solo se pide lo nuevo.
 - **Avisos:** los revisa `NewsChecker.kt` cada 15/30/60 min. La primera vez que revisa un hashtag o usuario solo toma nota de lo que hay, sin avisar.
+- **RedGifs:** su API (`api.redgifs.com/v2`) pide un token temporal atado a la IP y al navegador, y sus archivos dan 403 con el `Referer` de otro sitio. Por eso la interfaz los pide como `https://joyreactor.com/__rg/api/…` y `/__rg/media/…`: en el teléfono los atiende `RedGifs.kt` (guarda el token y pide otro solo si caduca) y en la PC, `tools/dev-server.mjs`.
 - **Resumen de los lunes:** la interfaz le pasa a Android el tiempo y el top de la semana (`syncWeek`) cada vez que se usa; `Weekly.kt` revisa cada hora si ya es lunes desde las 9 y avisa una vez por semana.

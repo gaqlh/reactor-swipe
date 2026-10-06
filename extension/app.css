@@ -1359,3 +1359,24 @@ html:not(.show-scores) .card .head .rating { display: none; }
   .in-wall, .in-wall i, .in-logo { animation: none; }
   .in-wall i { opacity: 0.5; }
 }
+
+/* ---------- 1.10.0 ---------- */
+/* RedGifs: el mini icono de la fuente de cada post (JR = JoyReactor, RG = RedGifs) */
+:root { --rg: #ff6b7d; --rg-soft: #3a1418; }
+.srcb { display: inline-flex; align-items: center; justify-content: center; height: 16px; padding: 0 4px; border-radius: 4px; font-size: 9.5px; font-weight: 800; letter-spacing: 0.04em; line-height: 1; vertical-align: middle; flex-shrink: 0; }
+.srcb.jr { background: var(--accent-soft); color: var(--accent); }
+.srcb.rg { background: var(--rg-soft); color: var(--rg); }
+.srcb.tsrc { position: absolute; top: 6px; left: 6px; z-index: 1; pointer-events: none; }
+.selecting .srcb.tsrc { display: none; }
+.vw-who .srcb { margin: 0 4px 0 6px; text-shadow: none; }
+/* Pestaña RedGifs de un hashtag o una cuenta, y la barra de arriba: con qué está unido, Cambiar y Mezclar */
+.ptab .srcb { height: 18px; font-size: 10px; }
+.rglink { margin: 8px 12px 0; padding: 4px 4px 4px 12px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--surface); }
+.rgl-row { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 14px; }
+.rgl-row + .rgl-row { border-top: 1px solid var(--line); }
+.rgl-row .grow { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rgl-row .switch { margin-right: 8px; }
+.rgl-jump { display: flex; align-items: center; gap: 8px; min-height: 44px; margin-top: 10px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: 12px; color: var(--text); font-size: 14px; font-weight: 700; text-decoration: none; }
+.ptabs.many .ptab:not(.on):not(.shuf) { flex: 0 0 52px; }
+.ptabs.many .ptab:not(.on) .pl { display: none; }
+.ptabs.many .ptab.on { flex: 1 1 auto; }

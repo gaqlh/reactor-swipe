@@ -193,7 +193,7 @@
       }
     }, delay == null ? 250 : delay);
   }
-  const BACKUP_KEYS = new Set(['likes', 'dislikes', 'favorites', 'following', 'tagProfiles', 'mix', 'pics', 'folders']);
+  const BACKUP_KEYS = new Set(['likes', 'dislikes', 'favorites', 'following', 'tagProfiles', 'mix', 'pics', 'folders', 'rgFollowing', 'rgTags', 'rgLinks', 'rgMix']);
   let backupTimer = null;
 
   // App de Android: los avisos los revisa Android en segundo plano, así que le paso qué vigilar
@@ -559,7 +559,7 @@
     try {
       for (const m of ms) {
         const f = RS.fileOf(m);
-        const name = 'reactor-' + p.num + (all.length > 1 ? '-' + (all.indexOf(m) + 1) : '') + '.' + f.ext;
+        const name = (RS.isRg(p) ? 'redgifs-' : 'reactor-') + p.num + (all.length > 1 ? '-' + (all.indexOf(m) + 1) : '') + '.' + f.ext;
         if (ms.length > 1) toast('Descargando ' + (done + 1) + ' de ' + ms.length + '…');
         else toast('Descargando…');
         if (RS.android) await RS.native('saveMedia', f.url, name);
@@ -574,7 +574,7 @@
   }
   // Fuera de Android (la PC): se baja el archivo y el navegador lo guarda.
   async function saveInBrowser(url, name) {
-    const r = await fetch(RS.viaProxy(url));
+    const r = await fetch(RS.localUrl(url));
     if (!r.ok) throw new Error('JoyReactor respondió ' + r.status);
     const href = URL.createObjectURL(await r.blob());
     const a = h('a', { href, download: name });
@@ -582,6 +582,364 @@
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(href), 10000);
+  }
+
+  // ================================================================ RedGifs (1.10.0)
+  //
+  // Los posts de RedGifs se mezclan con los de JoyReactor en Inicio, en Explorar y en cada hashtag (uno
+  // cada RG_EVERY de JoyReactor; ver Feed.add). En Ajustes › Fuentes se elige: las dos, solo JoyReactor o
+  // solo RedGifs (S.settings.sources). Cada post lleva un mini icono de su fuente (srcBadge). Los creadores
+  // de RedGifs se siguen aparte (S.rgFollowing): sus posts van primero en Inicio y salen en las historias.
+  const RG_EVERY = 3;
+  let rgErrorShown = false;
+  const srcMode = () => (['jr', 'rg', 'both'].includes(S.settings.sources) ? S.settings.sources : 'both');
+  // Con las dos fuentes, en todos los posts; con una sola, solo en los de la otra (p. ej. un me gusta viejo).
+  function srcBadge(p, cls) {
+    const rg = RS.isRg(p);
+    const mode = srcMode();
+    if (mode !== 'both' && mode === (rg ? 'rg' : 'jr')) return null;
+    const label = rg ? 'De RedGifs' : 'De JoyReactor';
+    return h('span', { class: 'srcb ' + (rg ? 'rg' : 'jr') + (cls ? ' ' + cls : ''), title: label, 'aria-label': label, text: rg ? 'RG' : 'JR' });
+  }
+  const rgKey = (name) => String(name).toLowerCase();
+  const isRgFollowed = (name) => !!S.rgFollowing[rgKey(name)];
+  function setRgFollow(name, on, pic) {
+    if (on) S.rgFollowing[rgKey(name)] = S.rgFollowing[rgKey(name)] || { name, pic: pic || '', addedAt: Date.now() };
+    else delete S.rgFollowing[rgKey(name)];
+    persist('rgFollowing', 0);
+    invalidateHome();
+    storyCache = null;
+  }
+  // Foto de un creador de RedGifs: la que le pusiste, la suya (pedida sin Referer, que RedGifs rechaza) o su inicial.
+  function rgPic(name, url, cls) {
+    const own = picOf('rguser', name);
+    if (own) return putPic(h('span', { class: cls || 'htile' }), own);
+    const c = colorFor(name || '?');
+    const el = h('span', { class: cls || 'htile', style: { background: c[1], color: '#0f0e0d' } }, String(name || '?').charAt(0).toUpperCase());
+    if (url) {
+      const img = new Image();
+      img.alt = '';
+      img.referrerPolicy = 'no-referrer';
+      img.onload = () => fill(el, img);
+      img.src = url;
+    }
+    return el;
+  }
+  // ¿Esta lista pide a RedGifs? Las páginas de RedGifs siempre (always); las demás, si RedGifs está en Ajustes ›
+  // Fuentes y es Inicio o Explorar (general), su pestaña RedGifs (only), una cuenta que mezclas (mix) o
+  // «Solo RedGifs».
+  function rgActive(plan) {
+    if (!plan || !plan.q) return false;
+    if (plan.always) return true;
+    const mode = srcMode();
+    return mode !== 'jr' && !!(plan.general || plan.only || plan.mix || mode === 'rg');
+  }
+
+  // ---- Unir con RedGifs (1.10.0): un hashtag de JoyReactor con una etiqueta de RedGifs y una cuenta con un
+  // creador. S.rgLinks guarda las dos direcciones: 'tag:<hashtag>' -> etiqueta, 'rgtag:<etiqueta>' -> hashtag,
+  // 'user:<usuario>' -> creador, 'rguser:<creador>' -> usuario. Un hashtag sin unir usa la etiqueta de su
+  // mismo nombre; una cuenta sin unir no tiene RedGifs. S.rgMix: las cuentas en las que elegiste ver las dos
+  // fuentes mezcladas en Todos ('tag:<hashtag>' o 'user:<usuario>').
+  const rgTagFor = (tag) => S.rgLinks['tag:' + tkey(tag)] || tag;
+  const rgUserFor = (user) => S.rgLinks['user:' + tkey(user)] || null;
+  const jrTagFor = (rgTag) => S.rgLinks['rgtag:' + tkey(rgTag)] || null;
+  const jrUserFor = (creator) => S.rgLinks['rguser:' + tkey(creator)] || null;
+  const rgMixOn = (kind, name) => !!S.rgMix[kind + ':' + tkey(name)];
+  // kind: 'tag' o 'user' (lado JoyReactor); rgName null = quitar la unión.
+  function setRgLink(kind, jrName, rgName) {
+    const old = S.rgLinks[kind + ':' + tkey(jrName)];
+    if (old) delete S.rgLinks['rg' + kind + ':' + tkey(old)];
+    delete S.rgLinks[kind + ':' + tkey(jrName)];
+    if (rgName) {
+      const back = S.rgLinks['rg' + kind + ':' + tkey(rgName)];
+      if (back) delete S.rgLinks[kind + ':' + tkey(back)];
+      S.rgLinks[kind + ':' + tkey(jrName)] = rgName;
+      S.rgLinks['rg' + kind + ':' + tkey(rgName)] = jrName;
+    }
+    persist('rgLinks', 0);
+    dropFeeds();
+  }
+  function setRgMix(kind, name, on) {
+    if (on) S.rgMix[kind + ':' + tkey(name)] = true;
+    else delete S.rgMix[kind + ':' + tkey(name)];
+    persist('rgMix', 0);
+    dropFeeds(true);
+  }
+
+  // Arriba de la pestaña RedGifs de un hashtag o una cuenta: con qué está unido, «Cambiar» y, en las cuentas,
+  // «Mezclar con JoyReactor en Todos».
+  function rgLinkBar(kind, name, account) {
+    const linked = kind === 'tag' ? rgTagFor(name) : rgUserFor(name);
+    const own = !!S.rgLinks[kind + ':' + tkey(name)];
+    return h('div', { class: 'rglink' },
+      h('div', { class: 'rgl-row' },
+        h('span', { class: 'srcb rg', text: 'RG' }),
+        h('span', { class: 'grow', text: linked ? (kind === 'tag' ? '#' : '@') + linked + (kind === 'tag' && !own ? ' (mismo nombre)' : '') : 'Todavía no está unido con RedGifs' }),
+        h('button', { type: 'button', class: 'link-btn', onclick: () => openRgLink(kind, name) }, linked ? 'Cambiar' : 'Unir')
+      ),
+      account && linked
+        ? h('div', { class: 'rgl-row' },
+            h('span', { class: 'grow', text: 'Mezclar con JoyReactor en Todos' }),
+            switchBtn(rgMixOn(kind, name), 'Mezclar con JoyReactor en Todos', (on) => {
+              setRgMix(kind, name, on);
+              toast(on ? 'En Todos salen las dos fuentes mezcladas' : 'Todos vuelve a ser solo de JoyReactor');
+            })
+          )
+        : null
+    );
+  }
+
+  // Elegir con qué se une (lado JoyReactor: una etiqueta o un creador de RedGifs; lado RedGifs: un hashtag o
+  // un usuario de JoyReactor). Mientras escribes se busca en el sitio que toca.
+  function openRgLink(kind, name) {
+    const toRg = kind === 'tag' || kind === 'user';
+    const isTag = kind === 'tag' || kind === 'rgtag';
+    const title = toRg
+      ? (isTag ? 'Unir #' : 'Unir @') + name + (isTag ? ' con una etiqueta de RedGifs' : ' con su cuenta de RedGifs')
+      : (isTag ? 'Unir #' : 'Unir @') + name + (isTag ? ' con un hashtag de JoyReactor' : ' con su cuenta de JoyReactor');
+    const linked = kind === 'tag' ? S.rgLinks['tag:' + tkey(name)] : kind === 'user' ? rgUserFor(name) : kind === 'rgtag' ? jrTagFor(name) : jrUserFor(name);
+    const input = h('input', { class: 'input', type: 'search', value: linked || name, placeholder: isTag ? 'Nombre del hashtag' : 'Nombre de la cuenta', 'aria-label': title, autocomplete: 'off', enterkeyhint: 'search' });
+    const results = h('div', { class: 'results' });
+    const done = (other) => {
+      // En la página de un usuario la pestaña no va en la dirección: si estabas en RedGifs, sigues ahí.
+      const onRgTab = kind === 'user' && current && current.feed && current.feed.show === 'rg';
+      closeSheet();
+      if (toRg) setRgLink(kind, name, other);
+      else setRgLink(kind === 'rgtag' ? 'tag' : 'user', other, name);
+      toast(other ? 'Unido: ' + (isTag ? '#' : '@') + name + ' y ' + (isTag ? '#' : '@') + other : 'Quitaste la unión');
+      route();
+      if (onRgTab && current && current.feed) current.feed.setShow('rg');
+    };
+    const row = (text, sub, pic) =>
+      h('button', { type: 'button', class: 'sheet-row', onclick: () => done(text) }, pic || icon(isTag ? 'hash' : 'user', 22), h('span', { class: 'grow' }, h('span', { class: 'sr-l', text: (isTag ? '#' : '@') + text }), sub ? h('span', { class: 'sr-s', text: sub }) : null));
+    let seq = 0;
+    const search = async () => {
+      const q = input.value.trim().replace(/^[#@]/, '');
+      const my = ++seq;
+      if (q.length < 2) return fill(results);
+      fill(results, h('div', { class: 'status' }, icon('spinner', 18, 'spin'), 'Buscando…'));
+      try {
+        let rows = [];
+        if (toRg && isTag) rows = (await RS.rgSuggest(q)).map((t) => row(t.text, fmt(t.gifs) + ' posts en RedGifs'));
+        else if (toRg) {
+          const list = await RS.rgCreators(q);
+          rows = list.map((c) => row(c.username, (c.name && c.name !== c.username ? c.name + ' · ' : '') + fmt(c.gifs || 0) + ' posts', rgPic(c.username, c.profileImageUrl, 'htile')));
+          if (!list.some((c) => tkey(c.username) === tkey(q))) rows.unshift(row(q, 'Usar este nombre tal cual'));
+        } else if (isTag) {
+          const found = await RS.searchTags(q, []);
+          rows = found.exact.slice(0, 12).map((t) => row(t.name, fmt(t.count) + ' posts en JoyReactor'));
+        } else {
+          const u = await RS.fetchUserInfo(q).catch(() => null);
+          rows = u ? [row(u.name, fmt(u.posts) + ' posts en JoyReactor')] : [h('div', { class: 'status', text: 'No hay una cuenta «' + q + '» en JoyReactor.' })];
+        }
+        if (my === seq) fill(results, ...(rows.length ? rows : [h('div', { class: 'status', text: 'Sin resultados para «' + q + '»' })]));
+      } catch (e) {
+        if (my === seq) fill(results, h('div', { class: 'status', text: errText(e) }));
+      }
+    };
+    let timer = null;
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(search, 300);
+    });
+    openSheet(title,
+      h('div', { class: 'sheet-title', text: title }),
+      h('div', { class: 'sheet-form' }, input),
+      linked ? sheetRow('x', 'Quitar la unión', 'Con ' + (isTag ? '#' : '@') + linked + '.', () => done(null), 'danger') : null,
+      results
+    );
+    search();
+  }
+
+  // ---- Etiquetas de RedGifs que sigues (1.10.0), como un hashtag (barajado, en las historias) o como cuenta
+  // (en orden, en miniaturas, lo nuevo primero en Inicio): S.rgTags, nombre en minúsculas -> { name, as, addedAt }.
+  const rgTagOf = (name) => S.rgTags[tkey(name)] || null;
+  function followRgTag(name, as) {
+    const before = rgTagOf(name);
+    if (as) S.rgTags[tkey(name)] = { name, as, addedAt: (before && before.addedAt) || Date.now() };
+    else delete S.rgTags[tkey(name)];
+    persist('rgTags', 0);
+    invalidateHome();
+    storyCache = null;
+    if (!as) {
+      toast('Dejaste de seguir #' + name + ' (RedGifs)', 'Deshacer', () => {
+        S.rgTags[tkey(name)] = before;
+        persist('rgTags', 0);
+        route();
+      });
+    } else toast('Sigues #' + name + ' (RedGifs) como ' + (as === 'account' ? 'cuenta' : 'hashtag'));
+    route();
+    if (as && !before && !picOf('rgtag', name)) askPic('rgtag', name);
+  }
+  function openRgFollowSheet(name) {
+    const cur = rgTagOf(name);
+    const pick = (as) => () => {
+      closeSheet();
+      followRgTag(name, as);
+    };
+    openSheet('Seguir #' + name,
+      h('div', { class: 'sheet-title', text: 'Seguir #' + name + ' (RedGifs) como…' }),
+      sheetRow('hash', 'Como hashtag', 'Lo ves al azar y sale en las historias de Inicio.', pick('tag'), cur && cur.as === 'tag' ? 'on' : '', cur && cur.as === 'tag' ? icon('check', 20) : null),
+      sheetRow('userplus', 'Como cuenta', 'Lo ves como un perfil: en orden y en miniaturas. Lo nuevo, primero en Inicio.', pick('account'), cur && cur.as === 'account' ? 'on' : '', cur && cur.as === 'account' ? icon('check', 20) : null),
+      cur ? sheetRow('x', 'Dejar de seguir', null, pick(null), 'danger') : null
+    );
+  }
+  // Foto de una etiqueta de RedGifs: la tuya (un GIF que se mueve, o una imagen si la sigues como cuenta) o «#».
+  function rgTagPic(name, cls) {
+    const own = picOf('rgtag', name);
+    if (own) return putPic(h('span', { class: cls }), own, !(rgTagOf(name) && rgTagOf(name).as === 'account'));
+    const c = colorFor(name);
+    return h('span', { class: cls, style: { background: c[0], color: c[1] } }, '#');
+  }
+
+  // ---- Página de una etiqueta de RedGifs (#/rgtag/<nombre>): sus posts al azar o, si la sigues como cuenta,
+  // en orden y en miniaturas. Seguir, ⋯ (foto, unir con JoyReactor) y, si está unida, el enlace al hashtag.
+  function routeRgTag(name, q) {
+    const cur = rgTagOf(name);
+    const account = !!(cur && cur.as === 'account');
+    const random = account ? q.get('order') === 'random' : true;
+    const key = 'rgtag:' + tkey(name) + ':' + (random ? 'r' : 'o') + (account ? ':c' : '');
+    const hero = h('section', { class: 'hero tag-hero' });
+    let total = null;
+    const drawHero = () => {
+      const now = rgTagOf(name);
+      const jr = jrTagFor(name);
+      fill(hero,
+        h('div', { class: 'hero-row' },
+          zoomable(rgTagPic(name, 'hero-tile'), () => rgTagPic(name, 'zoom-disc')),
+          h('div', { class: 'grow' },
+            h('h2', {}, name, ' ', h('span', { class: 'srcb rg', text: 'RG' })),
+            h('span', { class: 'meta', text: total == null ? 'Etiqueta de RedGifs' : (total >= 10000 ? 'Más de 10.000' : fmt(total)) + ' posts en RedGifs' })
+          )
+        ),
+        h('div', { class: 'hero-actions two' },
+          h('button', { class: 'hbtn' + (now ? (now.as === 'account' ? ' prof' : ' fav') : ' go'), 'aria-haspopup': 'dialog', onclick: () => openRgFollowSheet(name) },
+            icon(now ? 'check' : 'plus', 18), now ? 'Siguiendo' : 'Seguir', now ? h('small', { class: 'as', text: now.as === 'account' ? 'cuenta' : 'hashtag' }) : null),
+          h('button', {
+            class: 'hbtn ic',
+            'aria-haspopup': 'dialog',
+            'aria-label': 'Más opciones de #' + name,
+            onclick: () =>
+              openSheet('Más opciones de #' + name,
+                h('div', { class: 'sheet-title', text: '#' + name + ' (RedGifs)' }),
+                sheetRow(now && now.as === 'account' ? 'camera' : 'film', (picOf('rgtag', name) ? 'Cambiar ' : 'Poner ') + (now && now.as === 'account' ? 'la foto' : 'el GIF'), 'De sus posts o de tus me gusta.', () => openPicSheet('rgtag', name)),
+                sheetRow('hash', jr ? 'Unida con #' + jr : 'Unir con un hashtag de JoyReactor', jr ? 'Toca para cambiarla. En #' + jr + ', su pestaña RedGifs muestra esta etiqueta.' : 'Así su pestaña RedGifs muestra esta etiqueta.', () => {
+                  closeSheet();
+                  openRgLink('rgtag', name);
+                })
+              )
+          }, icon('dots', 22))
+        ),
+        jr ? h('a', { class: 'rgl-jump', href: '#/tag/' + enc(jr) }, h('span', { class: 'srcb jr', text: 'JR' }), 'Ver #' + jr + ' en JoyReactor') : null
+      );
+    };
+    drawHero();
+    RS.rgPage({ tags: name, order: 'trending' }, 1)
+      .then((r) => {
+        total = r.total;
+        drawHero();
+      })
+      .catch(() => {});
+    const f = cached(key, () =>
+      new Feed({
+        key,
+        kind: 'pager',
+        rgPlan: () => ({ q: { tags: name, order: random ? 'trending' : 'latest', random }, only: true, always: true }),
+        mode: account ? 'grid' : 'feed',
+        back: true,
+        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), viewToggle(f)],
+        extra: () => hero,
+        sub: () =>
+          account
+            ? h('div', { class: 'ptabs', role: 'tablist', 'aria-label': 'Orden' },
+                h('button', { class: 'ptab' + (random ? '' : ' on'), role: 'tab', 'aria-selected': String(!random), onclick: () => random && navReplace('#/rgtag/' + enc(name)) }, icon('grid', 20), 'Lo nuevo'),
+                h('button', { class: 'ptab shuf' + (random ? ' on' : ''), 'aria-pressed': String(random), 'aria-label': 'Barajar los posts', onclick: () => !random && navReplace('#/rgtag/' + enc(name) + '?order=random') }, icon('shuffle', 20))
+              )
+            : null,
+        empty: () => emptyBox('hash', 'No encontré posts', 'Puede que RedGifs no responda o que esta etiqueta no tenga posts.')
+      })
+    );
+    f.renderExtra = () => hero; // el feed guardado muestra la cabecera de esta vez (foto, Seguir…)
+    showFeed(f);
+  }
+
+  // Cambiar las fuentes rehace todos los feeds guardados (y las historias).
+  // keepShown: deja el que está en pantalla (Mezclar, en la pestaña RedGifs, cambia otra pestaña).
+  function dropFeeds(keepShown) {
+    for (const [k, f] of feeds) {
+      if (keepShown && current && current.feed === f) continue;
+      f.destroy();
+      feeds.delete(k);
+    }
+    storyCache = null;
+  }
+
+  // ---- Perfil de un creador de RedGifs (#/rguser/<nombre>): sus posts, lo más nuevo primero, en miniaturas.
+  function routeRgUser(name) {
+    const key = 'rguser:' + rgKey(name);
+    const hero = h('section', { class: 'hero' });
+    let info = null;
+    const drawHero = () => {
+      const on = isRgFollowed(name);
+      const pic = info && info.profileImageUrl;
+      fill(hero,
+        h('div', { class: 'hero-row' },
+          zoomable(rgPic(name, pic, 'hero-tile'), () => rgPic(name, pic, 'zoom-disc')),
+          h('div', { class: 'grow' },
+            h('h2', {}, name, ' ', h('span', { class: 'srcb rg', text: 'RG' })),
+            h('span', { class: 'meta', text: info ? fmt(info.gifs || info.publishedGifs || 0) + ' posts en RedGifs' : 'Creador de RedGifs' })
+          )
+        ),
+        h('div', { class: 'hero-actions two' },
+          h('button', {
+            class: 'hbtn' + (on ? ' fav' : ' go'),
+            onclick: () => {
+              setRgFollow(name, !on, pic);
+              toast(on ? 'Dejaste de seguir a ' + name : 'Sigues a ' + name + ' (RedGifs): sus posts nuevos, primero en Inicio');
+              if (!on && !picOf('rguser', name)) askPic('rguser', name);
+              drawHero();
+            }
+          }, icon(on ? 'check' : 'plus', 18), on ? 'Siguiendo' : 'Seguir'),
+          h('button', {
+            class: 'hbtn ic',
+            'aria-haspopup': 'dialog',
+            'aria-label': 'Más opciones de ' + name,
+            onclick: () =>
+              openSheet('Más opciones de ' + name,
+                h('div', { class: 'sheet-title', text: '@' + name + ' (RedGifs)' }),
+                sheetRow('camera', (picOf('rguser', name) ? 'Cambiar' : 'Poner') + ' la foto', 'Una imagen (o un GIF, quieto) de sus posts o de tus me gusta.', () => openPicSheet('rguser', name)),
+                sheetRow('user', jrUserFor(name) ? 'Unida con @' + jrUserFor(name) : 'Unir con su cuenta de JoyReactor', jrUserFor(name) ? 'Toca para cambiarla. En su perfil de JoyReactor, la pestaña RedGifs muestra a este creador.' : 'Así su perfil de JoyReactor tiene una pestaña RedGifs.', () => {
+                  closeSheet();
+                  openRgLink('rguser', name);
+                }),
+                h('a', { class: 'sheet-row', href: 'https://www.redgifs.com/users/' + enc(name), target: '_blank', rel: 'noopener' }, icon('external', 22), h('span', { class: 'grow' }, h('span', { class: 'sr-l', text: 'Ver en RedGifs' })))
+              )
+          }, icon('dots', 22))
+        ),
+        jrUserFor(name) ? h('a', { class: 'rgl-jump', href: '#/user/' + enc(jrUserFor(name)) }, h('span', { class: 'srcb jr', text: 'JR' }), 'Ver @' + jrUserFor(name) + ' en JoyReactor') : null
+      );
+    };
+    drawHero();
+    RS.rgPage({ user: name, order: 'latest' }, 1)
+      .then((r) => {
+        info = r.user;
+        drawHero();
+      })
+      .catch(() => {});
+    const f = cached(key, () =>
+      new Feed({
+        key,
+        kind: 'pager',
+        rgPlan: () => ({ q: { user: name, order: 'latest' }, only: true, always: true }),
+        mode: 'grid',
+        back: true,
+        head: (f) => [backBtn('/home'), h('h1', { text: name }), viewToggle(f)],
+        extra: () => hero,
+        empty: () => emptyBox('user', 'No encontré posts', 'Puede que RedGifs no responda o que este creador no tenga posts.')
+      })
+    );
+    f.renderExtra = () => hero; // el feed guardado muestra la cabecera de esta vez (foto, Seguir…)
+    showFeed(f);
   }
 
   // ================================================================ Observadores (videos y vistos)
@@ -792,7 +1150,7 @@
   // ================================================================ Tarjeta de post (una por pantalla)
 
   function avatar(p) {
-    const own = p.user && picOf('user', p.user);
+    const own = !RS.isRg(p) && p.user && picOf('user', p.user);
     if (own) return putPic(h('span', { class: 'avatar' }), own);
     const c = colorFor(p.user || '?');
     const el = h('span', { class: 'avatar', style: { background: c[1] } }, (p.user || '?').charAt(0).toUpperCase());
@@ -800,6 +1158,7 @@
     if (url) {
       const img = new Image();
       img.alt = '';
+      if (RS.isRg(p)) img.referrerPolicy = 'no-referrer'; // RedGifs rechaza el Referer de otro sitio
       img.onload = () => fill(el, img);
       img.src = url;
     }
@@ -1121,11 +1480,18 @@
     const row = h('div', { class: cls || 'tags' });
     let all = false;
     row._draw = () => {
-      const complete = !p.tags.some((t) => !RS.isFormatTag(t) && !knownTree(t));
-      const shown = all ? p.tags.map((t) => ({ name: t, parent: null })) : leafTags(p.tags).slice(0, TAGS_SHOWN);
+      // Las etiquetas de RedGifs no están en el árbol de JoyReactor: se muestran tal cual.
+      const rg = RS.isRg(p);
+      const complete = rg || !p.tags.some((t) => !RS.isFormatTag(t) && !knownTree(t));
+      const shown = all ? p.tags.map((t) => ({ name: t, parent: null })) : rg ? p.tags.slice(0, TAGS_SHOWN).map((t) => ({ name: t, parent: null })) : leafTags(p.tags).slice(0, TAGS_SHOWN);
       const rest = p.tags.length - shown.length;
       fill(row,
-        shown.map((x) => tagButton(x.name, () => open(x.name), x.parent)),
+        // Una etiqueta de RedGifs abre su página de RedGifs (sin el menú de JoyReactor al mantenerla).
+        shown.map((x) =>
+          rg
+            ? h('button', { type: 'button', class: 'htag' + (rgTagOf(x.name) ? ' fav' : ''), draggable: 'false', onclick: () => (onOpen ? onOpen(x.name) : nav('#/rgtag/' + enc(x.name))) }, '#' + x.name)
+            : tagButton(x.name, () => open(x.name), x.parent)
+        ),
         !all && rest > 0
           ? h('button', {
               type: 'button',
@@ -1319,7 +1685,7 @@
   }
   // ⋯ de cada fila de Seguidos: poner o cambiar la foto (usuario) o el GIF (hashtag), o quitarla.
   function rowMore(kind, name) {
-    const user = kind === 'user';
+    const user = kind === 'user' || kind === 'rguser';
     return h('button', { type: 'button', class: 'ib', 'aria-haspopup': 'dialog', 'aria-label': 'Más opciones de ' + (user ? '@' : '#') + name, onclick: () => {
       const own = picOf(kind, name);
       const want = picWant(kind, name);
@@ -1330,7 +1696,7 @@
       openSheet('Opciones de ' + (user ? '@' : '#') + name,
         h('div', { class: 'sheet-title', text: (user ? '@' : '#') + name }),
         sheetRow(want === 'clip' ? 'film' : 'camera', (own ? 'Cambiar ' : 'Poner ') + picWhat(want, true), sub, () => openPicSheet(kind, name)),
-        own ? sheetRow('x', 'Quitar ' + picWhat(own.len ? 'clip' : 'image', true), user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null
+        own ? sheetRow('x', 'Quitar ' + picWhat(own.len ? 'clip' : 'image', true), kind === 'rguser' ? 'Vuelve la de RedGifs.' : user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null
       );
     } }, icon('dots', 22));
   }
@@ -1355,7 +1721,29 @@
   // Qué se le pone: a un usuario y a un hashtag que sigues como cuenta, una imagen; a un hashtag, un GIF o
   // video que se mueve. Eso distingue a los perfiles de los hashtags (lo pidió el usuario en la 1.7.1 y lo
   // repitió en la 1.8.1). Para una imagen también vale un GIF: queda quieto, en el momento que elijas (1.7.2).
-  const picWant = (kind, name) => (kind === 'user' || tagProfileOf(name) ? 'image' : 'clip');
+  const picWant = (kind, name) =>
+    kind === 'user' || kind === 'rguser' || (kind === 'rgtag' ? !!(rgTagOf(name) && rgTagOf(name).as === 'account') : tagProfileOf(name)) ? 'image' : 'clip';
+  // Para elegir la foto de un creador o una etiqueta de RedGifs: sus posts, como las fuentes de JoyReactor.
+  function rgPickSource(q) {
+    const s = RS.createRgSource(q);
+    const src = {
+      posts: [],
+      done: false,
+      count: 0,
+      seen: null,
+      more: async () => {
+        const got = await s.more();
+        src.posts.push(...got);
+        src.done = s.done;
+      }
+    };
+    return src;
+  }
+  // Tus me gusta de RedGifs de un creador o con una etiqueta.
+  const likedRg = (kind, name) =>
+    Object.values(S.likes)
+      .filter((x) => RS.isRg(x.post) && (kind === 'rguser' ? tkey(x.post.user || '') === tkey(name) : x.post.tags.some((t) => tkey(t) === tkey(name))))
+      .sort((a, b) => b.at - a.at);
   const mediaFits = (m, want) => (want === 'clip' ? m.kind === 'video' : m.kind === 'image' || m.kind === 'video');
   const picWhat = (want, the) => ({ image: the ? 'la foto' : 'una foto', clip: the ? 'el GIF' : 'un GIF' })[want];
   // Las candidatas que vas marcando, por cuenta, mientras la app está abierta.
@@ -1366,7 +1754,7 @@
   // una bolita); en «Elegidas» quedan solo las marcadas y ahí se toca la definitiva. Con una sola marcada,
   // «Usar esta» va directo a recortarla.
   function picPicker(kind, name, want, onPick, first) {
-    const user = kind === 'user';
+    const user = kind === 'user' || kind === 'rguser';
     const key = picKey(kind, name);
     const chosen = picCandidates.get(key) || new Map();
     picCandidates.set(key, chosen);
@@ -1440,9 +1828,14 @@
     };
 
     // Sus posts: se piden de a poco y se agregan al llegar al final.
-    const src = user
-      ? RS.createUserSource(name, junkScan(userJunkKey(name)))
-      : RS.createTagSource(name, 'ALL', junkScan(tagJunkKey(name)), want === 'clip' ? RS.isAnimated : null);
+    const src =
+      kind === 'rguser'
+        ? rgPickSource({ user: name, order: 'latest' })
+        : kind === 'rgtag'
+          ? rgPickSource({ tags: name, order: 'top' })
+          : user
+            ? RS.createUserSource(name, junkScan(userJunkKey(name)))
+            : RS.createTagSource(name, 'ALL', junkScan(tagJunkKey(name)), want === 'clip' ? RS.isAnimated : null);
     let cursor = 0;
     let shown = 0;
     let loading = false;
@@ -1483,7 +1876,7 @@
     };
     const showLiked = () => {
       grid.className = 'pickgrid';
-      const liked = (user ? likedFrom(name) : likedWithTag(name)).map((x) => x.post);
+      const liked = (kind === 'rguser' || kind === 'rgtag' ? likedRg(kind, name) : user ? likedFrom(name) : likedWithTag(name)).map((x) => x.post);
       const list = fromPosts(liked);
       clear();
       put(list);
@@ -1546,7 +1939,7 @@
   // first: 'chosen' abre en «Elegidas» (al cancelar el recorte se vuelve aquí, con las marcadas).
   function openPicSheet(kind, name, ask, first) {
     const own = picOf(kind, name);
-    const user = kind === 'user';
+    const user = kind === 'user' || kind === 'rguser';
     const want = picWant(kind, name);
     const who = (user ? '@' : '#') + name;
     const what = picWhat(want);
@@ -1565,7 +1958,7 @@
         ask ? h('button', { type: 'button', class: 'link-btn', onclick: () => closeSheet() }, 'Ahora no') : null
       ),
       h('span', { class: 'sheet-label', text: howTo + (ask ? '. También puedes hacerlo después, desde el ⋯ de Seguidos.' : '.') }),
-      !ask && own ? sheetRow('x', 'Quitar ' + picWhat(own.len ? 'clip' : 'image', true), user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null,
+      !ask && own ? sheetRow('x', 'Quitar ' + picWhat(own.len ? 'clip' : 'image', true), kind === 'rguser' ? 'Vuelve la de RedGifs.' : user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null,
       picker.tabs,
       picker.body,
       picker.bar
@@ -1729,14 +2122,14 @@
       const H = W * st.r;
       const canon = kind === 'tag' ? (favOf(name) || tagProfileOf(name) || { name }).name : name;
       S.pics[picKey(kind, canon)] = Object.assign(
-        { name: canon, kind, media: { id: m.id, ext: m.ext, kind: m.kind }, post: postId, cx: 0.5 - st.x / W, cy: 0.5 - st.y / H, s: C / W, r: st.r, at: Date.now() },
+        { name: canon, kind, media: { id: m.id, ext: m.ext, kind: m.kind, rg: m.rg }, post: postId, cx: 0.5 - st.x / W, cy: 0.5 - st.y / H, s: C / W, r: st.r, at: Date.now() },
         still ? { frame: st.start } : isVid ? { start: st.start, len: st.len } : {}
       );
       persist('pics', 0);
       // Ya está la definitiva: las demás marcadas se descartan.
       picCandidates.delete(picKey(kind, name));
       closeCropper();
-      toast(isVid && !still ? 'Listo: #' + canon + ' tiene su GIF' : 'Listo: ' + (kind === 'user' ? '@' : '#') + canon + ' tiene tu foto');
+      toast(isVid && !still ? 'Listo: #' + canon + ' tiene su GIF' : 'Listo: ' + (kind === 'user' || kind === 'rguser' ? '@' : '#') + canon + ' tiene tu foto');
       picsChanged();
     };
     const el = h('div', { class: 'cropper', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Recortar la foto' },
@@ -1768,8 +2161,9 @@
   // e historial cambian la cuadrícula de abajo, como sus pestañas (active: la que se ve). La fila de
   // círculos con lo que sigues se quitó en la 1.8.3 (lo pidió el usuario).
   function meHeader(active) {
-    const nTags = Object.keys(S.favorites).length;
-    const nProf = Object.keys(S.following).length + Object.keys(S.tagProfiles).length;
+    const nRgTags = Object.values(S.rgTags).filter((t) => t.as === 'tag').length;
+    const nTags = Object.keys(S.favorites).length + nRgTags;
+    const nProf = Object.keys(S.following).length + Object.keys(S.tagProfiles).length + Object.keys(S.rgFollowing).length + Object.keys(S.rgTags).length - nRgTags;
     const nLikes = Object.keys(S.likes).length;
     const nHist = historyList().length;
     const stat = (n, one, many, href, tab) =>
@@ -2172,6 +2566,7 @@
   }
   // Los posts guardados antes de la 1.0.8 no traen los números del autor: se piden aparte (una vez por usuario).
   function repChip(p, cls) {
+    if (RS.isRg(p)) return null; // la reputación es de JoyReactor
     const el = h('span', { class: 'rep-slot' });
     const put = (a) => {
       const r = RS.reputation(a);
@@ -2197,6 +2592,22 @@
   // «Seguir» al lado del autor (en la tarjeta y en pantalla completa) mientras no lo sigas: un toque y
   // desaparece de todos sus posts.
   function followInline(p, cls) {
+    if (RS.isRg(p)) {
+      if (!p.user || isRgFollowed(p.user)) return null;
+      const key = 'rg:' + rgKey(p.user);
+      return h('button', {
+        type: 'button',
+        class: cls || 'fol-inline',
+        'data-follow': key,
+        'aria-label': 'Seguir a ' + p.user + ' en RedGifs',
+        onclick: (e) => {
+          e.stopPropagation();
+          setRgFollow(p.user, true, p.rgAvatar);
+          document.querySelectorAll('[data-follow="' + CSS.escape(key) + '"]').forEach((b) => b.remove());
+          toast('Ahora sigues a ' + p.user + ' (RedGifs): sus posts nuevos, primero en Inicio', 'Deshacer', () => setRgFollow(p.user, false));
+        }
+      }, 'Seguir');
+    }
     if (!p.user || isFollowed(p.user)) return null;
     return h('button', {
       type: 'button',
@@ -2220,14 +2631,14 @@
     card.append(
       h('div', { class: 'head' },
         p.user
-          ? h('a', { class: 'who-link', href: '#/user/' + enc(p.user), 'aria-label': 'Ver todos los posts de ' + p.user },
+          ? h('a', { class: 'who-link', href: (RS.isRg(p) ? '#/rguser/' : '#/user/') + enc(p.user), 'aria-label': 'Ver todos los posts de ' + p.user },
               avatar(p),
-              h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: p.user }), repChip(p)), h('span', { class: 'when', text: ago(p.time) }))
+              h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: p.user }), srcBadge(p), repChip(p)), h('span', { class: 'when', text: ago(p.time) }))
             )
-          : [avatar(p), h('div', { class: 'who' }, h('span', { class: 'user', text: 'anónimo' }), h('span', { class: 'when', text: ago(p.time) }))],
+          : [avatar(p), h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: 'anónimo' }), srcBadge(p)), h('span', { class: 'when', text: ago(p.time) }))],
         followInline(p),
         h('span', { class: 'grow' }),
-        h('span', { class: 'rating' + (p.rating < 0 ? ' neg' : ''), title: 'Rating en JoyReactor' }, icon('up', 14), String(p.rating).replace('.', ','))
+        RS.isRg(p) ? null : h('span', { class: 'rating' + (p.rating < 0 ? ' neg' : ''), title: 'Rating en JoyReactor' }, icon('up', 14), String(p.rating).replace('.', ','))
       )
     );
     const media = buildMedia(p, feed);
@@ -2241,7 +2652,9 @@
       h('div', { class: 'actions' },
         h('button', { class: 'act like' + (liked ? ' on' : ''), 'aria-label': 'Me gusta', 'aria-pressed': String(liked), onclick: () => toggleLike(p) }, icon('heart', 27)),
         h('button', { class: 'act', 'aria-label': 'No me gusta: ocultar para siempre', onclick: () => dislike(it, card, feed) }, icon('down', 25)),
-        h('a', { class: 'act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': p.comments + ' comentarios en JoyReactor' }, icon('comment', 24), fmt(p.comments)),
+        RS.isRg(p)
+          ? h('a', { class: 'act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': 'Ver en RedGifs' }, icon('external', 22))
+          : h('a', { class: 'act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': p.comments + ' comentarios en JoyReactor' }, icon('comment', 24), fmt(p.comments)),
         savable(p).length ? h('button', { class: 'act', 'aria-label': 'Descargar', onclick: () => downloadPost(p, currentIndex(card)) }, icon('download', 25)) : null,
         // Los puntitos del carrusel, centrados en el espacio que queda (con la descarga ya no caben al medio).
         h('span', { class: 'grow dots-slot' }, dots),
@@ -2298,6 +2711,8 @@
     if (p.media.length > 1) cell.append(h('span', { class: 'tb' }, icon('multi', 15)));
     else if (m && (m.kind === 'embed' || (m.kind === 'video' && m.real))) cell.append(h('span', { class: 'tb' }, icon('play', 14)));
     else if (m && (m.kind === 'video' || m.ext === 'gif')) cell.append(h('span', { class: 'tb', text: 'GIF' }));
+    const sb = srcBadge(p, 'tsrc');
+    if (sb) cell.append(sb);
 
     // Explorar, como Instagram: sin botones; los GIF y videos en un cuadro alto y lo de Descubrir con su marca.
     if (explore) {
@@ -2580,7 +2995,9 @@
     const side = h('div', { class: 'vw-side' },
       h('button', { class: 'vw-act like' + (liked ? ' on' : ''), 'aria-label': 'Me gusta', 'aria-pressed': String(liked), onclick: () => toggleLike(p) }, icon('heart', 31)),
       h('button', { class: 'vw-act', 'aria-label': 'No me gusta: ocultar para siempre', onclick: () => dislikeInViewer(page) }, icon('down', 29)),
-      h('a', { class: 'vw-act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': p.comments + ' comentarios en JoyReactor' }, icon('comment', 29), h('span', { text: fmt(p.comments) })),
+      RS.isRg(p)
+        ? h('a', { class: 'vw-act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': 'Ver en RedGifs' }, icon('external', 27))
+        : h('a', { class: 'vw-act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': p.comments + ' comentarios en JoyReactor' }, icon('comment', 29), h('span', { text: fmt(p.comments) })),
       savable(p).length ? h('button', { class: 'vw-act', 'aria-label': 'Descargar', onclick: () => downloadPost(p, page._track ? page._track._idx || 0 : 0) }, icon('download', 29)) : null,
       (sndBtn = videos.length ? soundButton() : null)
     );
@@ -2599,13 +3016,14 @@
         p.user
           ? h('a', {
               class: 'vw-user',
-              href: '#/user/' + enc(p.user),
+              href: (RS.isRg(p) ? '#/rguser/' : '#/user/') + enc(p.user),
               onclick: (e) => {
                 e.preventDefault();
-                closeViewerThen(() => nav('#/user/' + enc(p.user)));
+                closeViewerThen(() => nav((RS.isRg(p) ? '#/rguser/' : '#/user/') + enc(p.user)));
               }
             }, icon('user', 15), p.user)
           : h('strong', { text: 'anónimo' }),
+        srcBadge(p),
         followInline(p, 'fol-inline vw-fol'),
         // Estrellas del autor y rating del post: solo si se activan en Ajustes.
         p.user ? h('span', { class: 'vw-score' }, repChip(p, 'media')) : null,
@@ -3211,6 +3629,13 @@
       this.crossOrder = null; // sus páginas, en orden aleatorio
       this.crossFirst = null; // los posts de la página 1, que llegan con la cuenta
       this.onTotal = o.onTotal || null;
+      // RedGifs: rgPlan(feed) dice qué pedir, según la pestaña, lo que uniste y Ajustes › Fuentes (ver rgOn):
+      // { q, general, only, mix, always } o null (solo JoyReactor).
+      this.rgPlan = o.rgPlan || null;
+      this.rgSrcs = null;
+      this.rgQueue = []; // posts de RedGifs que esperan para mezclarse (ver add)
+      this.rgTurn = 0;
+      this.jrDone = false;
       this.listeners = new Set();
 
       this.headEl = h('header', { class: 'top' + (o.back ? ' has-back' : '') });
@@ -3319,7 +3744,62 @@
         this.preluded = true;
         pre = this.add(await this.prelude().catch(() => []));
       }
-      return pre + (await this.fetchMain());
+      // RedGifs: sus posts esperan en rgQueue y add() los reparte entre los de JoyReactor. Con solo RedGifs
+      // (o cuando JoyReactor se acaba o no tiene ese hashtag) salen solos.
+      const plan = this.rgPlan ? this.rgPlan(this) : null;
+      const rgOn = rgActive(plan);
+      const jrOn = !(plan && plan.only) && !(rgOn && srcMode() === 'rg');
+      if (plan && plan.only && !plan.q) {
+        // La pestaña RedGifs de una cuenta que todavía no uniste: queda vacía, con la invitación a unir.
+        this.done = true;
+        return pre;
+      }
+      if (!rgOn) return pre + (await this.fetchMain());
+      this.rgq = plan.q;
+      if (this.rgQueue.length < RG_EVERY * 3) await this.fillRg();
+      let n = 0;
+      if (jrOn && !this.jrDone) {
+        try {
+          n = await this.fetchMain();
+        } catch (e) {
+          if (!this.rgQueue.length) throw e;
+          this.jrDone = true; // p. ej. un hashtag que solo está en RedGifs
+        }
+        if (this.done) {
+          this.jrDone = true;
+          this.done = false;
+        }
+      }
+      if (!jrOn || this.jrDone) {
+        if (!this.rgQueue.length) await this.fillRg();
+        n += this.add(this.rgQueue.splice(0, 12));
+        if (!this.rgQueue.length && this.rgSrcs && this.rgSrcs.every((s) => s.done)) this.done = true;
+      }
+      return pre + n;
+    }
+
+    // Pide la página siguiente de RedGifs. rgq: { tags, order, random } | { user, order } | { order } o
+    // { rotate: [hashtags] } (Explorar: se turnan tus hashtags más mirados).
+    async fillRg() {
+      if (!this.rgSrcs) {
+        const qs = this.rgq.rotate ? this.rgq.rotate.map((t) => ({ tags: t, order: 'trending', random: true })) : [this.rgq];
+        this.rgSrcs = qs.map((q) => RS.createRgSource(q));
+      }
+      const live = this.rgSrcs.filter((s) => !s.done);
+      if (!live.length) return;
+      const src = live[this.rgTurn++ % live.length];
+      try {
+        for (const post of await src.more()) {
+          if (this.ids.has(post.id) || S.dislikes[post.id] || (this.kinds.length && !RS.matchesKinds(post, this.kinds)) || (this.show === 'anim' && !RS.isAnimated(post))) continue;
+          this.rgQueue.push({ post });
+        }
+      } catch (e) {
+        src.done = true; // RedGifs no respondió: sigue con JoyReactor
+        if (!rgErrorShown) {
+          rgErrorShown = true;
+          toast(errText(e));
+        }
+      }
     }
 
     async fetchMain() {
@@ -3477,6 +3957,15 @@
     }
 
     add(items) {
+      // RedGifs: cada RG_EVERY posts de JoyReactor entra uno de los que esperan.
+      if (this.rgQueue.length && items.length && srcMode() === 'both' && !RS.isRg(items[0].post)) {
+        const mixed = [];
+        items.forEach((it, i) => {
+          mixed.push(it);
+          if ((i + 1) % RG_EVERY === 0 && this.rgQueue.length) mixed.push(this.rgQueue.shift());
+        });
+        items = mixed;
+      }
       const added = [];
       const frag = document.createDocumentFragment();
       for (const it of items) {
@@ -3547,6 +4036,9 @@
       this.failed = false;
       this.junk = 0;
       this.backToGrid = false;
+      this.rgSrcs = null;
+      this.rgQueue = [];
+      this.jrDone = false;
       fill(this.list);
       // Alto mínimo para que, mientras carga, la página no se encoja y las pestañas sigan arriba.
       this.list.style.minHeight = '100vh';
@@ -3571,6 +4063,9 @@
       this.scanned = 0;
       this.sinceHit = 0;
       this.held = false;
+      this.rgSrcs = null;
+      this.rgQueue = [];
+      this.jrDone = false;
       fill(this.list);
       this.refresh();
       window.scrollTo(0, 0);
@@ -3778,7 +4273,7 @@
   // Botón de abajo que se marca en cada página: Inicio, Buscar, (Aleatorio), Tú y Ajustes. Seguidos y
   // Favoritos (Me gusta, Historial) son «Tú»; lo que cuelga de Ajustes, Ajustes.
   const TAB_OF = {
-    home: 'home', tag: 'home', user: 'home', news: 'home',
+    home: 'home', tag: 'home', user: 'home', rguser: 'home', rgtag: 'home', news: 'home',
     search: 'search', find: 'search', visited: 'search', cross: 'search',
     random: 'random', mix: 'random',
     following: 'me', favorites: 'me', likes: 'me', history: 'me',
@@ -3819,6 +4314,8 @@
 
     if (name === 'tag' && parts[1]) return routeTag(parts[1], q);
     if (name === 'user' && parts[1]) return routeUser(parts[1]);
+    if (name === 'rguser' && parts[1]) return routeRgUser(parts[1]);
+    if (name === 'rgtag' && parts[1]) return routeRgTag(parts[1], q);
     if (name === 'random') return routeRandom();
     if (name === 'mix') return routeMix();
     // «favorites» era el nombre de Seguidos hasta la 1.0.9.
@@ -3927,19 +4424,29 @@
     const tags = favList()
       .map((f) => ({ name: f.name, kind: 'tag' }))
       .concat(Object.values(S.tagProfiles).filter((t) => !favOf(t.name)).map((t) => ({ name: t.name, kind: 'account', pic: t.pic })));
-    const [byUser, byTag] = await Promise.all([recentOf('user', users.map((u) => u.name)), recentOf('tag', tags.map((t) => t.name))]);
+    // Los creadores y las etiquetas de RedGifs que sigues (si RedGifs está en Ajustes › Fuentes).
+    const rgUsers = srcMode() !== 'jr' ? Object.values(S.rgFollowing) : [];
+    const rgTagList = srcMode() !== 'jr' ? Object.values(S.rgTags) : [];
+    const [byUser, byTag, byRg, byRgTag] = await Promise.all([
+      recentOf('user', users.map((u) => u.name)),
+      recentOf('tag', tags.map((t) => t.name)),
+      Promise.all(rgUsers.map((u) => RS.rgPage({ user: u.name, order: 'latest' }, 1).then((r) => r.posts).catch(() => []))),
+      Promise.all(rgTagList.map((t) => RS.rgPage({ tags: t.name, order: 'latest' }, 1).then((r) => r.posts).catch(() => [])))
+    ]);
     const since = Date.now() - STORY_WINDOW;
     const fresh = (list) => (list || []).filter((p) => p.time >= since && !RS.isJunk(p) && pass(p) && !S.dislikes[p.id]).sort((a, b) => a.time - b.time);
     return users
       .map((u) => ({ kind: 'user', name: u.name, userId: u.userId, posts: fresh(byUser[u.name]) }))
       .concat(tags.map((t) => ({ kind: t.kind, name: t.name, pic: t.pic, posts: fresh(byTag[t.name]) })))
+      .concat(rgUsers.map((u, i) => ({ kind: 'rg', name: u.name, pic: u.pic, posts: fresh(byRg[i]) })))
+      .concat(rgTagList.map((t, i) => ({ kind: 'rgtag', name: t.name, posts: fresh(byRgTag[i]) })))
       .filter((s) => s.posts.length);
   }
   const storyUnseen = (s) => s.posts.some((p) => !S.seenSet.has(p.id));
 
   function storiesRow() {
     const row = h('section', { class: 'stories', 'aria-label': 'Historias de las últimas 24 horas' });
-    const following = favList().length + Object.keys(S.following).length + Object.keys(S.tagProfiles).length;
+    const following = favList().length + Object.keys(S.following).length + Object.keys(S.tagProfiles).length + (srcMode() !== 'jr' ? Object.keys(S.rgFollowing).length + Object.keys(S.rgTags).length : 0);
     const draw = (list) => {
       const since = Date.now() - STORY_WINDOW;
       const live = (list || [])
@@ -3948,8 +4455,8 @@
         .sort((a, b) => storyUnseen(b) - storyUnseen(a) || b.posts[b.posts.length - 1].time - a.posts[a.posts.length - 1].time);
       fill(row,
         live.map((s) =>
-          h('button', { type: 'button', class: 'story', 'aria-label': 'Historia de ' + (s.kind === 'user' ? '@' : '#') + s.name + ': ' + s.posts.length + (s.posts.length === 1 ? ' post' : ' posts') + ' de las últimas 24 horas', onclick: () => openStory(s, () => draw(list), live) },
-            h('span', { class: 'ring' + (storyUnseen(s) ? '' : ' seen') }, s.kind === 'user' ? userPic(s.name, s.userId, 'disc') : tagPic(s.name, 'disc', '#', s.pic)),
+          h('button', { type: 'button', class: 'story', 'aria-label': 'Historia de ' + (s.kind === 'user' || s.kind === 'rg' ? '@' : '#') + s.name + ': ' + s.posts.length + (s.posts.length === 1 ? ' post' : ' posts') + ' de las últimas 24 horas', onclick: () => openStory(s, () => draw(list), live) },
+            h('span', { class: 'ring' + (storyUnseen(s) ? '' : ' seen') }, s.kind === 'user' ? userPic(s.name, s.userId, 'disc') : s.kind === 'rg' ? rgPic(s.name, s.pic, 'disc') : s.kind === 'rgtag' ? rgTagPic(s.name, 'disc') : tagPic(s.name, 'disc', '#', s.pic)),
             h('span', { class: 'label', text: s.name })
           )
         ),
@@ -3982,7 +4489,7 @@
       for (const post of st.posts) {
         if (ids.has(post.id)) continue; // un post puede estar en dos historias: sale en la primera
         ids.add(post.id);
-        items.push({ post, story: g, label: (st.kind === 'user' ? 'Historia de @' : 'Historia de #') + st.name + ' · ' + ago(post.time), icon: 'clock' });
+        items.push({ post, story: g, label: (st.kind === 'user' || st.kind === 'rg' ? 'Historia de @' : 'Historia de #') + st.name + (st.kind === 'rg' || st.kind === 'rgtag' ? ' (RedGifs)' : '') + ' · ' + ago(post.time), icon: 'clock' });
       }
     });
     const first = s.posts.find((p) => !S.seenSet.has(p.id)) || s.posts[0];
@@ -4239,6 +4746,8 @@
         tag: null,
         type,
         prelude: followedFirst,
+        // RedGifs: Bueno = lo popular, Top = lo mejor de la semana, Nuevo y Todo = lo más nuevo.
+        rgPlan: () => ({ q: { order: type === 'GOOD' ? 'popular' : type === 'BEST' ? 'top7' : 'latest' }, general: true }),
         head: (f) => [h('h1', { text: 'Inicio' }), bellLink(), viewToggle(f)],
         // En Inicio solo queda el aviso de versión nueva; los demás esperan en la campanita (Novedades).
         extra: () => [
@@ -4294,13 +4803,22 @@
   async function followedFirst() {
     const users = Object.values(S.following);
     const tags = Object.values(S.tagProfiles);
-    if (!users.length && !tags.length) return [];
-    const [byUser, byTag] = await Promise.all([recentOf('user', users.map((f) => f.name)), recentOf('tag', tags.map((t) => t.name))]);
+    const rgUsers = srcMode() !== 'jr' ? Object.values(S.rgFollowing) : [];
+    const rgAccounts = srcMode() !== 'jr' ? Object.values(S.rgTags).filter((t) => t.as === 'account') : [];
+    if (!users.length && !tags.length && !rgUsers.length && !rgAccounts.length) return [];
+    const [byUser, byTag, byRg, byRgTag] = await Promise.all([
+      recentOf('user', users.map((f) => f.name)),
+      recentOf('tag', tags.map((t) => t.name)),
+      Promise.all(rgUsers.map((u) => RS.rgPage({ user: u.name, order: 'latest' }, 1).then((r) => r.posts).catch(() => []))),
+      Promise.all(rgAccounts.map((t) => RS.rgPage({ tags: t.name, order: 'latest' }, 1).then((r) => r.posts).catch(() => [])))
+    ]);
     const likes = likesByUser();
     const since = Date.now() - FOLLOWED_DAYS * 86400000;
     const sources = users
       .map((f) => ({ score: likes[userKey(f.name)] || 0, at: f.addedAt || 0, posts: byUser[f.name] || [], label: (p) => 'De @' + p.user + ', a quien sigues', icon: 'user' }))
       .concat(tags.map((t) => ({ score: likedWithTag(t.name).length, at: t.addedAt || 0, posts: byTag[t.name] || [], label: () => 'De #' + t.name + ', que sigues como cuenta', icon: 'hash' })))
+      .concat(rgUsers.map((u, i) => ({ score: 0, at: u.addedAt || 0, posts: byRg[i] || [], label: () => 'De @' + u.name + ' (RedGifs), a quien sigues', icon: 'user' })))
+      .concat(rgAccounts.map((t, i) => ({ score: 0, at: t.addedAt || 0, posts: byRgTag[i] || [], label: () => 'De #' + t.name + ' (RedGifs), que sigues como cuenta', icon: 'hash' })))
       .sort((a, b) => b.score - a.score || b.at - a.at);
     const out = [];
     const ids = new Set();
@@ -4466,7 +4984,11 @@
     RS.fetchTagInfo(name)
       .then((i) => {
         info = i;
-        if (!i) return fill(el, emptyBox('hash', 'Ese hashtag no existe', 'Revisa cómo está escrito.'));
+        if (!i) {
+          // Una etiqueta que solo está en RedGifs: su nombre y, abajo, sus posts.
+          if (srcMode() !== 'jr') return fill(el, h('div', { class: 'hero-row' }, tagPic(name, 'hero-tile', '#', 0), h('div', { class: 'grow' }, h('h2', {}, name, ' ', h('span', { class: 'srcb rg', text: 'RG' })), h('span', { class: 'meta', text: 'Solo en RedGifs' }))));
+          return fill(el, emptyBox('hash', 'Ese hashtag no existe', 'Revisa cómo está escrito.'));
+        }
         draw();
         blockedOverlap(i)
           .then((list) => {
@@ -4502,13 +5024,13 @@
     const profile = !!tagProfileOf(name);
     const type = 'ALL';
     const random = profile ? q.get('order') === 'random' : true;
-    const tab = profile && q.get('show') === 'fav' ? 'fav' : /[gv]/.test(q.get('media') || '') ? 'anim' : 'all';
+    const tab = profile && q.get('show') === 'fav' ? 'fav' : q.get('show') === 'rg' && srcMode() !== 'jr' ? 'rg' : /[gv]/.test(q.get('media') || '') ? 'anim' : 'all';
     const kinds = tab === 'anim' ? ['gif', 'video'] : [];
     const key = 'tag:' + name.toLowerCase() + ':' + (random ? 'random' : 'recent') + ':' + tab + (profile ? ':perfil' : '');
     const url = (o) => {
       const t = o.tab || tab;
       const rnd = o.random === undefined ? random : o.random;
-      return '#/tag/' + enc(name) + '?order=' + (rnd ? 'random' : 'recent') + (t === 'anim' ? '&media=gv' : t === 'fav' ? '&show=fav' : '');
+      return '#/tag/' + enc(name) + '?order=' + (rnd ? 'random' : 'recent') + (t === 'anim' ? '&media=gv' : t === 'fav' ? '&show=fav' : t === 'rg' ? '&show=rg' : '');
     };
     // Favoritos: tus me gusta con este hashtag (barajados, si toca).
     const favItems = () => {
@@ -4531,6 +5053,12 @@
         tag: name,
         type,
         kinds,
+        // RedGifs: la pestaña RedGifs muestra su etiqueta (la de mismo nombre o la que uniste), al azar o, en
+        // una cuenta en orden, lo más nuevo. En Todos entra solo si es una cuenta y elegiste mezclar.
+        rgPlan: () =>
+          tab === 'fav'
+            ? null
+            : { q: { tags: rgTagFor(name), order: profile && !random ? 'latest' : 'trending', random: !profile || random }, only: tab === 'rg', mix: profile && rgMixOn('tag', name) },
         items: tab === 'fav' ? favItems() : [],
         reload: tab === 'fav' ? favItems : null,
         doneText: (n) => (n === 1 ? 'Es el único post de #' + name + ' que te gustó.' : 'Son los ' + n + ' posts de #' + name + ' que te gustaron.'),
@@ -4550,9 +5078,10 @@
           f.hero = tagHero(name, () => f.total);
           return [f.hero, warn];
         },
-        sub: () => tagTabs(tab, profile, random, url),
+        sub: () => [tagTabs(tab, profile, random, url), tab === 'rg' ? rgLinkBar('tag', name, profile) : null],
         empty: () => {
           if (tab === 'fav') return emptyBox('heart', 'Todavía no hay favoritos', 'Aquí salen los posts de #' + name + ' que te gustaron.');
+          if (tab === 'rg') return emptyBox('hash', 'RedGifs no tiene posts de #' + rgTagFor(name), 'Únelo con otra etiqueta de RedGifs: toca «Cambiar» arriba.');
           if (tab !== 'anim') return emptyBox('hash', 'No hay posts aquí', '');
           // Si bloqueaste #gif (o parecido), todos los GIF desaparecen: se explica y se ofrece desbloquear.
           const blocked = fmtBlocked();
@@ -4569,11 +5098,15 @@
   // Pestañas de un hashtag, como las del perfil; en las cuentas, a la derecha, el botón de barajar.
   function tagTabs(tab, profile, random, url) {
     const t = (id, ic, label) =>
-      h('button', { class: 'ptab' + (tab === id ? ' on' : ''), role: 'tab', 'aria-selected': String(tab === id), onclick: () => tab !== id && navReplace(url({ tab: id })) }, icon(ic, 20), label);
+      h('button', { class: 'ptab' + (tab === id ? ' on' : ''), role: 'tab', 'aria-selected': String(tab === id), 'aria-label': label, onclick: () => tab !== id && navReplace(url({ tab: id })) }, icon(ic, 20), h('span', { class: 'pl', text: label }));
     const shuffleLabel = random ? 'Volver al orden normal' : 'Barajar los posts';
-    return h('div', { class: 'ptabs', role: 'tablist', 'aria-label': 'Qué posts ver' },
+    const rg = srcMode() !== 'jr';
+    // Una cuenta con RedGifs tiene cinco pestañas: las que no están elegidas muestran solo el icono.
+    return h('div', { class: 'ptabs' + (rg && profile ? ' many' : ''), role: 'tablist', 'aria-label': 'Qué posts ver' },
       t('all', 'grid', 'Todos'),
       t('anim', 'film', 'Videos y GIF'),
+      // RedGifs (1.10.0): los posts de su etiqueta de RedGifs (la de mismo nombre o la que uniste).
+      rg ? h('button', { class: 'ptab' + (tab === 'rg' ? ' on' : ''), role: 'tab', 'aria-selected': String(tab === 'rg'), 'aria-label': 'RedGifs', onclick: () => tab !== 'rg' && navReplace(url({ tab: 'rg' })) }, h('span', { class: 'srcb rg', text: 'RG' }), h('span', { class: 'pl', text: 'RedGifs' })) : null,
       profile ? t('fav', 'heart', 'Favoritos') : null,
       !profile ? null : h('button', {
         class: 'ptab shuf' + (random ? ' on' : ''),
@@ -4714,7 +5247,15 @@
   function profileTabs(f) {
     const tab = (show, ic, label) =>
       h('button', { class: 'ptab' + (f.show === show ? ' on' : ''), role: 'tab', 'aria-selected': String(f.show === show), onclick: () => f.setShow(show) }, icon(ic, 20), label);
-    return h('div', { class: 'ptabs', role: 'tablist', 'aria-label': 'Qué posts ver' }, tab('all', 'grid', 'Todos'), tab('anim', 'film', 'Videos y GIF'), tab('fav', 'heart', 'Favoritos'));
+    // RedGifs (1.10.0): los posts del creador que uniste con esta cuenta (arriba, Unir o Cambiar y Mezclar).
+    const rg =
+      srcMode() !== 'jr'
+        ? h('button', { class: 'ptab' + (f.show === 'rg' ? ' on' : ''), role: 'tab', 'aria-selected': String(f.show === 'rg'), onclick: () => f.setShow('rg') }, h('span', { class: 'srcb rg', text: 'RG' }), 'RedGifs')
+        : null;
+    return [
+      h('div', { class: 'ptabs', role: 'tablist', 'aria-label': 'Qué posts ver' }, tab('all', 'grid', 'Todos'), tab('anim', 'film', 'Videos y GIF'), rg, tab('fav', 'heart', 'Favoritos')),
+      f.show === 'rg' ? rgLinkBar('user', f.user, true) : null
+    ];
   }
 
   /** Tus me gusta de un usuario, del más reciente al más viejo. */
@@ -4736,6 +5277,8 @@
         user: name,
         mode: 'grid',
         back: true,
+        // RedGifs: la pestaña RedGifs (el creador que uniste) y, si lo elegiste, mezclado en Todos.
+        rgPlan: (f) => (f.show === 'fav' ? null : { q: rgUserFor(name) ? { user: rgUserFor(name), order: 'latest' } : null, only: f.show === 'rg', mix: rgMixOn('user', name) }),
         head: () => [backBtn('/home'), h('h1', { text: '@' + name })],
         extra: () => {
           hero._redraw();
@@ -4743,7 +5286,11 @@
         },
         sub: profileTabs,
         empty: (f) =>
-          f.show === 'anim'
+          f.show === 'rg'
+            ? rgUserFor(name)
+              ? emptyBox('user', 'Sin posts en RedGifs', 'Puede que RedGifs no responda o que @' + rgUserFor(name) + ' no tenga posts.')
+              : emptyBox('user', 'Todavía no está unido con RedGifs', 'Toca «Unir» arriba y elige su cuenta de RedGifs: sus posts saldrán aquí.')
+            : f.show === 'anim'
             ? emptyBox('film', 'Sin videos ni GIF', name + ' no publicó videos ni GIF.')
             : f.show === 'fav'
               ? emptyBox('heart', 'Todavía no hay favoritos', 'Aquí salen los posts de ' + name + ' que te gustaron. JoyReactor no deja ver los favoritos de otras personas.')
@@ -5121,6 +5668,7 @@
     }
     for (const f of favList()) add(f.name, 5);
     for (const t of Object.values(S.tagProfiles)) add(t.name, 5);
+    if (srcMode() !== 'jr') for (const t of Object.values(S.rgTags)) add(t.name, 5);
     return Array.from(score.values()).sort((a, b) => b.w - a.w).slice(0, 15);
   }
   function discoverTags(mine, extra) {
@@ -5189,6 +5737,11 @@
         kind: 'explore',
         source: 'explore',
         chip,
+        // RedGifs: en Para ti se turnan tus hashtags más mirados (sin ninguno, lo popular); en una ficha, ese hashtag.
+        rgPlan: () =>
+          chip === 'new'
+            ? null
+            : { q: chip === 'all' ? (exploreTags().length ? { rotate: exploreTags().slice(0, 5).map((x) => rgTagFor(x.name)) } : { order: 'popular' }) : { tags: rgTagFor(chip), order: 'trending', random: true }, general: true },
         mode: 'grid',
         head: (f) => (f.mode === 'feed'
           ? [backBtn('/search'), h('h1', { text: 'Explorar' })]
@@ -5477,11 +6030,22 @@
 
   function followTabs(active) {
     return pageTabs('Qué sigues', active, [
-      { id: 'tags', href: '#/following', ic: 'hash', label: 'Hashtags', n: Object.keys(S.favorites).length },
-      { id: 'users', href: '#/following?tab=users', ic: 'user', label: 'Perfiles', n: Object.keys(S.following).length + Object.keys(S.tagProfiles).length }
+      { id: 'tags', href: '#/following', ic: 'hash', label: 'Hashtags', n: Object.keys(S.favorites).length + Object.values(S.rgTags).filter((t) => t.as === 'tag').length },
+      { id: 'users', href: '#/following?tab=users', ic: 'user', label: 'Perfiles', n: Object.keys(S.following).length + Object.keys(S.tagProfiles).length + Object.keys(S.rgFollowing).length + Object.values(S.rgTags).filter((t) => t.as === 'account').length }
     ]);
   }
 
+  // Una etiqueta de RedGifs que sigues (como hashtag o como cuenta), en las listas de Seguidos.
+  function rgTagRow(x) {
+    return h('div', { class: 'result' },
+      h('a', { href: '#/rgtag/' + enc(x.name) },
+        rgTagPic(x.name, 'htile'),
+        h('span', { class: 'rtext' }, h('span', { class: 'n' }, x.name, ' ', h('span', { class: 'srcb rg', text: 'RG' })), h('span', { class: 'm', text: x.as === 'account' ? 'Etiqueta de RedGifs que sigues como cuenta' : 'Etiqueta de RedGifs' }))
+      ),
+      h('button', { class: 'small-btn follow on', 'aria-label': 'Dejar de seguir #' + x.name, onclick: () => followRgTag(x.name, null) }, 'Siguiendo'),
+      rowMore('rgtag', x.name)
+    );
+  }
   function routeFollowing(q) {
     if (q.get('tab') === 'users') return routeFollowingUsers();
     const lists = h('div', { class: 'follow-list' });
@@ -5541,11 +6105,14 @@
           rowMore('tag', f.name)
         );
 
+      // Las etiquetas de RedGifs que sigues como hashtag (1.10.0).
+      const rgTags = Object.values(S.rgTags).filter((t) => t.as === 'tag');
       fill(lists,
-        favs.length
-          ? h('p', { class: 'countline', style: { paddingTop: '10px' }, text: favs.length === 1 ? 'Sigues 1 hashtag.' : 'Sigues ' + favs.length + ' hashtags y categorías.' })
+        favs.length || rgTags.length
+          ? h('p', { class: 'countline', style: { paddingTop: '10px' }, text: 'Sigues ' + [favs.length ? (favs.length === 1 ? '1 hashtag' : favs.length + ' hashtags y categorías') : '', rgTags.length ? rgTags.length + ' de RedGifs' : ''].filter(Boolean).join(' · ') + '.' })
           : emptyBox('hash', 'Todavía no sigues ningún hashtag', 'Búscalo arriba y toca +, entra a un hashtag y toca Seguir, o mantén presionado un hashtag.'),
-        favs.map(row)
+        favs.map(row),
+        rgTags.map(rgTagRow)
       );
     }
 
@@ -5558,6 +6125,29 @@
   function routeFollowingUsers() {
     const listEl = h('div', { class: 'follow-list' });
     const tabsEl = h('div');
+    // Un creador de RedGifs que sigues (1.10.0).
+    const rgRow = (x) =>
+      h('div', { class: 'result' },
+        h('a', { href: '#/rguser/' + enc(x.name) },
+          rgPic(x.name, x.pic, 'htile'),
+          h('span', { class: 'rtext' }, h('span', { class: 'n' }, x.name, ' ', h('span', { class: 'srcb rg', text: 'RG' })), h('span', { class: 'm', text: 'Creador de RedGifs' }))
+        ),
+        h('button', {
+          class: 'small-btn follow on',
+          'aria-label': 'Dejar de seguir a ' + x.name,
+          onclick: () => {
+            setRgFollow(x.name, false);
+            draw();
+            toast('Dejaste de seguir a ' + x.name, 'Deshacer', () => {
+              S.rgFollowing[rgKey(x.name)] = x;
+              persist('rgFollowing', 0);
+              invalidateHome();
+              draw();
+            });
+          }
+        }, 'Siguiendo'),
+        rowMore('rguser', x.name)
+      );
     const tagRow = (x) =>
       h('div', { class: 'result' },
         h('a', { href: '#/tag/' + enc(x.name) },
@@ -5593,20 +6183,25 @@
       fill(tabsEl, followTabs('users'));
       const list = Object.values(S.following).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
       const tagList = Object.values(S.tagProfiles);
-      const all = list.map((x) => ({ x, at: x.addedAt || 0 })).concat(tagList.map((x) => ({ x, at: x.addedAt || 0, tag: true }))).sort((a, b) => b.at - a.at);
+      const rgList = Object.values(S.rgFollowing);
+      const rgAccounts = Object.values(S.rgTags).filter((t) => t.as === 'account');
+      const all = list
+        .map((x) => ({ x, at: x.addedAt || 0 }))
+        .concat(tagList.map((x) => ({ x, at: x.addedAt || 0, tag: true })), rgList.map((x) => ({ x, at: x.addedAt || 0, rg: true })), rgAccounts.map((x) => ({ x, at: x.addedAt || 0, rgtag: true })))
+        .sort((a, b) => b.at - a.at);
       const people = list.length === 1 ? 'a 1 usuario' : 'a ' + list.length + ' usuarios';
       const tags = tagList.length === 1 ? '1 hashtag' : tagList.length + ' hashtags';
-      const count = !tagList.length
-        ? 'Sigues ' + people + '.'
+      const count = (!tagList.length
+        ? 'Sigues ' + people
         : list.length
-          ? 'Sigues ' + people + ' y ' + tags + ' como cuenta.'
-          : 'Sigues ' + tags + ' como cuenta.';
+          ? 'Sigues ' + people + ' y ' + tags + ' como cuenta'
+          : 'Sigues ' + tags + ' como cuenta') + (rgList.length + rgAccounts.length ? ' · ' + (rgList.length + rgAccounts.length) + ' de RedGifs.' : '.');
       fill(listEl,
         all.length
           ? h('p', { class: 'countline', style: { paddingTop: '10px' }, text: count })
           : emptyBox('users', 'Todavía no tienes perfiles', 'Toca Seguir al lado del nombre de quien publicó un post. Un hashtag también puede ser una cuenta: entra a él, toca Seguir y elige «Como cuenta».'),
-        all.map(({ x, tag }) =>
-          tag ? tagRow(x) : personRow(x.name, x.userId, 'Lo sigues desde ' + (ago(x.addedAt) || 'antes'), null,
+        all.map(({ x, tag, rg, rgtag }) =>
+          rgtag ? rgTagRow(x) : rg ? rgRow(x) : tag ? tagRow(x) : personRow(x.name, x.userId, 'Lo sigues desde ' + (ago(x.addedAt) || 'antes'), null,
             h('button', {
               class: 'ib bellb' + (x.notify ? ' on' : ''),
               'aria-pressed': String(!!x.notify),
@@ -5719,7 +6314,7 @@
     if (!p || !(ms >= TIME_MIN)) return;
     const t = weekTime();
     ms = Math.min(ms, TIME_MAX);
-    if (p.user) {
+    if (p.user && !RS.isRg(p)) {
       t.users[p.user] = (t.users[p.user] || 0) + ms;
       if (p.userId) t.ids[p.user] = p.userId;
     }
@@ -6298,7 +6893,7 @@
     Object.keys(S.likes).length + Object.keys(S.favorites).length + Object.keys(S.following).length + Object.keys(S.tagProfiles).length + Object.keys(S.dislikes).length > 0;
   function backupSig() {
     const likes = Object.values(S.likes);
-    return [likes.length, likes.reduce((m, x) => Math.max(m, x.at || 0), 0), Object.keys(S.favorites).length, Object.keys(S.following).length, Object.keys(S.tagProfiles).length, Object.keys(S.dislikes).length, S.mix.exclude.length, Object.keys(S.pics).length, Object.values(S.pics).reduce((m, x) => Math.max(m, x.at || 0), 0), Object.values(S.folders).reduce((n, f) => n + f.ids.length + 1, 0)].join('|');
+    return [likes.length, likes.reduce((m, x) => Math.max(m, x.at || 0), 0), Object.keys(S.favorites).length, Object.keys(S.following).length, Object.keys(S.tagProfiles).length, Object.keys(S.dislikes).length, S.mix.exclude.length, Object.keys(S.pics).length, Object.values(S.pics).reduce((m, x) => Math.max(m, x.at || 0), 0), Object.values(S.folders).reduce((n, f) => n + f.ids.length + 1, 0), Object.keys(S.rgFollowing).length, Object.keys(S.rgTags).length, Object.keys(S.rgLinks).length, Object.keys(S.rgMix).length].join('|');
   }
   let backingUp = null;
   function autoBackup(force) {
@@ -6475,6 +7070,13 @@
 
     mount([
       h('header', { class: 'top' }, h('h1', { text: 'Ajustes' })),
+      group('Fuentes',
+        segField('De dónde salen los posts', 'En Inicio, en Buscar y en cada hashtag. Cada post lleva un mini icono: JR (JoyReactor) o RG (RedGifs). Todo lo de RedGifs es NSFW: «Ocultar posts NSFW» lo esconde.', [['both', 'Las dos'], ['jr', 'JoyReactor'], ['rg', 'RedGifs']], srcMode(), (v) => {
+          st.sources = v;
+          save();
+          dropFeeds();
+        })
+      ),
       group('Tu actividad',
         recapUnseen()
           ? navLine('trophy', 'Resumen de la semana', 'Ya está el de la semana pasada: toca para verlo.', '#/recap', true)

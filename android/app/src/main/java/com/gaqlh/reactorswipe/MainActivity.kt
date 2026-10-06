@@ -108,8 +108,12 @@ class MainActivity : ComponentActivity() {
             .build()
 
         web.webViewClient = object : WebViewClient() {
-            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
-                assets.shouldInterceptRequest(request.url)
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                val url = request.url
+                // RedGifs (1.10.0): su API y sus archivos pasan por RedGifs.kt.
+                if (url.host == HOST && url.path.orEmpty().startsWith("/__rg/")) return RedGifs.intercept(applicationContext, request)
+                return assets.shouldInterceptRequest(url)
+            }
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val url = request.url

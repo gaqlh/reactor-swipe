@@ -223,17 +223,27 @@
   // Los videos de JoyReactor solo se sirven si la petición dice venir de joyreactor.com.
   // En la extensión eso lo añade background.js; en desarrollo lo hace el proxy local.
   const viaProxy = (u) => (direct ? u : '/proxy/media?u=' + encodeURIComponent(u));
-  RS.imageUrl = (m, full) => IMG + (full ? 'full/' : '') + 'post-' + m.id + '.' + (m.ext || 'jpeg');
-  RS.videoUrl = (m) => viaProxy(IMG + 'mp4/post-' + m.id + '.mp4');
-  RS.posterUrl = (m) => IMG + 'static/post-' + m.id + '.jpeg';
+  // Los archivos de RedGifs (m.rg: los nombres de sus archivos en media.redgifs.com) van por /__rg/media/.
+  const RG = '/__rg';
+  const RG_MEDIA = 'https://media.redgifs.com/';
+  const rgFile = (name) => RG + '/media/' + encodeURIComponent(name);
+  RS.imageUrl = (m, full) => (m.rg ? rgFile(full ? m.rg.hd : m.rg.t || m.rg.hd) : IMG + (full ? 'full/' : '') + 'post-' + m.id + '.' + (m.ext || 'jpeg'));
+  RS.videoUrl = (m) => (m.rg ? rgFile(m.rg.sd || m.rg.hd) : viaProxy(IMG + 'mp4/post-' + m.id + '.mp4'));
+  RS.posterUrl = (m) => (m.rg ? rgFile(m.rg.t || m.rg.p) : IMG + 'static/post-' + m.id + '.jpeg');
   // Para descargar: la imagen en tamaño completo o el mp4 (también el de los GIF). La app de Android la
-  // pide sin el proxy; en el navegador, si hace falta, pasa por él (viaProxy).
-  RS.fileOf = (m) => (m.kind === 'video' ? { url: IMG + 'mp4/post-' + m.id + '.mp4', ext: 'mp4' } : { url: RS.imageUrl(m, true), ext: m.ext || 'jpeg' });
+  // pide sin el proxy; en el navegador, si hace falta, pasa por él (localUrl).
+  RS.fileOf = (m) =>
+    m.rg
+      ? { url: RG_MEDIA + m.rg.hd, ext: m.kind === 'video' ? 'mp4' : 'jpg' }
+      : m.kind === 'video'
+        ? { url: IMG + 'mp4/post-' + m.id + '.mp4', ext: 'mp4' }
+        : { url: RS.imageUrl(m, true), ext: m.ext || 'jpeg' };
   RS.viaProxy = viaProxy;
-  // Avatares de usuarios y hashtags: también exigen el Referer de joyreactor.com.
-  RS.avatarUrl = (p) => (p.userId ? viaProxy('https://img10.joyreactor.com/pics/avatar/user/' + p.userId) : '');
+  RS.localUrl = (url) => (url.startsWith(RG_MEDIA) ? rgFile(url.slice(RG_MEDIA.length)) : viaProxy(url));
+  // Avatares de usuarios y hashtags: también exigen el Referer de joyreactor.com. Los de RedGifs vienen con el post.
+  RS.avatarUrl = (p) => (p.src === 'rg' ? p.rgAvatar || '' : p.userId ? viaProxy('https://img10.joyreactor.com/pics/avatar/user/' + p.userId) : '');
   RS.tagImageUrl = (tagId) => viaProxy('https://img10.joyreactor.com/pics/avatar/tag/' + tagId);
-  RS.postUrl = (p) => RS.SITE + '/post/' + p.num;
+  RS.postUrl = (p) => (p.src === 'rg' ? 'https://www.redgifs.com/watch/' + encodeURIComponent(p.num) : RS.SITE + '/post/' + p.num);
   RS.embedUrl = function (m, p) {
     if (m.provider === 'YOUTUBE') return 'https://www.youtube.com/watch?v=' + encodeURIComponent(m.value);
     if (m.provider === 'COUB') return 'https://coub.com/view/' + encodeURIComponent(m.value);
@@ -785,7 +795,8 @@
     // selectHold: ms que hay que mantener una miniatura de Me gusta o Historial para seleccionar (Herramientas de debug).
     // randomTab: el botón Aleatorio en la barra de abajo (Ajustes › Funciones para el futuro; desde la 1.7.0 viene apagado).
     // rowPic: tamaño en px de las fotos de las filas de Seguidos (Herramientas de debug; desde la 1.7.2).
-    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100, showDates: false, showScores: false, seekDrag: true, seekSpan: 60, selectHold: 500, randomTab: false, rowPic: 64 },
+    // sources: de dónde salen los posts (desde la 1.10.0): 'both' (JoyReactor y RedGifs, mezclados), 'jr' o 'rg'.
+    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100, showDates: false, showScores: false, seekDrag: true, seekSpan: 60, selectHold: 500, randomTab: false, rowPic: 64, sources: 'both' },
     news: { items: [], known: {}, unread: 0, lastCheck: 0 },
     dismissed: [],
     history: [], // posts vistos más de 10 s: [{ id, at, post }], el más nuevo primero
@@ -814,6 +825,15 @@
     // Respaldo automático en Descargas (app de Android): cuándo se escribió el último, una firma de lo
     // importante para saber si cambió, y skip = en una app vacía dijiste «Empezar de cero».
     backup: { at: 0, sig: '', skip: false },
+    // Creadores de RedGifs que sigues (desde la 1.10.0): nombre en minúsculas -> { name, pic, addedAt }.
+    rgFollowing: {},
+    // Etiquetas de RedGifs que sigues (1.10.0): nombre en minúsculas -> { name, as: 'tag' | 'account', addedAt }.
+    rgTags: {},
+    // Uniones con RedGifs (1.10.0), en las dos direcciones: 'tag:<hashtag>' -> etiqueta de RedGifs y
+    // 'rgtag:<etiqueta>' -> hashtag; 'user:<usuario>' -> creador y 'rguser:<creador>' -> usuario (claves en minúsculas).
+    rgLinks: {},
+    // Cuentas en las que ves las dos fuentes mezcladas en Todos (1.10.0): 'tag:<hashtag>' | 'user:<usuario>' -> true.
+    rgMix: {},
     eraCache: {}
   };
   RS.KEYS = Object.keys(DEFAULTS);
@@ -1006,6 +1026,115 @@
     return arr;
   }
   RS.shuffle = shuffle;
+
+  // ---------------------------------------------------------------- RedGifs (1.10.0)
+  //
+  // Sus posts se mezclan con los de JoyReactor (S.settings.sources). La API no tiene documentación pública:
+  // la app la pide por /__rg/api/… (en Android la atiende MainActivity con RedGifs.kt, que guarda el token
+  // temporal y lo renueva ante un 401; en la PC, tools/dev-server.mjs). Lo que se sabe (probado el
+  // 2026-10-06): `/v2/gifs/search?tags=a,b&order=trending|latest|top|top7|top28&count&page` (varias
+  // etiquetas = las lleva todas; `search_text` no sirve con trending), `/v2/gifs/search?order=latest|top7`
+  // sin etiquetas, `/v2/feeds/trending/popular?count&page` (100 en total), `/v2/users/<nombre>/search` y
+  // `/v2/search/suggest?query=`. Cada respuesta trae `gifs` y `users` (con `profileImageUrl`). type 1 = video,
+  // type 2 = imagen. Un post de RedGifs queda como uno de JoyReactor: id 'rg:<id>', src 'rg', un archivo.
+  RS.isRg = (p) => !!p && p.src === 'rg';
+  const rgMemo = new Map(); // ruta -> { at, wait } (lo que se pidió hace menos de un minuto no se repite)
+  async function rgGet(path) {
+    const hit = rgMemo.get(path);
+    if (hit && Date.now() - hit.at < 60000) return hit.wait;
+    const wait = (async () => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 30000);
+      let res;
+      try {
+        res = await fetch(RG + '/api' + path, { signal: ctrl.signal });
+      } catch (e) {
+        throw new Error(e && e.name === 'AbortError' ? 'RedGifs está tardando demasiado en responder.' : 'No pude conectar con RedGifs.');
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!res.ok) throw new Error('RedGifs respondió con error ' + res.status);
+      return res.json();
+    })();
+    rgMemo.set(path, { at: Date.now(), wait });
+    wait.catch(() => rgMemo.delete(path));
+    return wait;
+  }
+  const rgName = (u) => (u ? String(u).split('/').pop().split('?')[0] : '');
+  RS.normalizeRg = function (g, users) {
+    const urls = g.urls || {};
+    const image = g.type === 2;
+    const m = { kind: image ? 'image' : 'video', id: g.id, w: g.width || 0, h: g.height || 0, rg: { hd: rgName(urls.hd || urls.sd), sd: rgName(urls.sd || urls.hd), p: rgName(urls.poster), t: rgName(urls.thumbnail || urls.poster) } };
+    if (image) m.ext = 'jpeg';
+    else m.real = !!g.hasAudio; // con sonido es un video de verdad; sin sonido, como un GIF
+    const u = users && users[g.userName];
+    return {
+      id: 'rg:' + g.id,
+      num: g.id,
+      src: 'rg',
+      time: (g.createDate || 0) * 1000,
+      rating: 0,
+      comments: 0,
+      nsfw: true,
+      unsafe: false,
+      user: g.userName || '',
+      userId: 0,
+      rgAvatar: (u && u.profileImageUrl) || '',
+      author: null,
+      tags: (g.tags || []).slice(0, 24),
+      text: '',
+      censored: false,
+      media: [m]
+    };
+  };
+  const RG_COUNT = 20;
+  // q: { tags: 'a' | ['a','b'], order } | { user, order } | { order: 'popular' | 'latest' | 'top7' }.
+  RS.rgPage = async function (q, page) {
+    const n = 'count=' + RG_COUNT + '&page=' + (page || 1);
+    let path;
+    if (q.user) path = '/v2/users/' + encodeURIComponent(q.user) + '/search?order=' + (q.order || 'latest') + '&' + n;
+    else if (q.tags) path = '/v2/gifs/search?tags=' + [].concat(q.tags).map(encodeURIComponent).join(',') + '&order=' + (q.order || 'trending') + '&' + n;
+    else if (q.order === 'popular') path = '/v2/feeds/trending/popular?' + n;
+    else path = '/v2/gifs/search?order=' + (q.order || 'latest') + '&' + n;
+    const j = await rgGet(path);
+    const users = {};
+    for (const u of j.users || []) users[u.username] = u;
+    return {
+      posts: (j.gifs || []).filter((g) => g && g.urls).map((g) => RS.normalizeRg(g, users)),
+      pages: Math.max(1, j.pages || 1),
+      total: j.total || 0,
+      user: q.user ? users[q.user] || (j.users || [])[0] || null : null
+    };
+  };
+  // Para unir con RedGifs: etiquetas que empiezan así (con cuántos posts) y creadores que se llaman parecido.
+  RS.rgSuggest = async (q) => ((await rgGet('/v2/search/suggest?query=' + encodeURIComponent(q))) || []).filter((x) => x && x.type === 'tag').slice(0, 12);
+  RS.rgCreators = async (q) => ((await rgGet('/v2/creators/search?query=' + encodeURIComponent(q) + '&count=12')) || {}).items || [];
+  // Una lista de RedGifs que se pide de a páginas: en orden, o al azar entre las primeras RG_RANDOM_PAGES
+  // (q.random: como un hashtag de JoyReactor, que se ve barajado).
+  const RG_RANDOM_PAGES = 30;
+  RS.createRgSource = function (q) {
+    const src = { done: false, pages: 0, next: 1, tried: new Set() };
+    src.more = async () => {
+      if (src.done) return [];
+      let page = src.next;
+      if (q.random && src.pages) {
+        const left = [];
+        for (let i = 1; i <= Math.min(src.pages, RG_RANDOM_PAGES); i++) if (!src.tried.has(i)) left.push(i);
+        if (!left.length) {
+          src.done = true;
+          return [];
+        }
+        page = left[randInt(0, left.length - 1)];
+      }
+      src.tried.add(page);
+      const r = await RS.rgPage(q, page);
+      src.pages = r.pages;
+      src.next = page + 1;
+      if (q.random ? src.tried.size >= Math.min(r.pages, RG_RANDOM_PAGES) : src.next > r.pages || !r.posts.length) src.done = true;
+      return q.random ? shuffle(r.posts) : r.posts;
+    };
+    return src;
+  };
 
   /** Fuentes activas de la mezcla con su peso. Vacía = todo JoyReactor. */
   RS.mixSources = function (st) {

@@ -64,6 +64,54 @@ async function proxyMedia(req, res, url) {
   else res.end();
 }
 
+// RedGifs (1.10.0): la API pide un token temporal (dura 24 h y queda atado a la IP y al User-Agent) y sus
+// archivos dan 403 con Referer de otro sitio. La app los pide como /__rg/api/… y /__rg/media/…: en Android
+// los atiende MainActivity con RedGifs.kt; en la PC, este proxy, igual.
+const RG_UA = 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36 ReactorSwipe';
+let rgToken = null;
+async function rgTokenGet(fresh) {
+  if (!fresh && rgToken && Date.now() - rgToken.at < 20 * 3600000) return rgToken.token;
+  const r = await fetch('https://api.redgifs.com/v2/auth/temporary', { headers: { 'user-agent': RG_UA } });
+  if (!r.ok) throw new Error('RedGifs no dio permiso (' + r.status + ')');
+  rgToken = { token: (await r.json()).token, at: Date.now() };
+  return rgToken.token;
+}
+async function proxyRgApi(req, res, url) {
+  const rest = url.pathname.slice('/__rg/api'.length);
+  if (!/^\/v[12]\/[A-Za-z0-9/_.%-]+$/.test(rest)) {
+    res.writeHead(403).end('Ruta de RedGifs no permitida');
+    return;
+  }
+  let up = null;
+  // Si el token caducó (401), se pide otro una sola vez.
+  for (let i = 0; i < 2; i++) {
+    up = await fetch('https://api.redgifs.com' + rest + url.search, { headers: { authorization: 'Bearer ' + (await rgTokenGet(i > 0)), 'user-agent': RG_UA } });
+    if (up.status !== 401) break;
+  }
+  res.writeHead(up.status, { 'content-type': up.headers.get('content-type') || 'application/json', 'cache-control': 'no-store' });
+  res.end(Buffer.from(await up.arrayBuffer()));
+}
+async function proxyRgMedia(req, res, url) {
+  const rest = url.pathname.slice('/__rg/media'.length);
+  if (!/^\/[A-Za-z0-9_.-]+$/.test(rest)) {
+    res.writeHead(403).end('Archivo de RedGifs no válido');
+    return;
+  }
+  const headers = { 'user-agent': RG_UA };
+  if (req.headers.range) headers.range = req.headers.range;
+  const ctrl = new AbortController();
+  res.on('close', () => ctrl.abort());
+  const up = await fetch('https://media.redgifs.com' + rest, { headers, signal: ctrl.signal });
+  const out = {};
+  for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']) {
+    const v = up.headers.get(h);
+    if (v) out[h] = v;
+  }
+  res.writeHead(up.status, out);
+  if (up.body) Readable.fromWeb(up.body).on('error', () => res.destroy()).pipe(res);
+  else res.end();
+}
+
 // /android.html: la misma app pero con un puente RSAndroid simulado, para probar el modo Android en la PC.
 // (Las peticiones siguen pasando por el proxy porque el navegador no tiene el origen joyreactor.com.)
 const ANDROID_STUB = `<script>
@@ -121,6 +169,8 @@ http
     try {
       if (url.pathname === '/proxy/graphql' && req.method === 'POST') return await proxyGraphql(req, res);
       if (url.pathname === '/proxy/media') return await proxyMedia(req, res, url);
+      if (url.pathname.startsWith('/__rg/api/')) return await proxyRgApi(req, res, url);
+      if (url.pathname.startsWith('/__rg/media/')) return await proxyRgMedia(req, res, url);
       if (url.pathname === '/android.html') return serveAndroidSim(res);
       if (url.pathname === '/') {
         res.writeHead(302, { location: '/app.html' }).end();
