@@ -1145,8 +1145,9 @@
 
   // ================================================================ Fotos propias
   //
-  // A un usuario se le puede poner una foto sacada de sus posts y a un hashtag, un GIF o un video de los
-  // suyos (S.pics): tiene que ser de la misma cuenta. Se recorta con un círculo y se guarda qué archivo y
+  // A un usuario o a un hashtag que sigues como cuenta se le puede poner una imagen de sus posts, y a un
+  // hashtag, un GIF o un video de los suyos (S.pics): tiene que ser de la misma cuenta (de sus posts o de tus
+  // me gusta de ella; picPicker). Se recorta con un círculo y se guarda qué archivo y
   // qué parte, no una copia (ocupa casi nada y entra en el respaldo). Se elige desde el ⋯ de cada fila de
   // Seguidos, desde el ⋯ de la página del hashtag o al empezar a seguirlo (askPic). Los videos se mueven en
   // la página del hashtag y en las listas de Seguidos; en los demás lados se ven quietos (el primer
@@ -1224,10 +1225,11 @@
     const user = kind === 'user';
     return h('button', { type: 'button', class: 'ib', 'aria-haspopup': 'dialog', 'aria-label': 'Más opciones de ' + (user ? '@' : '#') + name, onclick: () => {
       const own = picOf(kind, name);
+      const img = picWant(kind, name) === 'image';
       openSheet('Opciones de ' + (user ? '@' : '#') + name,
         h('div', { class: 'sheet-title', text: (user ? '@' : '#') + name }),
-        sheetRow(user ? 'camera' : 'film', (own ? 'Cambiar ' : 'Poner ') + (user ? 'la foto' : 'el GIF o video'), user ? 'Una imagen de sus posts, recortada como quieras.' : 'Un pedazo de un GIF o video de sus posts, que se repite.', () => openPicSheet(kind, name)),
-        own ? sheetRow('x', 'Quitar ' + (user ? 'la foto' : 'el GIF'), user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null
+        sheetRow(img ? 'camera' : 'film', (own ? 'Cambiar ' : 'Poner ') + (img ? 'la foto' : 'el GIF o video'), img ? 'Una imagen de sus posts o de tus me gusta, recortada como quieras.' : 'Un pedazo de un GIF o video de sus posts o de tus me gusta, que se repite.', () => openPicSheet(kind, name)),
+        own ? sheetRow('x', 'Quitar ' + (img ? 'la foto' : 'el GIF'), user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null
       );
     } }, icon('dots', 22));
   }
@@ -1249,59 +1251,129 @@
     route();
   }
 
-  // Elegir la foto: las imágenes de sus últimos posts (usuario) o sus GIF y videos (hashtag).
-  async function userImages(name) {
-    const got = await RS.fetchUsersRecent([name]);
-    const out = [];
-    for (const p of got[name] || []) {
-      if (RS.isJunk(p)) continue;
-      for (const m of p.media) if (m.kind === 'image' && out.length < 30) out.push({ m, post: p.id });
+  // Qué se le pone: a un usuario y a un hashtag que sigues como cuenta, una imagen; a un hashtag, un GIF o
+  // video (lo pidió el usuario en la 1.7.1).
+  const picWant = (kind, name) => (kind === 'user' || tagProfileOf(name) ? 'image' : 'clip');
+  const mediaFits = (m, want) => (want === 'clip' ? m.kind === 'video' : m.kind === 'image');
+
+  // Para elegir: «Sus posts» (todos, se van pidiendo al bajar; los GIF de un hashtag salen de lo mismo que
+  // usa su pestaña Videos y GIF) o «Tus me gusta» de esa cuenta.
+  function picPicker(kind, name, want, onPick) {
+    const user = kind === 'user';
+    const grid = h('div', { class: 'pickgrid' });
+    const status = h('div', { class: 'pickstatus' });
+    const sentinel = h('div', { class: 'picksentinel' });
+    const body = h('div', {}, grid, status, sentinel);
+    let tab = 'posts';
+    let io = null;
+    const cell = ({ m, post }) =>
+      h('button', { type: 'button', class: 'pick', 'aria-label': 'Usar esta', onclick: () => onPick(m, post) },
+        h('img', { src: m.kind === 'image' ? RS.imageUrl(m) : RS.posterUrl(m), alt: '', draggable: 'false' }),
+        m.kind === 'video' ? h('span', { class: 'tb', text: 'GIF' }) : null
+      );
+    const fromPosts = (posts) => {
+      const out = [];
+      for (const p of posts) {
+        if (!p || RS.isJunk(p)) continue;
+        for (const m of p.media) if (mediaFits(m, want)) out.push({ m, post: p.id });
+      }
+      return out;
+    };
+
+    // Sus posts: se piden de a poco y se agregan al llegar al final.
+    const src = user
+      ? RS.createUserSource(name, junkScan(userJunkKey(name)))
+      : RS.createTagSource(name, 'ALL', junkScan(tagJunkKey(name)), want === 'clip' ? RS.isAnimated : null);
+    let cursor = 0;
+    let shown = 0;
+    let loading = false;
+    async function loadMore() {
+      if (loading || tab !== 'posts' || src.done) return;
+      loading = true;
+      fill(status, icon('spinner', 18, 'spin'), want === 'clip' ? 'Buscando GIF y videos…' : 'Buscando imágenes…');
+      try {
+        // Hasta encontrar una tanda (o revisar bastante): los hashtags grandes tienen pocos GIF por página.
+        let added = 0;
+        for (let round = 0; round < 6 && added < 12 && !src.done; round++) {
+          await src.more(want === 'clip' ? 6 : 3);
+          const list = fromPosts(src.posts.slice(cursor));
+          cursor = src.posts.length;
+          added += list.length;
+          if (tab === 'posts') grid.append(...list.map(cell));
+        }
+        shown += added;
+        const seen = src.seen != null ? src.seen : src.posts.length;
+        fill(status,
+          src.done
+            ? (shown ? 'No hay más.' : want === 'clip' ? 'No encontré GIF ni videos.' : 'No encontré imágenes.')
+            : want === 'clip' && src.count ? 'Revisé ' + fmt(seen) + ' de ' + fmt(src.count) + ' posts. Baja para ver más.' : 'Baja para ver más.'
+        );
+      } catch (e) {
+        fill(status, errText(e), ' ', h('button', { type: 'button', class: 'link-btn', onclick: () => loadMore() }, 'Reintentar'));
+      }
+      loading = false;
+      // Si todavía no se llena la pantalla, se sigue pidiendo.
+      if (tab === 'posts' && !src.done && io && sentinel.getBoundingClientRect().top < window.innerHeight + 200) setTimeout(loadMore, 0);
     }
-    return out;
+    const showPosts = () => {
+      fill(grid, ...fromPosts(src.posts).map(cell));
+      fill(status);
+      loadMore();
+    };
+    const showLiked = () => {
+      const liked = (user ? likedFrom(name) : likedWithTag(name)).map((x) => x.post);
+      const list = fromPosts(liked);
+      fill(grid, ...list.map(cell));
+      fill(status, list.length ? '' : user ? 'Todavía no le diste me gusta a imágenes de @' + name + '.' : want === 'clip' ? 'Todavía no le diste me gusta a GIF de #' + name + '.' : 'Todavía no le diste me gusta a imágenes de #' + name + '.');
+    };
+    const tabs = h('div', { class: 'ptabs picktabs', role: 'tablist' });
+    const drawTabs = () =>
+      fill(tabs,
+        [['posts', 'grid', 'Sus posts'], ['liked', 'heart', 'Tus me gusta']].map(([id, ic, label]) =>
+          h('button', { type: 'button', class: 'ptab' + (tab === id ? ' on' : ''), role: 'tab', 'aria-selected': String(tab === id), onclick: () => {
+            if (tab === id) return;
+            tab = id;
+            drawTabs();
+            if (id === 'posts') showPosts();
+            else showLiked();
+          } }, icon(ic, 18), label)
+        )
+      );
+    drawTabs();
+    // Se llama cuando el menú ya está en pantalla (el desplazamiento es el del menú).
+    const start = () => {
+      const pan = body.closest('.sheet-pan');
+      io = new IntersectionObserver((es) => es.some((e) => e.isIntersecting) && loadMore(), { root: pan, rootMargin: '0px 0px 600px 0px' });
+      io.observe(sentinel);
+      // Respaldo del observador: al acercarse al final del menú.
+      if (pan) pan.addEventListener('scroll', () => pan.scrollTop + pan.clientHeight > pan.scrollHeight - 600 && loadMore(), { passive: true });
+      showPosts();
+    };
+    return { tabs, body, start };
   }
-  async function tagClips(name) {
-    const first = await RS.fetchPage(name, 'ALL', null);
-    const pages = [];
-    for (let pg = first.lastPage - 1; pg >= Math.max(1, first.lastPage - 5); pg--) pages.push(pg);
-    const rest = await Promise.all(pages.map((pg) => RS.fetchPage(name, 'ALL', pg).catch(() => ({ posts: [] }))));
-    const out = [];
-    for (const p of first.posts.concat(...rest.map((r) => r.posts))) {
-      if (RS.isJunk(p)) continue;
-      for (const m of p.media) if (m.kind === 'video' && out.length < 30) out.push({ m, post: p.id });
-    }
-    return out;
-  }
+
   // ask: se abre al empezar a seguirlo («¿Le pones una foto?», con «Ahora no»).
   function openPicSheet(kind, name, ask) {
     const own = picOf(kind, name);
     const user = kind === 'user';
+    const want = picWant(kind, name);
     const who = (user ? '@' : '#') + name;
-    const grid = h('div', { class: 'pickgrid' }, h('div', { class: 'status' }, icon('spinner', 20, 'spin'), user ? 'Buscando imágenes…' : 'Buscando GIF y videos…'));
-    openSheet('Foto de ' + who,
+    const what = want === 'clip' ? 'un GIF' : 'una foto';
+    const picker = picPicker(kind, name, want, (m, post) => {
+      closeSheet();
+      openCropper(kind, name, m, post);
+    });
+    openSheet((want === 'clip' ? 'GIF de ' : 'Foto de ') + who,
       h('div', { class: 'sheet-title sheet-title-row' },
-        h('span', { class: 'grow', text: ask ? (user ? '¿Le pones una foto a ' + who + '?' : '¿Le pones un GIF a ' + who + '?') : (user ? 'Foto de ' : 'GIF de ') + who }),
+        h('span', { class: 'grow', text: ask ? '¿Le pones ' + what + ' a ' + who + '?' : (want === 'clip' ? 'GIF de ' : 'Foto de ') + who }),
         ask ? h('button', { type: 'button', class: 'link-btn', onclick: () => closeSheet() }, 'Ahora no') : null
       ),
-      h('span', { class: 'sheet-label', text: (user ? 'Elige una imagen de sus posts' : 'Elige un GIF o video de sus posts') + (ask ? '. También puedes hacerlo después, desde el ⋯ de Seguidos.' : '') }),
-      grid,
-      !ask && own ? sheetRow('x', 'Quitar ' + (user ? 'la foto' : 'el GIF'), user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null
+      h('span', { class: 'sheet-label', text: (want === 'clip' ? 'Elige un GIF o video de sus posts' : 'Elige una imagen de sus posts') + (ask ? '. También puedes hacerlo después, desde el ⋯ de Seguidos.' : '') }),
+      !ask && own ? sheetRow('x', 'Quitar ' + (want === 'clip' ? 'el GIF' : 'la foto'), user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null,
+      picker.tabs,
+      picker.body
     );
-    (user ? userImages(name) : tagClips(name))
-      .then((list) => {
-        fill(grid,
-          list.length
-            ? list.map(({ m, post }) =>
-                h('button', { type: 'button', class: 'pick', 'aria-label': 'Usar esta', onclick: () => {
-                  closeSheet();
-                  openCropper(kind, name, m, post);
-                } },
-                h('img', { src: m.kind === 'image' ? RS.imageUrl(m) : RS.posterUrl(m), alt: '', draggable: 'false' }),
-                m.kind === 'video' ? h('span', { class: 'tb', text: 'GIF' }) : null)
-              )
-            : h('p', { class: 'foot-note', text: user ? 'No encontré imágenes en sus últimos posts.' : 'No encontré GIF ni videos en sus últimos posts.' })
-        );
-      })
-      .catch((e) => fill(grid, h('p', { class: 'foot-note', text: errText(e) })));
+    picker.start();
   }
 
   // ---- Recortar: la imagen (o el video) con un círculo encima. Se arrastra con un dedo y se acerca con
@@ -1359,21 +1431,30 @@
     const box = h('div', { class: 'crop-box', style: { width: B + 'px', height: B + 'px' } }, media,
       h('span', { class: 'crop-mask', style: { width: C + 'px', height: C + 'px', left: (B - C) / 2 + 'px', top: (B - C) / 2 + 'px' } })
     );
-    // El círculo tiene que quedar siempre lleno de imagen.
-    const zMin = () => Math.max(C / B, C / (B * st.r));
-    const zoom = h('input', { type: 'range', min: '1', max: '4', step: '0.01', value: '1', 'aria-label': 'Acercar' });
+    // Empieza con el círculo lleno (zCover) y se puede alejar hasta que entre todo (zFit: lo que sobra del
+    // círculo queda negro) o acercar hasta 4 veces.
+    const zCover = () => Math.max(C / B, C / (B * st.r));
+    const zFit = () => Math.min(C / B, C / (B * st.r));
+    const zoom = h('input', { type: 'range', min: '0', max: '1', step: '0.001', value: '0', 'aria-label': 'Alejar o acercar' });
+    let started = false;
     const layout = (reset) => {
-      if (reset) st.z = Math.max(st.z, zMin());
-      st.z = Math.min(Math.max(st.z, zMin()), zMin() * 4);
+      if (reset && !started) {
+        st.z = zCover();
+        started = true;
+      }
+      st.z = Math.min(Math.max(st.z, zFit()), zCover() * 4);
       const W = B * st.z;
       const H = W * st.r;
-      st.x = Math.max(-(W - C) / 2, Math.min((W - C) / 2, st.x));
-      st.y = Math.max(-(H - C) / 2, Math.min((H - C) / 2, st.y));
+      const mx = Math.abs(W - C) / 2;
+      const my = Math.abs(H - C) / 2;
+      st.x = Math.max(-mx, Math.min(mx, st.x));
+      st.y = Math.max(-my, Math.min(my, st.y));
       Object.assign(media.style, { width: W + 'px', height: H + 'px', left: (B - W) / 2 + st.x + 'px', top: (B - H) / 2 + st.y + 'px' });
-      zoom.value = String(st.z / zMin());
+      // La barra va en escala logarítmica: el medio queda cerca de «el círculo lleno».
+      zoom.value = String(Math.log(st.z / zFit()) / Math.log((zCover() * 4) / zFit()));
     };
     zoom.addEventListener('input', () => {
-      st.z = zMin() * Number(zoom.value);
+      st.z = zFit() * Math.pow((zCover() * 4) / zFit(), Number(zoom.value));
       layout();
     });
     // Un dedo arrastra; dos acercan o alejan.
@@ -1442,7 +1523,7 @@
       );
       persist('pics', 0);
       closeCropper();
-      toast(isVid ? 'Listo: #' + canon + ' tiene foto animada' : 'Listo: @' + canon + ' tiene tu foto');
+      toast(isVid ? 'Listo: #' + canon + ' tiene su GIF' : 'Listo: ' + (kind === 'user' ? '@' : '#') + canon + ' tiene tu foto');
       picsChanged();
     };
     const el = h('div', { class: 'cropper', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Recortar la foto' },
@@ -1455,7 +1536,7 @@
         box,
         h('label', { class: 'crop-row' }, icon('search', 18), zoom),
         isVid ? [h('label', { class: 'crop-row' }, icon('film', 18), startIn), h('div', { class: 'crop-row' }, timeTxt, lens)] : null,
-        h('p', { class: 'crop-hint', text: isVid ? 'Arrastra con un dedo, acerca con dos o con la barra. Elige desde dónde y cuántos segundos se repiten.' : 'Arrastra con un dedo y acerca con dos o con la barra.' })
+        h('p', { class: 'crop-hint', text: isVid ? 'Arrastra con un dedo; aleja o acerca con dos o con la barra (alejando entra el GIF entero). Elige desde dónde y cuántos segundos se repiten.' : 'Arrastra con un dedo; aleja o acerca con dos o con la barra.' })
       )
     );
     document.body.append(el);
@@ -3483,7 +3564,7 @@
   const picCache = new Map();
   function tagPic(name, cls, fallback, known, animate) {
     const own = picOf('tag', name);
-    if (own) return putPic(h('span', { class: cls }), own, animate);
+    if (own) return putPic(h('span', { class: cls }), own, animate && !tagProfileOf(name));
     const c = colorFor(name);
     const el = h('span', { class: cls, style: { background: c[0], color: c[1] } }, fallback);
     const show = (pic) => {
@@ -3839,7 +3920,9 @@
           const inMix = !!(fav && S.mix.sources[fav.name] && S.mix.sources[fav.name].on);
           openSheet('Más opciones de #' + canon,
             tagSheetHead(canon),
-            sheetRow('film', (picOf('tag', canon) ? 'Cambiar' : 'Poner') + ' el GIF o video', 'Un pedazo de un GIF o video de sus posts, como foto.', () => openPicSheet('tag', canon)),
+            prof
+              ? sheetRow('camera', (picOf('tag', canon) ? 'Cambiar' : 'Poner') + ' la foto', 'Una imagen de sus posts o de tus me gusta.', () => openPicSheet('tag', canon))
+              : sheetRow('film', (picOf('tag', canon) ? 'Cambiar' : 'Poner') + ' el GIF o video', 'Un pedazo de un GIF o video de sus posts, como foto.', () => openPicSheet('tag', canon)),
             fav && S.settings.randomTab
               ? h('div', { class: 'sheet-row' },
                   icon('shuffle', 22),

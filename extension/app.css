@@ -1267,3 +1267,9 @@ html:not(.show-scores) .card .head .rating { display: none; }
 .sheet-title-row { display: flex; align-items: center; gap: 8px; padding-right: 8px; }
 .sheet-title-row .link-btn { height: 36px; }
 .sheet-label { text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 600; }
+
+/* ---------- 1.7.1 ---------- */
+/* Elegir foto o GIF: pestañas «Sus posts» y «Tus me gusta», y la lista que se carga al bajar */
+.picktabs { margin: 2px 0 4px; }
+.pickstatus { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 16px 14px; font-size: 13px; color: var(--text-2); text-align: center; }
+.picksentinel { height: 1px; }
