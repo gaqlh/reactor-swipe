@@ -1065,46 +1065,75 @@
     return row;
   }
 
-  // Mantener presionado un hashtag medio segundo abre su menú (se ve una línea que se llena).
-  const HOLD_MS = 500;
-  function holdForMenu(el, tag) {
+  // ---- Mantener presionado: llama a onFire si el dedo se queda quieto `ms`. Con el dedo usa los eventos
+  // táctiles: en Android, al mantener una imagen el navegador cancela los de puntero para arrastrarla
+  // (por eso no se podía seleccionar en Me gusta). Con el mouse, los de puntero. Mientras se espera, el
+  // elemento lleva la clase `cls`; desplazar la página lo cancela, y el toque que termina una pulsación
+  // larga no cuenta como un toque normal.
+  let cancelHold = null;
+  document.addEventListener('scroll', () => cancelHold && cancelHold(), { capture: true, passive: true });
+  function longPress(el, ms, cls, onFire, canStart) {
     let timer = null;
     let x0 = 0;
     let y0 = 0;
+    let fired = false;
+    let swallowUntil = 0;
     const cancel = () => {
       clearTimeout(timer);
       timer = null;
-      el.classList.remove('holding');
+      el.classList.remove(cls);
+      if (cancelHold === cancel) cancelHold = null;
     };
-    el.addEventListener('pointerdown', (e) => {
-      if (e.button) return;
-      x0 = e.clientX;
-      y0 = e.clientY;
-      el.classList.add('holding');
+    const start = (x, y) => {
+      if (canStart && !canStart()) return;
+      cancel();
+      fired = false;
+      swallowUntil = 0;
+      x0 = x;
+      y0 = y;
+      el.classList.add(cls);
+      cancelHold = cancel;
       timer = setTimeout(() => {
-        timer = null;
-        el.classList.remove('holding');
-        el.dataset.held = '1';
+        cancel();
+        fired = true;
         buzz(30);
-        openTagSheet(tag);
-      }, HOLD_MS);
-    });
-    el.addEventListener('pointermove', (e) => {
-      if (timer && Math.hypot(e.clientX - x0, e.clientY - y0) > 10) cancel();
-    });
-    for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) el.addEventListener(ev, cancel);
+        onFire();
+      }, ms);
+    };
+    const move = (x, y) => {
+      if (timer && Math.hypot(x - x0, y - y0) > 12) cancel();
+    };
+    const end = () => {
+      cancel();
+      if (fired) swallowUntil = Date.now() + 600;
+      fired = false;
+    };
+    el.addEventListener('touchstart', (e) => (e.touches.length === 1 ? start(e.touches[0].clientX, e.touches[0].clientY) : cancel()), { passive: true });
+    el.addEventListener('touchmove', (e) => move(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
+    el.addEventListener('touchend', end);
+    el.addEventListener('touchcancel', end);
+    el.addEventListener('pointerdown', (e) => e.pointerType === 'mouse' && !e.button && start(e.clientX, e.clientY));
+    el.addEventListener('pointermove', (e) => e.pointerType === 'mouse' && move(e.clientX, e.clientY));
+    for (const ev of ['pointerup', 'pointerleave']) el.addEventListener(ev, (e) => e.pointerType === 'mouse' && end());
     el.addEventListener(
       'click',
       (e) => {
-        if (!el.dataset.held) return;
-        delete el.dataset.held;
+        if (Date.now() > swallowUntil) return;
+        swallowUntil = 0;
         e.preventDefault();
         e.stopImmediatePropagation();
       },
       true
     );
     el.addEventListener('contextmenu', (e) => e.preventDefault());
+    el.addEventListener('dragstart', (e) => e.preventDefault());
     return el;
+  }
+
+  // Mantener presionado un hashtag medio segundo abre su menú (se ve una línea que se llena).
+  const HOLD_MS = 500;
+  function holdForMenu(el, tag) {
+    return longPress(el, HOLD_MS, 'holding', () => openTagSheet(tag));
   }
 
   // ---- Menú que sube desde abajo. Tocar fuera, «atrás» o Esc lo cierra.
@@ -1413,14 +1442,14 @@
 
   function thumbMedia(m) {
     if (!m) return null;
-    if (m.kind === 'image') return h('img', { src: RS.imageUrl(m), alt: '', loading: 'lazy', decoding: 'async' });
+    if (m.kind === 'image') return h('img', { src: RS.imageUrl(m), alt: '', loading: 'lazy', decoding: 'async', draggable: 'false' });
     if (m.kind === 'video') {
       // Imagen fija del GIF; si no existe, el primer cuadro del video.
-      const img = h('img', { src: RS.posterUrl(m), alt: '', loading: 'lazy', decoding: 'async' });
+      const img = h('img', { src: RS.posterUrl(m), alt: '', loading: 'lazy', decoding: 'async', draggable: 'false' });
       img.addEventListener('error', () => img.replaceWith(makeVideo(m, true)), { once: true });
       return img;
     }
-    if (m.provider === 'YOUTUBE') return h('img', { src: ytThumb(m), alt: '', loading: 'lazy' });
+    if (m.provider === 'YOUTUBE') return h('img', { src: ytThumb(m), alt: '', loading: 'lazy', draggable: 'false' });
     return null;
   }
 
@@ -1464,42 +1493,7 @@
   // (con Deshacer). La ✕, «atrás» o cambiar de página dejan de seleccionar.
   const SELECT_HOLD_MS = 2000;
   function holdToSelect(cell, feed, id) {
-    let timer = null;
-    let x0 = 0;
-    let y0 = 0;
-    const cancel = () => {
-      clearTimeout(timer);
-      timer = null;
-      cell.classList.remove('pressing');
-    };
-    cell.addEventListener('pointerdown', (e) => {
-      if (e.button || feed.sel) return;
-      x0 = e.clientX;
-      y0 = e.clientY;
-      cell.classList.add('pressing');
-      timer = setTimeout(() => {
-        timer = null;
-        cell.classList.remove('pressing');
-        cell.dataset.held = '1';
-        buzz(30);
-        startSelect(feed, id);
-      }, SELECT_HOLD_MS);
-    });
-    cell.addEventListener('pointermove', (e) => {
-      if (timer && Math.hypot(e.clientX - x0, e.clientY - y0) > 10) cancel();
-    });
-    for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) cell.addEventListener(ev, cancel);
-    cell.addEventListener(
-      'click',
-      (e) => {
-        if (!cell.dataset.held) return;
-        delete cell.dataset.held;
-        e.preventDefault();
-        e.stopImmediatePropagation();
-      },
-      true
-    );
-    cell.addEventListener('contextmenu', (e) => e.preventDefault());
+    longPress(cell, SELECT_HOLD_MS, 'pressing', () => startSelect(feed, id), () => !feed.sel);
   }
   function startSelect(feed, id) {
     feed.sel = new Set();

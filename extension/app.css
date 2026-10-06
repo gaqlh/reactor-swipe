@@ -1199,7 +1199,7 @@ html:not(.show-scores) .card .head .rating { display: none; }
 .thumb img { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 .thumb.pressing::after { content: ''; position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 0 var(--accent); animation: press-ring 2s linear forwards; }
 @keyframes press-ring { to { box-shadow: inset 0 0 0 4px var(--accent); background: rgba(245, 165, 36, 0.18); } }
-.thumb .selmark { position: absolute; top: 6px; left: 6px; width: 24px; height: 24px; border-radius: 50%; border: 2px solid #fff; background: rgba(0, 0, 0, 0.35); color: transparent; display: none; align-items: center; justify-content: center; pointer-events: none; }
+.thumb .selmark { position: absolute; z-index: 2; top: 6px; left: 6px; width: 28px; height: 28px; border-radius: 50%; border: 2.5px solid #fff; background: rgba(0, 0, 0, 0.4); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6); color: transparent; display: none; align-items: center; justify-content: center; pointer-events: none; }
 .thumb .selmark .i { stroke-width: 3; }
 .selecting .thumb .selmark { display: flex; }
 .thumb.picked .selmark { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
@@ -1207,3 +1207,7 @@ html:not(.show-scores) .card .head .rating { display: none; }
 .thumb.picked::before { content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none; box-shadow: inset 0 0 0 3px var(--accent); }
 .pill.danger { background: var(--danger-soft); color: var(--danger-text); }
 .pill:disabled { opacity: 0.45; }
+
+/* ---------- 1.6.1 ---------- */
+/* Me gusta e Historial: las miniaturas no se arrastran (en Android eso cancelaba la pulsación larga) */
+.thumb img, .thumb video { -webkit-user-drag: none; }
