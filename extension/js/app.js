@@ -1761,11 +1761,12 @@
 
   // ================================================================ Tú (Seguidos y Favoritos juntos)
   //
-  // Como el perfil de Instagram: arriba tus números y, en círculos, lo que sigues («Ver todos» abre
-  // Seguidos); abajo, en cuadrícula, tus me gusta (con tus carpetas) y el historial.
+  // Como el perfil de Instagram: arriba tus números; abajo, en cuadrícula, tus me gusta (con tus
+  // carpetas) y el historial.
   // Arriba, cuatro números (lo pidió el usuario en la 1.8.0): cuentas seguidas (usuarios y hashtags que
   // sigues como cuenta), hashtags seguidos, me gusta e historial. Los dos primeros abren Seguidos; me gusta
-  // e historial cambian la cuadrícula de abajo, como sus pestañas (active: la que se ve).
+  // e historial cambian la cuadrícula de abajo, como sus pestañas (active: la que se ve). La fila de
+  // círculos con lo que sigues se quitó en la 1.8.3 (lo pidió el usuario).
   function meHeader(active) {
     const nTags = Object.keys(S.favorites).length;
     const nProf = Object.keys(S.following).length + Object.keys(S.tagProfiles).length;
@@ -1783,26 +1784,13 @@
             }
           : null
       }, h('b', { text: fmt(n) }), h('span', { text: n === 1 ? one : many }));
-    const circles = Object.values(S.following)
-      .map((u) => ({ at: u.addedAt || 0, el: () => h('a', { class: 'story', href: '#/user/' + enc(u.name) }, h('span', { class: 'ring plain' }, userPic(u.name, u.userId, 'disc')), h('span', { class: 'label', text: u.name })) }))
-      .concat(Object.values(S.tagProfiles).map((t) => ({ at: t.addedAt || 0, el: () => h('a', { class: 'story', href: '#/tag/' + enc(t.name) }, h('span', { class: 'ring plain' }, tagPic(t.name, 'disc', '#', t.pic)), h('span', { class: 'label', text: t.name })) })))
-      .concat(favList().map((f) => ({ at: f.addedAt || 0, el: () => h('a', { class: 'story', href: '#/tag/' + enc(f.name) }, h('span', { class: 'ring plain' }, tagPic(f.name, 'disc', '#')), h('span', { class: 'label', text: f.name })) })))
-      .sort((a, b) => b.at - a.at)
-      .slice(0, 20)
-      .map((x) => x.el());
     return h('section', { class: 'mehead' },
       h('div', { class: 'mestats' },
         stat(nProf, 'cuenta', 'cuentas', '#/following?tab=users'),
         stat(nTags, 'hashtag', 'hashtags', '#/following'),
         stat(nLikes, 'me gusta', 'me gusta', '#/likes', 'likes'),
         stat(nHist, 'historial', 'historial', '#/history', 'history')
-      ),
-      circles.length
-        ? [
-            h('div', { class: 'secline mesec' }, h('h2', { class: 'grow section-label', text: 'Siguiendo' }), h('a', { class: 'link-btn', href: '#/following' }, 'Ver todos')),
-            h('div', { class: 'stories mefollow' }, circles)
-          ]
-        : h('p', { class: 'foot-note', text: 'Aquí verás lo que sigues. Toca Seguir en un hashtag o al lado del nombre de quien publicó un post.' })
+      )
     );
   }
 
@@ -2530,7 +2518,7 @@
         // En una historia, un toque rápido en el centro también pausa una imagen (detiene la rayita).
         if (viewer.story) {
           s.append(h('span', { class: 'vw-paused', 'aria-hidden': 'true' }, icon('play', 40)));
-          onTaps(s, () => exitViewer(), (tap) => pauseTap(tap) && storyPause(s));
+          storyTaps(s, () => storyPause(s));
         } else onTaps(s, () => exitViewer());
       } else if (m.kind === 'video') {
         const vid = h('video', { src: RS.videoUrl(m), loop: true, playsinline: true, poster: RS.posterUrl(m), preload: 'auto' });
@@ -2548,10 +2536,13 @@
         // Un toque rápido en el centro pausa (o sigue); dos toques salen de la pantalla completa. Tocar
         // abajo muestra los botones de Android (ver viewerGestures) o, en horizontal, los controles.
         // Justo después de arrastrar para adelantar, no pausa.
-        onTaps(s, () => exitViewer(), (tap) => {
-          if (Date.now() - (vid._seekedAt || 0) < 700 || !pauseTap(tap)) return;
-          togglePause(vid, s);
-        });
+        if (viewer.story) storyTaps(s, () => togglePause(vid, s));
+        else {
+          onTaps(s, () => exitViewer(), (tap) => {
+            if (Date.now() - (vid._seekedAt || 0) < 700 || !pauseTap(tap)) return;
+            togglePause(vid, s);
+          });
+        }
       } else {
         s.append(embedLink(m, p));
       }
@@ -2574,7 +2565,8 @@
       media = h('div', { class: 'vw-media' }, slides[0]);
     } else {
       media = h('div', { class: 'vw-media text' }, h('p', { text: p.text || '' }));
-      onTaps(media, () => exitViewer());
+      if (viewer.story) storyTaps(media, () => storyPause(media));
+      else onTaps(media, () => exitViewer());
     }
 
     const liked = !!S.likes[p.id];
@@ -4020,14 +4012,16 @@
     const nSlides = track ? track.children.length : 1;
     const si = track ? Math.min(track._idx || 0, nSlides - 1) : 0;
     const key = page.dataset.id + ':' + si;
+    const slideEl = track ? track.children[si] : page.querySelector('.vw-slide');
+    const vid = slideEl ? slideEl.querySelector('video') : null;
     if (st.key !== key) {
       st.key = key;
       st.elapsed = 0;
       st.paused = false;
       st.moving = '';
+      // Volviste a un video que ya había terminado: empieza de nuevo (si no, pasaría al siguiente en el acto).
+      if (vid && vid.ended) vid.currentTime = 0;
     }
-    const slideEl = track ? track.children[si] : page.querySelector('.vw-slide');
-    const vid = slideEl ? slideEl.querySelector('video') : null;
     let r;
     if (vid && vid._real && !vid.error) {
       // Video con sonido: la rayita va con el video y pasa al siguiente cuando termina.
@@ -4051,16 +4045,7 @@
     }
   }
   function storyNext(v, page, track, si, nSlides) {
-    if (track && si < nSlides - 1) {
-      track.scrollTo({ left: (si + 1) * track.clientWidth, behavior: 'smooth' });
-      // Respaldo, por si el carrusel no avisa que se movió.
-      setTimeout(() => {
-        if (viewer !== v || (track._idx || 0) !== si) return;
-        track.scrollLeft = (si + 1) * track.clientWidth;
-        track._idx = si + 1;
-      }, 900);
-      return;
-    }
+    if (track && si < nSlides - 1) return storySlide(v, track, si, si + 1);
     const next = page.nextElementSibling;
     if (!next) return exitViewer();
     // Al pasar a otra historia, empieza en su primer post sin ver (de un salto, sin marcar los de en medio).
@@ -4073,14 +4058,60 @@
         }
       }
     }
+    storyGo(v, page, to, to === next);
+  }
+  // Al post anterior (1.8.3): la imagen anterior del carrusel, el post anterior o, en el primero de
+  // todos, el mismo desde el principio.
+  function storyPrev(v, page, track, si) {
+    v.story.elapsed = 0;
+    if (track && si > 0) return storySlide(v, track, si, si - 1);
+    const prev = page.previousElementSibling;
+    if (prev) return storyGo(v, page, prev, true);
+    page.querySelectorAll('video').forEach((x) => (x.currentTime = 0));
+  }
+  // Pasa a otro post (de a uno, deslizando; de un salto, sin marcar los de en medio como vistos).
+  function storyGo(v, page, to, smooth) {
     fillPage(to, 0);
-    v.scroller.scrollTo({ top: to.offsetTop, behavior: to === next ? 'smooth' : 'auto' });
+    v.scroller.scrollTo({ top: to.offsetTop, behavior: smooth ? 'smooth' : 'auto' });
     // Respaldo, por si el desplazamiento suave no ocurrió o no avisó: salta a ese post.
     setTimeout(() => {
       if (viewer !== v || v.current !== page) return;
       v.scroller.scrollTop = to.offsetTop;
       setCurrentPage(to, true);
     }, 900);
+  }
+  function storySlide(v, track, from, to) {
+    track.scrollTo({ left: to * track.clientWidth, behavior: 'smooth' });
+    // Respaldo, por si el carrusel no avisa que se movió.
+    setTimeout(() => {
+      if (viewer !== v || (track._idx || 0) !== from) return;
+      track.scrollLeft = to * track.clientWidth;
+      track._idx = to;
+    }, 900);
+  }
+  // Toques en una historia (1.8.3, como Instagram): a la izquierda (el primer tercio) vuelve al post
+  // anterior, a la derecha (el último tercio) pasa al siguiente y en el centro pausa. Sin esperar un
+  // segundo toque: en las historias dos toques no cierran (para eso están la ✕ y «atrás»). Abajo, en la
+  // app, el toque es para los botones de Android (viewerGestures).
+  function storyTaps(el, onPause) {
+    let downAt = 0;
+    el.addEventListener('pointerdown', () => (downAt = Date.now()), { passive: true });
+    el.addEventListener('click', (e) => {
+      const v = viewer;
+      if (!v || !v.story || !v.current || e.target.closest('button, a, input')) return;
+      const ms = Date.now() - downAt;
+      if (ms > 450 || (RS.android && e.clientY > window.innerHeight - bottomZone())) return;
+      const x = e.clientX / Math.max(1, window.innerWidth);
+      const page = v.current;
+      const track = page._track;
+      const nSlides = track ? track.children.length : 1;
+      const si = track ? Math.min(track._idx || 0, nSlides - 1) : 0;
+      if (x > 2 / 3) {
+        v.story.moving = v.story.key; // que el temporizador no lo pase otra vez
+        storyNext(v, page, track, si, nSlides);
+      } else if (x < 1 / 3) storyPrev(v, page, track, si);
+      else if (pauseTap({ y: e.clientY, ms })) onPause();
+    });
   }
   // Pausar una imagen de una historia (en los GIF y videos pausa el video, y la rayita lo sigue).
   function storyPause(slideEl) {

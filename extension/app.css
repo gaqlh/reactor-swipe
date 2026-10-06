@@ -1227,7 +1227,6 @@ html:not(.show-scores) .card .head .rating { display: none; }
 .mestat { display: flex; flex-direction: column; align-items: center; color: var(--text); }
 .mestat b { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .mestat span { font-size: 12.5px; color: var(--text-2); }
-.mesec { padding-top: 16px; padding-bottom: 4px; }
 .story .ring.plain { border-color: var(--line-2); }
 
 /* Tus carpetas en Me gusta */
