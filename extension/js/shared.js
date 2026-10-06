@@ -763,7 +763,8 @@
     // seekDrag / seekSpan: mantener el dedo y arrastrar a los lados adelanta el video; seekSpan = segundos al cruzar la pantalla.
     // selectHold: ms que hay que mantener una miniatura de Me gusta o Historial para seleccionar (Herramientas de debug).
     // randomTab: el botón Aleatorio en la barra de abajo (Ajustes › Funciones para el futuro; desde la 1.7.0 viene apagado).
-    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100, showDates: false, showScores: false, seekDrag: true, seekSpan: 60, selectHold: 500, randomTab: false },
+    // rowPic: tamaño en px de las fotos de las filas de Seguidos (Herramientas de debug; desde la 1.7.2).
+    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100, showDates: false, showScores: false, seekDrag: true, seekSpan: 60, selectHold: 500, randomTab: false, rowPic: 64 },
     news: { items: [], known: {}, unread: 0, lastCheck: 0 },
     dismissed: [],
     history: [], // posts vistos más de 10 s: [{ id, at, post }], el más nuevo primero
@@ -784,7 +785,8 @@
     // Fotos propias (desde la 1.7.0): 'user:nombre' | 'tag:nombre' (en minúsculas) -> { name, media, post, cx, cy, s, r,
     // start, len, at }. Es un recorte de un archivo de JoyReactor (no una copia): cx, cy = centro del círculo en
     // fracciones de la imagen, s = diámetro del círculo / ancho de la imagen, r = alto / ancho. En los hashtags es un
-    // GIF o video: se repite el pedazo que empieza en `start` y dura `len` segundos.
+    // GIF o video: se repite el pedazo que empieza en `start` y dura `len` segundos. Desde la 1.7.2, una foto puede salir
+    // de un GIF: `frame` = segundo en que queda quieto (sin `start` ni `len`).
     pics: {},
     // Tus carpetas de Me gusta (desde la 1.7.0): id -> { id, name, ids: [ids de posts], at }. Un post puede estar en varias.
     folders: {},

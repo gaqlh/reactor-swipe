@@ -251,6 +251,10 @@
   // La fecha de cada post y, en pantalla completa, la reputación y el rating se dibujan siempre y se
   // ocultan con CSS (así cambiar el ajuste no recarga nada).
   function applyDisplay() {
+    // Fotos de Seguidos: con las grandes, los botones pasan debajo del nombre (para que el nombre quepa).
+    const rowPic = Number(S.settings.rowPic) || 64;
+    document.documentElement.style.setProperty('--rowpic', rowPic + 'px');
+    document.documentElement.classList.toggle('rowpic-big', rowPic >= 84);
     document.documentElement.classList.toggle('show-dates', !!S.settings.showDates);
     document.documentElement.classList.toggle('show-scores', !!S.settings.showScores);
   }
@@ -1167,7 +1171,7 @@
       const v = e.target;
       if (e.isIntersecting) {
         if (!v.getAttribute('src')) v.src = v.dataset.src;
-        v.play().catch(() => {});
+        if (!v.dataset.still) v.play().catch(() => {});
       } else if (v.getAttribute('src')) {
         v.pause();
         v.removeAttribute('src');
@@ -1187,6 +1191,24 @@
   function picMedia(pic, animate) {
     const w = 100 / pic.s;
     const style = { position: 'absolute', width: w + '%', height: w * pic.r + '%', left: 50 - pic.cx * w + '%', top: 50 - pic.cy * w * pic.r + '%', maxWidth: 'none', objectFit: 'cover' };
+    // Una foto quieta sacada de un GIF: el video detenido en ese momento (`frame`).
+    if (pic.frame != null && pic.media.kind === 'video') {
+      const v = document.createElement('video');
+      v.className = 'cpicv';
+      v.dataset.still = '1';
+      v.muted = true;
+      v.playsInline = true;
+      v.setAttribute('muted', '');
+      v.setAttribute('playsinline', '');
+      // Se carga solo cuando está a la vista (picIO pone el src); sin reproducir, va al momento elegido.
+      v.preload = 'auto';
+      v.poster = RS.posterUrl(pic.media);
+      v.dataset.src = RS.videoUrl(pic.media);
+      Object.assign(v.style, style);
+      v.addEventListener('loadedmetadata', () => (v.currentTime = pic.frame));
+      picIO.observe(v);
+      return v;
+    }
     if (pic.len && animate) {
       const v = document.createElement('video');
       v.className = 'cpicv';
@@ -1228,7 +1250,7 @@
       const img = picWant(kind, name) === 'image';
       openSheet('Opciones de ' + (user ? '@' : '#') + name,
         h('div', { class: 'sheet-title', text: (user ? '@' : '#') + name }),
-        sheetRow(img ? 'camera' : 'film', (own ? 'Cambiar ' : 'Poner ') + (img ? 'la foto' : 'el GIF o video'), img ? 'Una imagen de sus posts o de tus me gusta, recortada como quieras.' : 'Un pedazo de un GIF o video de sus posts o de tus me gusta, que se repite.', () => openPicSheet(kind, name)),
+        sheetRow(img ? 'camera' : 'film', (own ? 'Cambiar ' : 'Poner ') + (img ? 'la foto' : 'el GIF o video'), img ? 'Una imagen (o un GIF, quieto) de sus posts o de tus me gusta, recortada como quieras.' : 'Un pedazo de un GIF o video de sus posts o de tus me gusta, que se repite.', () => openPicSheet(kind, name)),
         own ? sheetRow('x', 'Quitar ' + (img ? 'la foto' : 'el GIF'), user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null
       );
     } }, icon('dots', 22));
@@ -1252,24 +1274,72 @@
   }
 
   // Qué se le pone: a un usuario y a un hashtag que sigues como cuenta, una imagen; a un hashtag, un GIF o
-  // video (lo pidió el usuario en la 1.7.1).
+  // video (lo pidió el usuario en la 1.7.1). Para una imagen también se puede elegir un GIF (si no tiene
+  // fotos): queda quieto, en el momento que elijas (1.7.2).
   const picWant = (kind, name) => (kind === 'user' || tagProfileOf(name) ? 'image' : 'clip');
-  const mediaFits = (m, want) => (want === 'clip' ? m.kind === 'video' : m.kind === 'image');
+  const mediaFits = (m, want) => (want === 'clip' ? m.kind === 'video' : m.kind === 'image' || m.kind === 'video');
+  // Las candidatas que vas marcando, por cuenta, mientras la app está abierta.
+  const picCandidates = new Map();
 
   // Para elegir: «Sus posts» (todos, se van pidiendo al bajar; los GIF de un hashtag salen de lo mismo que
-  // usa su pestaña Videos y GIF) o «Tus me gusta» de esa cuenta.
-  function picPicker(kind, name, want, onPick) {
+  // usa su pestaña Videos y GIF) o «Tus me gusta» de esa cuenta. Tocar una la marca como candidata (con
+  // una bolita); en «Elegidas» quedan solo las marcadas y ahí se toca la definitiva. Con una sola marcada,
+  // «Usar esta» va directo a recortarla.
+  function picPicker(kind, name, want, onPick, first) {
     const user = kind === 'user';
+    const key = picKey(kind, name);
+    const chosen = picCandidates.get(key) || new Map();
+    picCandidates.set(key, chosen);
     const grid = h('div', { class: 'pickgrid' });
     const status = h('div', { class: 'pickstatus' });
     const sentinel = h('div', { class: 'picksentinel' });
-    const body = h('div', {}, grid, status, sentinel);
+    const bar = h('div', { class: 'pickbar' });
+    // Para una imagen, las imágenes arriba y los GIF (que quedan quietos) en su propio grupo, debajo.
+    const gifGrid = h('div', { class: 'pickgrid' });
+    const imgLab = h('span', { class: 'sheet-label', text: 'Imágenes', hidden: true });
+    const gifLab = h('span', { class: 'sheet-label', text: 'GIF · quedan como una imagen quieta', hidden: true });
+    const body = h('div', {}, imgLab, grid, gifLab, gifGrid, status, sentinel);
+    const put = (list) => {
+      for (const x of list) (want === 'image' && x.m.kind === 'video' ? gifGrid : grid).append(cell(x));
+      gifLab.hidden = !gifGrid.children.length;
+      imgLab.hidden = gifLab.hidden || !grid.children.length;
+    };
+    const clear = () => {
+      fill(grid);
+      fill(gifGrid);
+      imgLab.hidden = gifLab.hidden = true;
+    };
     let tab = 'posts';
     let io = null;
-    const cell = ({ m, post }) =>
-      h('button', { type: 'button', class: 'pick', 'aria-label': 'Usar esta', onclick: () => onPick(m, post) },
-        h('img', { src: m.kind === 'image' ? RS.imageUrl(m) : RS.posterUrl(m), alt: '', draggable: 'false' }),
-        m.kind === 'video' ? h('span', { class: 'tb', text: 'GIF' }) : null
+    const mid = (x) => String(x.m.id);
+    const cell = (x) => {
+      const b = h('button', { type: 'button', class: 'pick' + (chosen.has(mid(x)) ? ' picked' : ''), 'aria-pressed': String(chosen.has(mid(x))), 'aria-label': 'Marcar como candidata', onclick: () => {
+        if (chosen.has(mid(x))) chosen.delete(mid(x));
+        else chosen.set(mid(x), x);
+        const on = chosen.has(mid(x));
+        b.classList.toggle('picked', on);
+        b.setAttribute('aria-pressed', String(on));
+        drawTabs();
+        drawBar();
+      } },
+        h('img', { src: x.m.kind === 'image' ? RS.imageUrl(x.m) : RS.posterUrl(x.m), alt: '', draggable: 'false' }),
+        x.m.kind === 'video' ? h('span', { class: 'tb', text: 'GIF' }) : null,
+        h('span', { class: 'selmark', 'aria-hidden': 'true' }, icon('check', 16))
+      );
+      return b;
+    };
+    // En «Elegidas», más grandes: tocar una la recorta; la ✕ la desmarca.
+    const finalCell = (x) =>
+      h('div', { class: 'pickfinal' },
+        h('button', { type: 'button', class: 'pick big', 'aria-label': 'Usar esta', onclick: () => onPick(x.m, x.post) },
+          h('img', { src: x.m.kind === 'image' ? RS.imageUrl(x.m) : RS.posterUrl(x.m), alt: '', draggable: 'false' }),
+          x.m.kind === 'video' ? h('span', { class: 'tb', text: 'GIF' }) : null
+        ),
+        h('button', { type: 'button', class: 'pickx', 'aria-label': 'Desmarcar', onclick: () => {
+          chosen.delete(mid(x));
+          drawTabs();
+          showChosen();
+        } }, icon('x', 16))
       );
     const fromPosts = (posts) => {
       const out = [];
@@ -1299,13 +1369,13 @@
           const list = fromPosts(src.posts.slice(cursor));
           cursor = src.posts.length;
           added += list.length;
-          if (tab === 'posts') grid.append(...list.map(cell));
+          if (tab === 'posts') put(list);
         }
         shown += added;
         const seen = src.seen != null ? src.seen : src.posts.length;
         fill(status,
           src.done
-            ? (shown ? 'No hay más.' : want === 'clip' ? 'No encontré GIF ni videos.' : 'No encontré imágenes.')
+            ? (shown ? 'No hay más.' : want === 'clip' ? 'No encontré GIF ni videos.' : 'No encontré imágenes ni GIF.')
             : want === 'clip' && src.count ? 'Revisé ' + fmt(seen) + ' de ' + fmt(src.count) + ' posts. Baja para ver más.' : 'Baja para ver más.'
         );
       } catch (e) {
@@ -1316,30 +1386,60 @@
       if (tab === 'posts' && !src.done && io && sentinel.getBoundingClientRect().top < window.innerHeight + 200) setTimeout(loadMore, 0);
     }
     const showPosts = () => {
-      fill(grid, ...fromPosts(src.posts).map(cell));
+      grid.className = 'pickgrid';
+      clear();
+      put(fromPosts(src.posts));
       fill(status);
       loadMore();
     };
     const showLiked = () => {
+      grid.className = 'pickgrid';
       const liked = (user ? likedFrom(name) : likedWithTag(name)).map((x) => x.post);
       const list = fromPosts(liked);
-      fill(grid, ...list.map(cell));
-      fill(status, list.length ? '' : user ? 'Todavía no le diste me gusta a imágenes de @' + name + '.' : want === 'clip' ? 'Todavía no le diste me gusta a GIF de #' + name + '.' : 'Todavía no le diste me gusta a imágenes de #' + name + '.');
+      clear();
+      put(list);
+      fill(status, list.length ? '' : 'Todavía no le diste me gusta a ' + (want === 'clip' ? 'GIF' : 'imágenes') + ' de ' + (user ? '@' : '#') + name + '.');
+    };
+    function showChosen() {
+      grid.className = 'pickgrid two';
+      const list = Array.from(chosen.values());
+      clear();
+      fill(grid, ...list.map(finalCell));
+      fill(status, list.length ? 'Toca la definitiva para recortarla.' : 'Todavía no marcaste ninguna. En «Sus posts» o «Tus me gusta», toca las que te gusten.');
+    }
+    const go = (id) => {
+      tab = id;
+      drawTabs();
+      drawBar();
+      if (id === 'posts') showPosts();
+      else if (id === 'liked') showLiked();
+      else showChosen();
     };
     const tabs = h('div', { class: 'ptabs picktabs', role: 'tablist' });
-    const drawTabs = () =>
+    function drawTabs() {
       fill(tabs,
-        [['posts', 'grid', 'Sus posts'], ['liked', 'heart', 'Tus me gusta']].map(([id, ic, label]) =>
-          h('button', { type: 'button', class: 'ptab' + (tab === id ? ' on' : ''), role: 'tab', 'aria-selected': String(tab === id), onclick: () => {
-            if (tab === id) return;
-            tab = id;
-            drawTabs();
-            if (id === 'posts') showPosts();
-            else showLiked();
-          } }, icon(ic, 18), label)
+        [['posts', 'grid', 'Sus posts'], ['liked', 'heart', 'Tus me gusta'], ['chosen', 'check', 'Elegidas' + (chosen.size ? ' · ' + chosen.size : '')]].map(([id, ic, label]) =>
+          h('button', { type: 'button', class: 'ptab' + (tab === id ? ' on' : ''), role: 'tab', 'aria-selected': String(tab === id), onclick: () => tab !== id && go(id) }, icon(ic, 18), label)
         )
       );
+    }
+    // Abajo, mientras hay marcadas: con una, «Usar esta»; con varias, «Comparar».
+    function drawBar() {
+      const n = chosen.size;
+      bar.hidden = !n || tab === 'chosen';
+      if (bar.hidden) return fill(bar);
+      fill(bar,
+        h('span', { class: 'grow', text: n === 1 ? '1 marcada' : n + ' marcadas' }),
+        n === 1
+          ? h('button', { type: 'button', class: 'btn', onclick: () => {
+              const x = chosen.values().next().value;
+              onPick(x.m, x.post);
+            } }, 'Usar esta')
+          : h('button', { type: 'button', class: 'btn', onclick: () => go('chosen') }, 'Comparar ' + n)
+      );
+    }
     drawTabs();
+    drawBar();
     // Se llama cuando el menú ya está en pantalla (el desplazamiento es el del menú).
     const start = () => {
       const pan = body.closest('.sheet-pan');
@@ -1347,13 +1447,15 @@
       io.observe(sentinel);
       // Respaldo del observador: al acercarse al final del menú.
       if (pan) pan.addEventListener('scroll', () => pan.scrollTop + pan.clientHeight > pan.scrollHeight - 600 && loadMore(), { passive: true });
-      showPosts();
+      if (first === 'chosen' && chosen.size) go('chosen');
+      else showPosts();
     };
-    return { tabs, body, start };
+    return { tabs, body, bar, start };
   }
 
   // ask: se abre al empezar a seguirlo («¿Le pones una foto?», con «Ahora no»).
-  function openPicSheet(kind, name, ask) {
+  // first: 'chosen' abre en «Elegidas» (al cancelar el recorte se vuelve aquí, con las marcadas).
+  function openPicSheet(kind, name, ask, first) {
     const own = picOf(kind, name);
     const user = kind === 'user';
     const want = picWant(kind, name);
@@ -1361,17 +1463,18 @@
     const what = want === 'clip' ? 'un GIF' : 'una foto';
     const picker = picPicker(kind, name, want, (m, post) => {
       closeSheet();
-      openCropper(kind, name, m, post);
-    });
+      openCropper(kind, name, m, post, want, () => openPicSheet(kind, name, ask, (picCandidates.get(picKey(kind, name)) || new Map()).size > 1 ? 'chosen' : null));
+    }, first);
     openSheet((want === 'clip' ? 'GIF de ' : 'Foto de ') + who,
       h('div', { class: 'sheet-title sheet-title-row' },
         h('span', { class: 'grow', text: ask ? '¿Le pones ' + what + ' a ' + who + '?' : (want === 'clip' ? 'GIF de ' : 'Foto de ') + who }),
         ask ? h('button', { type: 'button', class: 'link-btn', onclick: () => closeSheet() }, 'Ahora no') : null
       ),
-      h('span', { class: 'sheet-label', text: (want === 'clip' ? 'Elige un GIF o video de sus posts' : 'Elige una imagen de sus posts') + (ask ? '. También puedes hacerlo después, desde el ⋯ de Seguidos.' : '') }),
+      h('span', { class: 'sheet-label', text: (want === 'clip' ? 'Toca los GIF que te gusten y después elige el definitivo' : 'Toca las imágenes que te gusten (o un GIF, que queda quieto) y después elige la definitiva') + (ask ? '. También puedes hacerlo después, desde el ⋯ de Seguidos.' : '.') }),
       !ask && own ? sheetRow('x', 'Quitar ' + (want === 'clip' ? 'el GIF' : 'la foto'), user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null,
       picker.tabs,
-      picker.body
+      picker.body,
+      picker.bar
     );
     picker.start();
   }
@@ -1392,9 +1495,18 @@
     document.body.classList.remove('noscroll');
     return true;
   }
-  function openCropper(kind, name, m, postId) {
+  // Cancelar (✕ o «atrás»): vuelve a elegir.
+  function cancelCropper() {
+    const c = cropper;
+    if (!closeCropper()) return false;
+    if (c.onCancel) c.onCancel();
+    return true;
+  }
+  // want: 'clip' (un pedazo que se repite) o 'image' (una imagen; si es un GIF, el momento elegido, quieto).
+  function openCropper(kind, name, m, postId, want, onCancel) {
     closeCropper();
     const isVid = m.kind === 'video';
+    const still = isVid && want === 'image';
     const B = Math.min(window.innerWidth - 32, 420); // lado del cuadro
     const C = Math.round(B * 0.8); // diámetro del círculo
     const st = { x: 0, y: 0, z: 1, r: m.w && m.h ? m.h / m.w : 1, start: 0, len: 2, dur: 0 };
@@ -1405,7 +1517,8 @@
       media.playsInline = true;
       media.setAttribute('muted', '');
       media.setAttribute('playsinline', '');
-      media.autoplay = true;
+      media.autoplay = !still;
+      media.preload = 'auto';
       media.src = RS.videoUrl(m);
       media.addEventListener('loadedmetadata', () => {
         st.r = media.videoHeight && media.videoWidth ? media.videoHeight / media.videoWidth : st.r;
@@ -1414,12 +1527,15 @@
         drawTime();
       });
       media.addEventListener('timeupdate', () => {
-        if (media.currentTime >= st.start + st.len || media.currentTime < st.start - 0.5) media.currentTime = st.start;
+        if (!still && (media.currentTime >= st.start + st.len || media.currentTime < st.start - 0.5)) media.currentTime = st.start;
       });
       media.addEventListener('ended', () => {
+        if (still) return;
         media.currentTime = st.start;
         media.play().catch(() => {});
       });
+      // Respaldo del autoplay (a veces no arranca solo).
+      if (!still) media.addEventListener('canplay', () => media.paused && media.play().catch(() => {}), { once: true });
     } else {
       media = h('img', { src: RS.imageUrl(m), alt: '', draggable: 'false' });
       media.addEventListener('load', () => {
@@ -1491,20 +1607,21 @@
     box.addEventListener('pointerup', lift);
     box.addEventListener('pointercancel', lift);
 
-    // Videos: desde dónde y cuántos segundos.
-    const startIn = h('input', { type: 'range', min: '0', max: '0', step: '0.1', value: '0', 'aria-label': 'Desde dónde' });
+    // Videos: desde dónde y cuántos segundos (o, para una foto, en qué momento).
+    const startIn = h('input', { type: 'range', min: '0', max: '0', step: '0.05', value: '0', 'aria-label': still ? 'Momento' : 'Desde dónde' });
     const timeTxt = h('span', { class: 'crop-time' });
     const drawTime = () => {
-      startIn.max = String(Math.max(0, st.dur - st.len));
+      startIn.max = String(Math.max(0, still ? st.dur - 0.05 : st.dur - st.len));
       startIn.value = String(st.start);
-      timeTxt.textContent = 'Desde ' + st.start.toFixed(1).replace('.', ',') + ' s · ' + st.len + ' s';
+      timeTxt.textContent = still ? 'Momento: ' + st.start.toFixed(1).replace('.', ',') + ' s' : 'Desde ' + st.start.toFixed(1).replace('.', ',') + ' s · ' + st.len + ' s';
     };
     startIn.addEventListener('input', () => {
       st.start = Number(startIn.value);
       media.currentTime = st.start;
       drawTime();
     });
-    const lens = isVid
+    if (still) media.addEventListener('loadedmetadata', () => media.pause());
+    const lens = isVid && !still
       ? seg([[1, '1 s'], [2, '2 s'], [3, '3 s']], st.len, (v) => {
           st.len = v;
           st.start = Math.min(st.start, Math.max(0, st.dur - v));
@@ -1519,16 +1636,18 @@
       const canon = kind === 'tag' ? (favOf(name) || tagProfileOf(name) || { name }).name : name;
       S.pics[picKey(kind, canon)] = Object.assign(
         { name: canon, kind, media: { id: m.id, ext: m.ext, kind: m.kind }, post: postId, cx: 0.5 - st.x / W, cy: 0.5 - st.y / H, s: C / W, r: st.r, at: Date.now() },
-        isVid ? { start: st.start, len: st.len } : {}
+        still ? { frame: st.start } : isVid ? { start: st.start, len: st.len } : {}
       );
       persist('pics', 0);
+      // Ya está la definitiva: las demás marcadas se descartan.
+      picCandidates.delete(picKey(kind, name));
       closeCropper();
-      toast(isVid ? 'Listo: #' + canon + ' tiene su GIF' : 'Listo: ' + (kind === 'user' ? '@' : '#') + canon + ' tiene tu foto');
+      toast(isVid && !still ? 'Listo: #' + canon + ' tiene su GIF' : 'Listo: ' + (kind === 'user' ? '@' : '#') + canon + ' tiene tu foto');
       picsChanged();
     };
     const el = h('div', { class: 'cropper', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Recortar la foto' },
       h('header', { class: 'top' },
-        h('button', { class: 'ib', 'aria-label': 'Cancelar', onclick: () => closeCropper() }, icon('x', 24)),
+        h('button', { class: 'ib', 'aria-label': 'Cancelar', onclick: () => cancelCropper() }, icon('x', 24)),
         h('h1', { text: 'Recortar' }),
         h('button', { class: 'pill primary', onclick: save }, 'Guardar')
       ),
@@ -1536,12 +1655,12 @@
         box,
         h('label', { class: 'crop-row' }, icon('search', 18), zoom),
         isVid ? [h('label', { class: 'crop-row' }, icon('film', 18), startIn), h('div', { class: 'crop-row' }, timeTxt, lens)] : null,
-        h('p', { class: 'crop-hint', text: isVid ? 'Arrastra con un dedo; aleja o acerca con dos o con la barra (alejando entra el GIF entero). Elige desde dónde y cuántos segundos se repiten.' : 'Arrastra con un dedo; aleja o acerca con dos o con la barra.' })
+        h('p', { class: 'crop-hint', text: still ? 'Elige el momento del GIF con la segunda barra: queda como una imagen quieta. Arrastra con un dedo; aleja o acerca con dos o con la primera barra.' : isVid ? 'Arrastra con un dedo; aleja o acerca con dos o con la barra (alejando entra el GIF entero). Elige desde dónde y cuántos segundos se repiten.' : 'Arrastra con un dedo; aleja o acerca con dos o con la barra.' })
       )
     );
     document.body.append(el);
     document.body.classList.add('noscroll');
-    cropper = { el };
+    cropper = { el, onCancel };
     layout(true);
     if (isVid) drawTime();
   }
@@ -3921,7 +4040,7 @@
           openSheet('Más opciones de #' + canon,
             tagSheetHead(canon),
             prof
-              ? sheetRow('camera', (picOf('tag', canon) ? 'Cambiar' : 'Poner') + ' la foto', 'Una imagen de sus posts o de tus me gusta.', () => openPicSheet('tag', canon))
+              ? sheetRow('camera', (picOf('tag', canon) ? 'Cambiar' : 'Poner') + ' la foto', 'Una imagen (o un GIF, quieto) de sus posts o de tus me gusta.', () => openPicSheet('tag', canon))
               : sheetRow('film', (picOf('tag', canon) ? 'Cambiar' : 'Poner') + ' el GIF o video', 'Un pedazo de un GIF o video de sus posts, como foto.', () => openPicSheet('tag', canon)),
             fav && S.settings.randomTab
               ? h('div', { class: 'sheet-row' },
@@ -4802,7 +4921,7 @@
 
   function routeFollowing(q) {
     if (q.get('tab') === 'users') return routeFollowingUsers();
-    const lists = h('div');
+    const lists = h('div', { class: 'follow-list' });
     const tabsEl = h('div');
     const sb = searchBox('Buscar hashtag o categoría para seguir', false, () => drawLists());
 
@@ -4874,7 +4993,7 @@
 
   // Seguidos › Perfiles: los usuarios que sigues y los hashtags que sigues como cuenta, lo último primero.
   function routeFollowingUsers() {
-    const listEl = h('div');
+    const listEl = h('div', { class: 'follow-list' });
     const tabsEl = h('div');
     const tagRow = (x) =>
       h('div', { class: 'result' },
@@ -5862,7 +5981,7 @@
         })
       ),
       group('Herramientas de debug',
-        navLine('sliders', 'Herramientas de debug', 'Tiempo para seleccionar, fecha de los posts y árbol de hashtags.', '#/debug')
+        navLine('sliders', 'Herramientas de debug', 'Tiempo para seleccionar, tamaño de las fotos de Seguidos, fecha de los posts y árbol de hashtags.', '#/debug')
       ),
       group('Respaldo y versión',
         h('div', { class: 'field' },
@@ -5929,6 +6048,13 @@
         segField('Tiempo para seleccionar varios', 'Cuánto hay que mantener presionada una miniatura de Me gusta o Historial para empezar a seleccionar.', [[300, '0,3 s'], [500, '0,5 s'], [1000, '1 s'], [2000, '2 s']], Number(st.selectHold) || 500, (v) => {
           st.selectHold = v;
           save();
+        })
+      ),
+      setGroup('Seguidos',
+        segField('Tamaño de las fotos', 'Lo grandes que se ven las fotos y los GIF de los perfiles y hashtags que sigues.', [[44, 'Chica'], [64, 'Mediana'], [84, 'Grande'], [110, 'Muy grande']], Number(st.rowPic) || 64, (v) => {
+          st.rowPic = v;
+          save();
+          applyDisplay();
         })
       ),
       setGroup('Posts',
@@ -6424,7 +6550,7 @@
     // 3) vuelve a las miniaturas si abriste un post desde ahí, 4) vuelve a la página anterior, 5) desde
     // otra sección vuelve a Inicio, 6) desde Inicio sale de la app.
     handleBack() {
-      if (closeCropper()) return 'handled';
+      if (cancelCropper()) return 'handled';
       if (closeSheet()) return 'handled';
       if (current && current.feed && endSelect(current.feed)) return 'handled';
       if (viewer) {
