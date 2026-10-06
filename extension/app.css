@@ -1347,11 +1347,11 @@ html:not(.show-scores) .card .head .rating { display: none; }
 /* Intro al abrir: mosaico de tus me gusta detrás del logo */
 #intro { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; overflow: hidden; background: var(--bg); transition: opacity 0.3s ease; }
 #intro.out { opacity: 0; pointer-events: none; }
-.in-wall { position: absolute; inset: -12%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: center; gap: 6px; transform: rotate(-8deg) scale(1.1); animation: inWall 1.5s ease-in-out forwards; }
-.in-wall i { aspect-ratio: 3 / 4; border-radius: 10px; background: linear-gradient(150deg, var(--surface-2), var(--accent-soft)) center / cover; opacity: 0; animation: inTile 0.45s var(--d) ease-out forwards; }
+.in-wall { position: absolute; inset: -12%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: center; gap: 6px; transform: rotate(-8deg) scale(1.1); animation: inWall calc(1.5s * var(--k, 1)) ease-in-out forwards; }
+.in-wall i { aspect-ratio: 3 / 4; border-radius: 10px; background: linear-gradient(150deg, var(--surface-2), var(--accent-soft)) center / cover; opacity: 0; animation: inTile calc(0.45s * var(--k, 1)) var(--d) ease-out forwards; }
 @keyframes inTile { from { opacity: 0; transform: scale(0.85); } to { opacity: 0.6; transform: none; } }
 @keyframes inWall { 75% { transform: rotate(-8deg) scale(1.1) translateY(-5%); } 100% { transform: rotate(0) scale(1.9) translateY(-5%); opacity: 0; } }
-.in-logo { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; text-shadow: 0 2px 16px rgba(0, 0, 0, 0.9); animation: inLogo 0.5s 0.25s ease-out both; }
+.in-logo { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; text-shadow: 0 2px 16px rgba(0, 0, 0, 0.9); animation: inLogo calc(0.5s * var(--k, 1)) calc(0.25s * var(--k, 1)) ease-out both; }
 .in-logo b { font-size: 40px; font-weight: 800; letter-spacing: -0.02em; color: var(--text); }
 .in-logo span { font-size: 15px; font-weight: 800; letter-spacing: 0.32em; text-transform: uppercase; color: var(--accent); }
 @keyframes inLogo { from { opacity: 0; transform: translateY(10px); } }
@@ -1380,3 +1380,8 @@ html:not(.show-scores) .card .head .rating { display: none; }
 .ptabs.many .ptab:not(.on):not(.shuf) { flex: 0 0 52px; }
 .ptabs.many .ptab:not(.on) .pl { display: none; }
 .ptabs.many .ptab.on { flex: 1 1 auto; }
+
+/* ---------- 1.10.1 ---------- */
+/* Herramientas de debug › Intro al abrir: «Ver el intro» es un botón con la forma de las filas que navegan */
+button.navline { width: 100%; border: 0; background: transparent; font: inherit; text-align: left; color: var(--text); padding-top: 8px; padding-bottom: 8px; padding-right: 14px; }
+button.navline:active { background: var(--surface); }

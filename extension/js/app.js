@@ -7229,6 +7229,18 @@
           applyDisplay();
         })
       ),
+      // Intro al abrir (1.10.1): elegir una duración la muestra; «Ver el intro» la repite.
+      setGroup('Intro al abrir',
+        segField('Duración', 'Cuánto tarda el mosaico de tus me gusta. Al elegir una, se ve.', [[800, '0,8 s'], [1500, '1,5 s'], [2500, '2,5 s'], [4000, '4 s']], Number(st.introMs) || INTRO_MS, (v) => {
+          st.introMs = v;
+          save();
+          showIntro();
+        }),
+        h('button', { type: 'button', class: 'line navline', onclick: () => showIntro() },
+          h('span', { class: 'navline-ic' }, icon('play', 20)),
+          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Ver el intro' }), h('span', { class: 'smeta', text: 'Sin reiniciar la app. Un toque lo salta.' }))
+        )
+      ),
       setGroup('Hashtags',
         navLine('hash', 'Árbol de hashtags', 'Herramienta temporal: qué hashtags hay dentro de cada uno, como carpetas.', '#/tree')
       )
@@ -7715,6 +7727,10 @@
     // 3) vuelve a las miniaturas si abriste un post desde ahí, 4) vuelve a la página anterior, 5) desde
     // otra sección vuelve a Inicio, 6) desde Inicio sale de la app.
     handleBack() {
+      if (introEnd) {
+        introEnd();
+        return 'handled';
+      }
       if (closePicZoom()) return 'handled';
       if (cancelCropper()) return 'handled';
       if (closeSheet()) return 'handled';
@@ -7785,8 +7801,14 @@
   // Mosaico (lo eligió el usuario, opción C): al abrir la app de cero, miniaturas de tus últimos me gusta
   // pasan por detrás del logo y se abren hacia Inicio, que se va cargando por detrás. Dura INTRO_MS y un
   // toque lo salta. No sale al volver a la app desde segundo plano: boot corre una sola vez.
+  // La duración se elige en Herramientas de debug (S.settings.introMs, 1.10.1): todas las animaciones se
+  // estiran con --k (duración / INTRO_MS), y ahí mismo se puede ver otra vez sin reiniciar.
   const INTRO_MS = 1500;
+  let introEnd = null; // cierra el intro que está a la vista («atrás» de Android)
   function showIntro() {
+    if (introEnd) introEnd(true);
+    const ms = Number(S.settings.introMs) || INTRO_MS;
+    const k = ms / INTRO_MS;
     const posts = Object.values(S.likes)
       .sort((a, b) => b.at - a.at)
       .map((x) => x.post)
@@ -7795,21 +7817,24 @@
     for (let i = 0; i < 15; i++) {
       const m = posts.length ? posts[i % posts.length].media[0] : null;
       const src = m ? (m.kind === 'video' ? RS.posterUrl(m) : RS.imageUrl(m)) : '';
-      tiles.push(h('i', { style: '--d:' + (i % 5) * 0.08 + 's' + (src ? ';background-image:url("' + src + '")' : '') }));
+      tiles.push(h('i', { style: '--d:' + (i % 5) * 0.08 * k + 's' + (src ? ';background-image:url("' + src + '")' : '') }));
     }
     let done = false;
-    const el = h('div', { id: 'intro', 'aria-hidden': 'true', onclick: () => end() },
+    const el = h('div', { id: 'intro', 'aria-hidden': 'true', style: '--k:' + k, onclick: () => end() },
       h('div', { class: 'in-wall' }, tiles),
       h('div', { class: 'in-logo' }, h('b', { text: 'Reactor' }), h('span', { text: 'Swipe' }))
     );
-    const end = () => {
+    const end = (now) => {
       if (done) return;
       done = true;
+      if (introEnd === end) introEnd = null;
+      if (now) return el.remove();
       el.classList.add('out');
       setTimeout(() => el.remove(), 350);
     };
+    introEnd = end;
     document.body.append(el);
-    setTimeout(end, INTRO_MS);
+    setTimeout(end, ms);
   }
 
   async function boot() {

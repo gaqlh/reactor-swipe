@@ -796,7 +796,8 @@
     // randomTab: el botón Aleatorio en la barra de abajo (Ajustes › Funciones para el futuro; desde la 1.7.0 viene apagado).
     // rowPic: tamaño en px de las fotos de las filas de Seguidos (Herramientas de debug; desde la 1.7.2).
     // sources: de dónde salen los posts (desde la 1.10.0): 'both' (JoyReactor y RedGifs, mezclados), 'jr' o 'rg'.
-    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100, showDates: false, showScores: false, seekDrag: true, seekSpan: 60, selectHold: 500, randomTab: false, rowPic: 64, sources: 'both' },
+    // introMs: cuánto dura el intro al abrir (Herramientas de debug; desde la 1.10.1).
+    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100, showDates: false, showScores: false, seekDrag: true, seekSpan: 60, selectHold: 500, randomTab: false, rowPic: 64, sources: 'both', introMs: 1500 },
     news: { items: [], known: {}, unread: 0, lastCheck: 0 },
     dismissed: [],
     history: [], // posts vistos más de 10 s: [{ id, at, post }], el más nuevo primero
