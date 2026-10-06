@@ -1211,3 +1211,59 @@ html:not(.show-scores) .card .head .rating { display: none; }
 /* ---------- 1.6.1 ---------- */
 /* Me gusta e Historial: las miniaturas no se arrastran (en Android eso cancelaba la pulsación larga) */
 .thumb img, .thumb video { -webkit-user-drag: none; }
+
+/* ---------- 1.7.0 ---------- */
+/* Barra de abajo: Inicio, Buscar, (Aleatorio), Tú y Ajustes; Ajustes con puntito si hay resumen sin mirar */
+#tabs a[hidden] { display: none; }
+#tabs a[data-tab='settings'].on .i { fill: none; stroke-width: 2.2; }
+#tabs a.has-dot { position: relative; }
+#tabs a.has-dot::after { content: ''; position: absolute; top: 8px; left: calc(50% + 8px); width: 8px; height: 8px; border-radius: 50%; background: var(--like); }
+
+/* Pulsación larga: la línea o el borde se llenan en el tiempo elegido */
+.htag.holding, .tag.holding, .thumb.pressing::after { animation-duration: var(--hold, 0.5s); }
+
+/* Tú: tus números y, en círculos, lo que sigues */
+.mestats { display: flex; justify-content: space-around; padding: 16px 16px 2px; }
+.mestat { display: flex; flex-direction: column; align-items: center; color: var(--text); }
+.mestat b { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.mestat span { font-size: 12.5px; color: var(--text-2); }
+.mesec { padding-top: 16px; padding-bottom: 4px; }
+.story .ring.plain { border-color: var(--line-2); }
+
+/* Tus carpetas en Me gusta */
+.folders { display: flex; gap: 10px; padding: 12px 16px 8px; overflow-x: auto; scrollbar-width: none; }
+.folders::-webkit-scrollbar { display: none; }
+.ftile { flex-shrink: 0; width: 68px; display: flex; flex-direction: column; gap: 3px; padding: 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.ftile .fcov { width: 68px; height: 68px; border-radius: 12px; overflow: hidden; background: var(--surface); border: 2px solid transparent; display: grid; place-items: center; color: var(--text-2); }
+.ftile .fcov.four { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 1px; place-items: stretch; }
+.ftile .fcov img, .ftile .fcov video { width: 100%; height: 100%; object-fit: cover; }
+.ftile.on .fcov { border-color: var(--accent); }
+.ftile.new .fcov { background: transparent; border: 2px dashed var(--line-2); }
+.ftile b { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ftile small { font-size: 11px; color: var(--text-2); }
+.ftile.on b { color: var(--accent); }
+.fbar { display: flex; align-items: center; gap: 6px; padding: 2px 6px 4px 16px; font-size: 14px; font-weight: 700; }
+.sheet-form { display: flex; gap: 8px; padding: 6px 20px 10px; }
+.sheet-form .input { flex: 1 1 auto; min-width: 0; }
+
+/* Fotos propias: el recorte dentro del círculo */
+.cpic { position: relative; overflow: hidden; }
+.pickgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; padding: 6px 16px 10px; }
+.pickgrid .status, .pickgrid .foot-note { grid-column: 1 / -1; }
+.pick { position: relative; aspect-ratio: 1; padding: 0; border: 0; border-radius: 6px; background: var(--surface-2); overflow: hidden; }
+.pick img { width: 100%; height: 100%; object-fit: cover; -webkit-user-drag: none; }
+.pick .tb { position: absolute; top: 5px; right: 5px; height: 18px; padding: 0 5px; border-radius: 6px; background: rgba(15, 14, 13, 0.72); font-size: 10px; font-weight: 800; display: flex; align-items: center; }
+.cropper { position: fixed; inset: 0; z-index: 106; display: flex; flex-direction: column; background: var(--bg); }
+.cropper .top { position: static; transform: none !important; }
+.crop-body { flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 16px 16px calc(24px + env(safe-area-inset-bottom)); }
+.crop-box { position: relative; flex-shrink: 0; overflow: hidden; border-radius: 14px; background: #000; touch-action: none; cursor: grab; }
+.crop-media { position: absolute; max-width: none; pointer-events: none; -webkit-user-select: none; user-select: none; -webkit-user-drag: none; }
+.crop-mask { position: absolute; border-radius: 50%; box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.6); outline: 2px solid #fff; pointer-events: none; }
+.crop-row { width: 100%; max-width: 420px; display: flex; align-items: center; gap: 10px; color: var(--text-2); }
+.crop-row input[type='range'] { flex: 1 1 auto; min-width: 0; accent-color: var(--accent); }
+.crop-row .seg { flex: 1 1 auto; }
+.crop-time { font-size: 13px; color: var(--text); white-space: nowrap; }
+.crop-hint { max-width: 420px; font-size: 13px; line-height: 1.4; color: var(--text-2); text-align: center; }
+.sheet-title-row { display: flex; align-items: center; gap: 8px; padding-right: 8px; }
+.sheet-title-row .link-btn { height: 36px; }
+.sheet-label { text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 600; }

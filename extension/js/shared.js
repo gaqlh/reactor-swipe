@@ -761,7 +761,9 @@
     // showDates: mostrar la fecha de cada post (desde la 1.1.0 viene apagado).
     // showScores: estrellas del autor y rating del post en pantalla completa (desde la 1.2.0 viene apagado).
     // seekDrag / seekSpan: mantener el dedo y arrastrar a los lados adelanta el video; seekSpan = segundos al cruzar la pantalla.
-    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100, showDates: false, showScores: false, seekDrag: true, seekSpan: 60 },
+    // selectHold: ms que hay que mantener una miniatura de Me gusta o Historial para seleccionar (Herramientas de debug).
+    // randomTab: el botón Aleatorio en la barra de abajo (Ajustes › Funciones para el futuro; desde la 1.7.0 viene apagado).
+    settings: { notify: true, interval: 15, notifyType: 'NEW', hideNsfw: false, homeSort: 'GOOD', tagGif: true, tagVideo: true, tagOrder: 'random', historyMax: 100, showDates: false, showScores: false, seekDrag: true, seekSpan: 60, selectHold: 500, randomTab: false },
     news: { items: [], known: {}, unread: 0, lastCheck: 0 },
     dismissed: [],
     history: [], // posts vistos más de 10 s: [{ id, at, post }], el más nuevo primero
@@ -775,10 +777,17 @@
     // Árbol de los hashtags: nombre en minúsculas -> { p: [carpeta de arriba, la siguiente, …], at } (ver leafTags en app.js).
     tagTree: {},
     // Resumen de la semana ya calculado (los 10 usuarios y hashtags que más tiempo miraste).
-    // seen: semana cuyo resumen ya miraste (historias o la lista); later: semana en que tocaste «Luego» en Inicio.
+    // seen: semana cuyo resumen ya miraste (historias o la lista); later: semana en que tocaste «Ocultar» en Novedades.
     weekly: { week: '', at: 0, users: [], tags: [], prev: null, pending: null, seen: '', later: '' },
-    // Hashtags guardados como perfil (Seguidos › Perfiles): nombre en minúsculas -> { name, aliases, addedAt, pic }.
+    // Hashtags que sigues como cuenta (Seguidos › Perfiles): nombre en minúsculas -> { name, aliases, addedAt, pic, notify }.
     tagProfiles: {},
+    // Fotos propias (desde la 1.7.0): 'user:nombre' | 'tag:nombre' (en minúsculas) -> { name, media, post, cx, cy, s, r,
+    // start, len, at }. Es un recorte de un archivo de JoyReactor (no una copia): cx, cy = centro del círculo en
+    // fracciones de la imagen, s = diámetro del círculo / ancho de la imagen, r = alto / ancho. En los hashtags es un
+    // GIF o video: se repite el pedazo que empieza en `start` y dura `len` segundos.
+    pics: {},
+    // Tus carpetas de Me gusta (desde la 1.7.0): id -> { id, name, ids: [ids de posts], at }. Un post puede estar en varias.
+    folders: {},
     // Respaldo automático en Descargas (app de Android): cuándo se escribió el último, una firma de lo
     // importante para saber si cambió, y skip = en una app vacía dijiste «Empezar de cero».
     backup: { at: 0, sig: '', skip: false },

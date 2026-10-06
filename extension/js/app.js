@@ -55,7 +55,9 @@
     users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M18 14.2a6.5 6.5 0 0 1 3.5 5.8"/>',
     userplus: '<circle cx="10" cy="8" r="4"/><path d="M3 20.5a7 7 0 0 1 12.5-4.3"/><path d="M19 14v6M16 17h6"/>',
     usercheck: '<circle cx="10" cy="8" r="4"/><path d="M3 20.5a7 7 0 0 1 12.5-4.3"/><path d="M15.5 18l2 2 4-4.5"/>',
-    dots: '<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>'
+    dots: '<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>',
+    camera: '<path d="M4 8.5h3.2l1.8-2.5h6l1.8 2.5H20v11H4z"/><circle cx="12" cy="13.5" r="3.5"/>',
+    folder: '<path d="M3.5 7A1.5 1.5 0 0 1 5 5.5h4.5l2 2.5H19a1.5 1.5 0 0 1 1.5 1.5V18a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 18z"/>'
   };
 
   // Cada ícono se interpreta una sola vez como SVG y después se clona.
@@ -191,7 +193,7 @@
       }
     }, delay == null ? 250 : delay);
   }
-  const BACKUP_KEYS = new Set(['likes', 'dislikes', 'favorites', 'following', 'tagProfiles', 'mix']);
+  const BACKUP_KEYS = new Set(['likes', 'dislikes', 'favorites', 'following', 'tagProfiles', 'mix', 'pics', 'folders']);
   let backupTimer = null;
 
   // App de Android: los avisos los revisa Android en segundo plano, así que le paso qué vigilar
@@ -713,6 +715,8 @@
   // ================================================================ Tarjeta de post (una por pantalla)
 
   function avatar(p) {
+    const own = p.user && picOf('user', p.user);
+    if (own) return putPic(h('span', { class: 'avatar' }), own);
     const c = colorFor(p.user || '?');
     const el = h('span', { class: 'avatar', style: { background: c[1] } }, (p.user || '?').charAt(0).toUpperCase());
     const url = RS.avatarUrl(p);
@@ -1072,6 +1076,7 @@
   // larga no cuenta como un toque normal.
   let cancelHold = null;
   document.addEventListener('scroll', () => cancelHold && cancelHold(), { capture: true, passive: true });
+  // ms: milisegundos, o una función que los da (un ajuste).
   function longPress(el, ms, cls, onFire, canStart) {
     let timer = null;
     let x0 = 0;
@@ -1091,6 +1096,8 @@
       swallowUntil = 0;
       x0 = x;
       y0 = y;
+      const dur = typeof ms === 'function' ? ms() : ms;
+      el.style.setProperty('--hold', dur + 'ms');
       el.classList.add(cls);
       cancelHold = cancel;
       timer = setTimeout(() => {
@@ -1098,7 +1105,7 @@
         fired = true;
         buzz(30);
         onFire();
-      }, ms);
+      }, dur);
     };
     const move = (x, y) => {
       if (timer && Math.hypot(x - x0, y - y0) > 12) cancel();
@@ -1134,6 +1141,478 @@
   const HOLD_MS = 500;
   function holdForMenu(el, tag) {
     return longPress(el, HOLD_MS, 'holding', () => openTagSheet(tag));
+  }
+
+  // ================================================================ Fotos propias
+  //
+  // A un usuario se le puede poner una foto sacada de sus posts y a un hashtag, un GIF o un video de los
+  // suyos (S.pics): tiene que ser de la misma cuenta. Se recorta con un círculo y se guarda qué archivo y
+  // qué parte, no una copia (ocupa casi nada y entra en el respaldo). Se elige desde el ⋯ de cada fila de
+  // Seguidos, desde el ⋯ de la página del hashtag o al empezar a seguirlo (askPic). Los videos se mueven en
+  // la página del hashtag y en las listas de Seguidos; en los demás lados se ven quietos (el primer
+  // cuadro). Solo se reproducen los que están a la vista (picIO).
+  const picKey = (kind, name) => kind + ':' + tkey(name);
+  function picOf(kind, name) {
+    if (!name) return null;
+    let p = S.pics[picKey(kind, name)];
+    if (!p && kind === 'tag') {
+      const f = favOf(name) || tagProfileOf(name);
+      if (f) p = S.pics[picKey('tag', f.name)];
+    }
+    return p || null;
+  }
+  const picIO = new IntersectionObserver((es) =>
+    es.forEach((e) => {
+      const v = e.target;
+      if (e.isIntersecting) {
+        if (!v.getAttribute('src')) v.src = v.dataset.src;
+        v.play().catch(() => {});
+      } else if (v.getAttribute('src')) {
+        v.pause();
+        v.removeAttribute('src');
+        v.load();
+      }
+    })
+  );
+  function releasePics(root) {
+    root.querySelectorAll('video.cpicv').forEach((v) => {
+      picIO.unobserve(v);
+      v.pause();
+      v.removeAttribute('src');
+      v.load();
+    });
+  }
+  // El recorte, en porcentajes del contenedor redondo (sirve para cualquier tamaño de foto).
+  function picMedia(pic, animate) {
+    const w = 100 / pic.s;
+    const style = { position: 'absolute', width: w + '%', height: w * pic.r + '%', left: 50 - pic.cx * w + '%', top: 50 - pic.cy * w * pic.r + '%', maxWidth: 'none', objectFit: 'cover' };
+    if (pic.len && animate) {
+      const v = document.createElement('video');
+      v.className = 'cpicv';
+      v.muted = true;
+      v.defaultMuted = true;
+      v.playsInline = true;
+      v.setAttribute('muted', '');
+      v.setAttribute('playsinline', '');
+      v.preload = 'none';
+      v.poster = RS.posterUrl(pic.media);
+      v.dataset.src = RS.videoUrl(pic.media);
+      Object.assign(v.style, style);
+      // Se repite solo el pedazo elegido.
+      v.addEventListener('loadedmetadata', () => (v.currentTime = pic.start || 0));
+      v.addEventListener('timeupdate', () => {
+        if (v.currentTime >= (pic.start || 0) + pic.len || v.currentTime < (pic.start || 0) - 0.5) v.currentTime = pic.start || 0;
+      });
+      v.addEventListener('ended', () => {
+        v.currentTime = pic.start || 0;
+        v.play().catch(() => {});
+      });
+      picIO.observe(v);
+      return v;
+    }
+    const img = h('img', { src: pic.len ? RS.posterUrl(pic.media) : RS.imageUrl(pic.media), alt: '', draggable: 'false' });
+    Object.assign(img.style, style);
+    return img;
+  }
+  function putPic(el, pic, animate) {
+    el.classList.add('cpic');
+    el.style.background = '#000';
+    return fill(el, picMedia(pic, animate));
+  }
+  // ⋯ de cada fila de Seguidos: poner o cambiar la foto (usuario) o el GIF (hashtag), o quitarla.
+  function rowMore(kind, name) {
+    const user = kind === 'user';
+    return h('button', { type: 'button', class: 'ib', 'aria-haspopup': 'dialog', 'aria-label': 'Más opciones de ' + (user ? '@' : '#') + name, onclick: () => {
+      const own = picOf(kind, name);
+      openSheet('Opciones de ' + (user ? '@' : '#') + name,
+        h('div', { class: 'sheet-title', text: (user ? '@' : '#') + name }),
+        sheetRow(user ? 'camera' : 'film', (own ? 'Cambiar ' : 'Poner ') + (user ? 'la foto' : 'el GIF o video'), user ? 'Una imagen de sus posts, recortada como quieras.' : 'Un pedazo de un GIF o video de sus posts, que se repite.', () => openPicSheet(kind, name)),
+        own ? sheetRow('x', 'Quitar ' + (user ? 'la foto' : 'el GIF'), user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null
+      );
+    } }, icon('dots', 22));
+  }
+  function removePic(kind, own) {
+    closeSheet();
+    delete S.pics[picKey(kind, own.name)];
+    persist('pics', 0);
+    toast(kind === 'user' ? 'Quitaste la foto' : 'Quitaste el GIF', 'Deshacer', () => {
+      S.pics[picKey(kind, own.name)] = own;
+      persist('pics', 0);
+      picsChanged();
+    });
+    picsChanged();
+  }
+  // Al empezar a seguir a alguien o un hashtag, la app pregunta si quieres ponerle foto.
+  const askPic = (kind, name) => openPicSheet(kind, name, true);
+  // Después de poner o quitar una foto: se vuelve a dibujar la página a la vista.
+  function picsChanged() {
+    route();
+  }
+
+  // Elegir la foto: las imágenes de sus últimos posts (usuario) o sus GIF y videos (hashtag).
+  async function userImages(name) {
+    const got = await RS.fetchUsersRecent([name]);
+    const out = [];
+    for (const p of got[name] || []) {
+      if (RS.isJunk(p)) continue;
+      for (const m of p.media) if (m.kind === 'image' && out.length < 30) out.push({ m, post: p.id });
+    }
+    return out;
+  }
+  async function tagClips(name) {
+    const first = await RS.fetchPage(name, 'ALL', null);
+    const pages = [];
+    for (let pg = first.lastPage - 1; pg >= Math.max(1, first.lastPage - 5); pg--) pages.push(pg);
+    const rest = await Promise.all(pages.map((pg) => RS.fetchPage(name, 'ALL', pg).catch(() => ({ posts: [] }))));
+    const out = [];
+    for (const p of first.posts.concat(...rest.map((r) => r.posts))) {
+      if (RS.isJunk(p)) continue;
+      for (const m of p.media) if (m.kind === 'video' && out.length < 30) out.push({ m, post: p.id });
+    }
+    return out;
+  }
+  // ask: se abre al empezar a seguirlo («¿Le pones una foto?», con «Ahora no»).
+  function openPicSheet(kind, name, ask) {
+    const own = picOf(kind, name);
+    const user = kind === 'user';
+    const who = (user ? '@' : '#') + name;
+    const grid = h('div', { class: 'pickgrid' }, h('div', { class: 'status' }, icon('spinner', 20, 'spin'), user ? 'Buscando imágenes…' : 'Buscando GIF y videos…'));
+    openSheet('Foto de ' + who,
+      h('div', { class: 'sheet-title sheet-title-row' },
+        h('span', { class: 'grow', text: ask ? (user ? '¿Le pones una foto a ' + who + '?' : '¿Le pones un GIF a ' + who + '?') : (user ? 'Foto de ' : 'GIF de ') + who }),
+        ask ? h('button', { type: 'button', class: 'link-btn', onclick: () => closeSheet() }, 'Ahora no') : null
+      ),
+      h('span', { class: 'sheet-label', text: (user ? 'Elige una imagen de sus posts' : 'Elige un GIF o video de sus posts') + (ask ? '. También puedes hacerlo después, desde el ⋯ de Seguidos.' : '') }),
+      grid,
+      !ask && own ? sheetRow('x', 'Quitar ' + (user ? 'la foto' : 'el GIF'), user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null
+    );
+    (user ? userImages(name) : tagClips(name))
+      .then((list) => {
+        fill(grid,
+          list.length
+            ? list.map(({ m, post }) =>
+                h('button', { type: 'button', class: 'pick', 'aria-label': 'Usar esta', onclick: () => {
+                  closeSheet();
+                  openCropper(kind, name, m, post);
+                } },
+                h('img', { src: m.kind === 'image' ? RS.imageUrl(m) : RS.posterUrl(m), alt: '', draggable: 'false' }),
+                m.kind === 'video' ? h('span', { class: 'tb', text: 'GIF' }) : null)
+              )
+            : h('p', { class: 'foot-note', text: user ? 'No encontré imágenes en sus últimos posts.' : 'No encontré GIF ni videos en sus últimos posts.' })
+        );
+      })
+      .catch((e) => fill(grid, h('p', { class: 'foot-note', text: errText(e) })));
+  }
+
+  // ---- Recortar: la imagen (o el video) con un círculo encima. Se arrastra con un dedo y se acerca con
+  // dos o con la barra; en los videos se elige desde dónde y cuántos segundos se repiten.
+  let cropper = null;
+  function closeCropper() {
+    if (!cropper) return false;
+    const c = cropper;
+    cropper = null;
+    c.el.querySelectorAll('video').forEach((v) => {
+      v.pause();
+      v.removeAttribute('src');
+      v.load();
+    });
+    c.el.remove();
+    document.body.classList.remove('noscroll');
+    return true;
+  }
+  function openCropper(kind, name, m, postId) {
+    closeCropper();
+    const isVid = m.kind === 'video';
+    const B = Math.min(window.innerWidth - 32, 420); // lado del cuadro
+    const C = Math.round(B * 0.8); // diámetro del círculo
+    const st = { x: 0, y: 0, z: 1, r: m.w && m.h ? m.h / m.w : 1, start: 0, len: 2, dur: 0 };
+    let media;
+    if (isVid) {
+      media = document.createElement('video');
+      media.muted = true;
+      media.playsInline = true;
+      media.setAttribute('muted', '');
+      media.setAttribute('playsinline', '');
+      media.autoplay = true;
+      media.src = RS.videoUrl(m);
+      media.addEventListener('loadedmetadata', () => {
+        st.r = media.videoHeight && media.videoWidth ? media.videoHeight / media.videoWidth : st.r;
+        st.dur = media.duration || 0;
+        layout(true);
+        drawTime();
+      });
+      media.addEventListener('timeupdate', () => {
+        if (media.currentTime >= st.start + st.len || media.currentTime < st.start - 0.5) media.currentTime = st.start;
+      });
+      media.addEventListener('ended', () => {
+        media.currentTime = st.start;
+        media.play().catch(() => {});
+      });
+    } else {
+      media = h('img', { src: RS.imageUrl(m), alt: '', draggable: 'false' });
+      media.addEventListener('load', () => {
+        if (media.naturalWidth) st.r = media.naturalHeight / media.naturalWidth;
+        layout(true);
+      });
+    }
+    media.className = 'crop-media';
+    const box = h('div', { class: 'crop-box', style: { width: B + 'px', height: B + 'px' } }, media,
+      h('span', { class: 'crop-mask', style: { width: C + 'px', height: C + 'px', left: (B - C) / 2 + 'px', top: (B - C) / 2 + 'px' } })
+    );
+    // El círculo tiene que quedar siempre lleno de imagen.
+    const zMin = () => Math.max(C / B, C / (B * st.r));
+    const zoom = h('input', { type: 'range', min: '1', max: '4', step: '0.01', value: '1', 'aria-label': 'Acercar' });
+    const layout = (reset) => {
+      if (reset) st.z = Math.max(st.z, zMin());
+      st.z = Math.min(Math.max(st.z, zMin()), zMin() * 4);
+      const W = B * st.z;
+      const H = W * st.r;
+      st.x = Math.max(-(W - C) / 2, Math.min((W - C) / 2, st.x));
+      st.y = Math.max(-(H - C) / 2, Math.min((H - C) / 2, st.y));
+      Object.assign(media.style, { width: W + 'px', height: H + 'px', left: (B - W) / 2 + st.x + 'px', top: (B - H) / 2 + st.y + 'px' });
+      zoom.value = String(st.z / zMin());
+    };
+    zoom.addEventListener('input', () => {
+      st.z = zMin() * Number(zoom.value);
+      layout();
+    });
+    // Un dedo arrastra; dos acercan o alejan.
+    const pts = new Map();
+    let g = null;
+    const snap = () => {
+      const [a, b] = Array.from(pts.values());
+      g = a ? { x: st.x, y: st.y, z: st.z, ax: a.x, ay: a.y, d: b ? Math.hypot(b.x - a.x, b.y - a.y) : 0 } : null;
+    };
+    box.addEventListener('pointerdown', (e) => {
+      try {
+        box.setPointerCapture(e.pointerId);
+      } catch (err) {
+        /* el dedo ya se levantó */
+      }
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      snap();
+    });
+    box.addEventListener('pointermove', (e) => {
+      if (!pts.has(e.pointerId) || !g) return;
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const [a, b] = Array.from(pts.values());
+      if (b && g.d) st.z = g.z * (Math.hypot(b.x - a.x, b.y - a.y) / g.d);
+      else {
+        st.x = g.x + a.x - g.ax;
+        st.y = g.y + a.y - g.ay;
+      }
+      layout();
+    });
+    const lift = (e) => {
+      pts.delete(e.pointerId);
+      snap();
+    };
+    box.addEventListener('pointerup', lift);
+    box.addEventListener('pointercancel', lift);
+
+    // Videos: desde dónde y cuántos segundos.
+    const startIn = h('input', { type: 'range', min: '0', max: '0', step: '0.1', value: '0', 'aria-label': 'Desde dónde' });
+    const timeTxt = h('span', { class: 'crop-time' });
+    const drawTime = () => {
+      startIn.max = String(Math.max(0, st.dur - st.len));
+      startIn.value = String(st.start);
+      timeTxt.textContent = 'Desde ' + st.start.toFixed(1).replace('.', ',') + ' s · ' + st.len + ' s';
+    };
+    startIn.addEventListener('input', () => {
+      st.start = Number(startIn.value);
+      media.currentTime = st.start;
+      drawTime();
+    });
+    const lens = isVid
+      ? seg([[1, '1 s'], [2, '2 s'], [3, '3 s']], st.len, (v) => {
+          st.len = v;
+          st.start = Math.min(st.start, Math.max(0, st.dur - v));
+          media.currentTime = st.start;
+          drawTime();
+        })
+      : null;
+
+    const save = () => {
+      const W = B * st.z;
+      const H = W * st.r;
+      const canon = kind === 'tag' ? (favOf(name) || tagProfileOf(name) || { name }).name : name;
+      S.pics[picKey(kind, canon)] = Object.assign(
+        { name: canon, kind, media: { id: m.id, ext: m.ext, kind: m.kind }, post: postId, cx: 0.5 - st.x / W, cy: 0.5 - st.y / H, s: C / W, r: st.r, at: Date.now() },
+        isVid ? { start: st.start, len: st.len } : {}
+      );
+      persist('pics', 0);
+      closeCropper();
+      toast(isVid ? 'Listo: #' + canon + ' tiene foto animada' : 'Listo: @' + canon + ' tiene tu foto');
+      picsChanged();
+    };
+    const el = h('div', { class: 'cropper', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Recortar la foto' },
+      h('header', { class: 'top' },
+        h('button', { class: 'ib', 'aria-label': 'Cancelar', onclick: () => closeCropper() }, icon('x', 24)),
+        h('h1', { text: 'Recortar' }),
+        h('button', { class: 'pill primary', onclick: save }, 'Guardar')
+      ),
+      h('div', { class: 'crop-body' },
+        box,
+        h('label', { class: 'crop-row' }, icon('search', 18), zoom),
+        isVid ? [h('label', { class: 'crop-row' }, icon('film', 18), startIn), h('div', { class: 'crop-row' }, timeTxt, lens)] : null,
+        h('p', { class: 'crop-hint', text: isVid ? 'Arrastra con un dedo, acerca con dos o con la barra. Elige desde dónde y cuántos segundos se repiten.' : 'Arrastra con un dedo y acerca con dos o con la barra.' })
+      )
+    );
+    document.body.append(el);
+    document.body.classList.add('noscroll');
+    cropper = { el };
+    layout(true);
+    if (isVid) drawTime();
+  }
+
+  // ================================================================ Tú (Seguidos y Favoritos juntos)
+  //
+  // Como el perfil de Instagram: arriba tus números y, en círculos, lo que sigues («Ver todos» abre
+  // Seguidos); abajo, en cuadrícula, tus me gusta (con tus carpetas) y el historial.
+  function meHeader() {
+    const nTags = Object.keys(S.favorites).length;
+    const nProf = Object.keys(S.following).length + Object.keys(S.tagProfiles).length;
+    const nLikes = Object.keys(S.likes).length;
+    const stat = (n, one, many, href) =>
+      h(href ? 'a' : 'span', { class: 'mestat', href: href || null }, h('b', { text: fmt(n) }), h('span', { text: n === 1 ? one : many }));
+    const circles = Object.values(S.following)
+      .map((u) => ({ at: u.addedAt || 0, el: () => h('a', { class: 'story', href: '#/user/' + enc(u.name) }, h('span', { class: 'ring plain' }, userPic(u.name, u.userId, 'disc')), h('span', { class: 'label', text: u.name })) }))
+      .concat(Object.values(S.tagProfiles).map((t) => ({ at: t.addedAt || 0, el: () => h('a', { class: 'story', href: '#/tag/' + enc(t.name) }, h('span', { class: 'ring plain' }, tagPic(t.name, 'disc', '#', t.pic)), h('span', { class: 'label', text: t.name })) })))
+      .concat(favList().map((f) => ({ at: f.addedAt || 0, el: () => h('a', { class: 'story', href: '#/tag/' + enc(f.name) }, h('span', { class: 'ring plain' }, tagPic(f.name, 'disc', '#')), h('span', { class: 'label', text: f.name })) })))
+      .sort((a, b) => b.at - a.at)
+      .slice(0, 20)
+      .map((x) => x.el());
+    return h('section', { class: 'mehead' },
+      h('div', { class: 'mestats' },
+        stat(nTags, 'hashtag', 'hashtags', '#/following'),
+        stat(nProf, 'perfil', 'perfiles', '#/following?tab=users'),
+        stat(nLikes, 'me gusta', 'me gusta')
+      ),
+      circles.length
+        ? [
+            h('div', { class: 'secline mesec' }, h('h2', { class: 'grow section-label', text: 'Siguiendo' }), h('a', { class: 'link-btn', href: '#/following' }, 'Ver todos')),
+            h('div', { class: 'stories mefollow' }, circles)
+          ]
+        : h('p', { class: 'foot-note', text: 'Aquí verás lo que sigues. Toca Seguir en un hashtag o al lado del nombre de quien publicó un post.' })
+    );
+  }
+
+  // ---- Tus carpetas en Me gusta (S.folders: id -> { id, name, ids, at }). Un post puede estar en varias y
+  // sigue en Todos. Se llenan seleccionando varios (mantener presionada una miniatura) y tocando Mover.
+  const folderList = () => Object.values(S.folders).sort((a, b) => a.at - b.at);
+  const folderIds = (f) => f.ids.filter((id) => S.likes[id]);
+  function makeFolder(name) {
+    const id = 'f' + Date.now().toString(36);
+    S.folders[id] = { id, name, ids: [], at: Date.now() };
+    persist('folders', 0);
+    return S.folders[id];
+  }
+  // Pide un nombre (carpeta nueva o renombrar), en el menú que sube desde abajo.
+  function askName(title, value, onOk) {
+    const input = h('input', { class: 'input', type: 'text', value: value || '', placeholder: 'Nombre de la carpeta', maxlength: '40', 'aria-label': 'Nombre de la carpeta', enterkeyhint: 'done', autocomplete: 'off' });
+    const ok = () => {
+      const v = input.value.trim();
+      if (!v) return input.focus();
+      closeSheet();
+      onOk(v);
+    };
+    input.addEventListener('keydown', (e) => e.key === 'Enter' && ok());
+    openSheet(title, h('div', { class: 'sheet-title', text: title }), h('div', { class: 'sheet-form' }, input, h('button', { class: 'btn', onclick: ok }, 'Listo')));
+    setTimeout(() => input.focus(), 80);
+  }
+  function folderCover(ids) {
+    const posts = ids.map((id) => S.likes[id] && S.likes[id].post).filter(Boolean).slice(0, 4);
+    return h('span', { class: 'fcov' + (posts.length > 1 ? ' four' : '') }, posts.length ? posts.map((p) => thumbMedia(p.media[0]) || h('span')) : icon('folder', 22));
+  }
+  // Fila de carpetas arriba de Me gusta: Todos, las tuyas y «Nueva».
+  function folderStrip(active) {
+    const all = Object.values(S.likes).sort((a, b) => b.at - a.at).map((x) => x.post.id);
+    const tile = (f) => {
+      const ids = f ? folderIds(f) : all;
+      const on = f ? active === f.id : !active;
+      const href = f ? '#/likes?folder=' + f.id : '#/likes';
+      return h('a', { class: 'ftile' + (on ? ' on' : ''), href, 'aria-current': on ? 'true' : null, onclick: (e) => {
+        e.preventDefault();
+        if (!on) navReplace(href);
+      } }, folderCover(ids), h('b', { text: f ? f.name : 'Todos' }), h('small', { text: fmt(ids.length) }));
+    };
+    return h('nav', { class: 'folders', 'aria-label': 'Tus carpetas' },
+      tile(null),
+      folderList().map(tile),
+      h('button', { type: 'button', class: 'ftile new', onclick: () => askName('Nueva carpeta', '', (name) => {
+        const f = makeFolder(name);
+        navReplace('#/likes?folder=' + f.id);
+        toast('Carpeta creada. En Todos, mantén presionada una miniatura, elige posts y toca Mover.');
+      }) }, h('span', { class: 'fcov' }, icon('plus', 22)), h('b', { text: 'Nueva' }), h('small', { text: 'carpeta' }))
+    );
+  }
+  // Dentro de una carpeta: su nombre y ⋯ (renombrar o borrarla; los posts siguen en Me gusta).
+  function folderBar(f) {
+    const n = folderIds(f).length;
+    return h('div', { class: 'fbar' },
+      h('span', { class: 'grow', text: f.name + ' · ' + (n === 1 ? '1 post' : fmt(n) + ' posts') }),
+      h('button', { class: 'ib', 'aria-haspopup': 'dialog', 'aria-label': 'Opciones de la carpeta ' + f.name, onclick: () =>
+        openSheet('Carpeta ' + f.name,
+          h('div', { class: 'sheet-title', text: f.name }),
+          sheetRow('folder', 'Cambiar el nombre', null, () => {
+            closeSheet();
+            askName('Nombre de la carpeta', f.name, (name) => {
+              f.name = name;
+              persist('folders', 0);
+              route();
+            });
+          }),
+          sheetRow('trash', 'Borrar la carpeta', 'Los posts siguen en Me gusta.', () => {
+            closeSheet();
+            delete S.folders[f.id];
+            persist('folders', 0);
+            navReplace('#/likes');
+            toast('Borraste la carpeta «' + f.name + '»', 'Deshacer', () => {
+              S.folders[f.id] = f;
+              persist('folders', 0);
+              navReplace('#/likes?folder=' + f.id);
+            });
+          }, 'danger')
+        ) }, icon('dots', 22))
+    );
+  }
+  // Mover lo seleccionado a una carpeta (desde otra carpeta, sale de esa).
+  function moveSelected(feed, from) {
+    const ids = Array.from(feed.sel);
+    if (!ids.length) return;
+    const what = ids.length === 1 ? '1 post' : ids.length + ' posts';
+    const put = (f) => {
+      closeSheet();
+      f.ids = Array.from(new Set(f.ids.concat(ids)));
+      if (from) from.ids = from.ids.filter((id) => !ids.includes(id));
+      persist('folders', 0);
+      endSelect(feed);
+      if (from) ids.forEach((id) => feed.drop(id));
+      else if (current && current.feed === feed) feed.refresh();
+      toast(what + ' en «' + f.name + '»', 'Ver', () => nav('#/likes?folder=' + f.id));
+    };
+    openSheet('Mover a una carpeta',
+      h('div', { class: 'sheet-title', text: 'Mover ' + what + ' a…' }),
+      folderList().filter((f) => !from || f.id !== from.id).map((f) => sheetRow('folder', f.name, fmt(folderIds(f).length) + ' posts', () => put(f))),
+      sheetRow('plus', 'Nueva carpeta', null, () => {
+        closeSheet();
+        askName('Nueva carpeta', '', (name) => put(makeFolder(name)));
+      })
+    );
+  }
+  // Quitar lo seleccionado de la carpeta (siguen en Me gusta).
+  function unfileSelected(feed, f) {
+    const ids = Array.from(feed.sel);
+    if (!ids.length) return;
+    f.ids = f.ids.filter((id) => !ids.includes(id));
+    persist('folders', 0);
+    endSelect(feed);
+    ids.forEach((id) => feed.drop(id));
+    toast((ids.length === 1 ? 'Quitaste 1 post' : 'Quitaste ' + ids.length + ' posts') + ' de «' + f.name + '»', 'Deshacer', () => {
+      f.ids = Array.from(new Set(f.ids.concat(ids)));
+      persist('folders', 0);
+      route();
+    });
   }
 
   // ---- Menú que sube desde abajo. Tocar fuera, «atrás» o Esc lo cierra.
@@ -1213,6 +1692,7 @@
       });
     }
     followChanged(name, !!prof !== (as === 'account'), info.name);
+    if (as && !fav && !prof) askPic('tag', info.name);
   }
   function restoreFollow(b) {
     if (b.fav) {
@@ -1322,7 +1802,7 @@
       if (!on) followTagAs(name, as, notify);
     };
     return [
-      sheetRow('hash', 'Como hashtag', 'Lo ves barajado. Entra en tu Aleatorio y en las historias de Inicio.', pick('tag', !!fav), fav ? 'on' : '', fav ? icon('check', 20) : null),
+      sheetRow('hash', 'Como hashtag', S.settings.randomTab ? 'Lo ves al azar. Entra en tu Aleatorio y en las historias de Inicio.' : 'Lo ves al azar y sale en las historias de Inicio.', pick('tag', !!fav), fav ? 'on' : '', fav ? icon('check', 20) : null),
       sheetRow('userplus', 'Como cuenta', 'Lo ves como un perfil: en orden y en miniaturas. Lo nuevo, primero en Inicio.', pick('account', !!prof), prof ? 'on' : '', prof ? icon('check', 20) : null),
       fav || prof ? sheetRow('x', 'Dejar de seguir', null, pick(null, false), 'danger') : null
     ];
@@ -1385,6 +1865,7 @@
         setFollow(p.user, p.userId, true);
         document.querySelectorAll('[data-follow="' + CSS.escape(userKey(p.user)) + '"]').forEach((b) => b.remove());
         toast('Ahora sigues a ' + p.user + ': sus posts nuevos, primero en Inicio', 'Deshacer', () => setFollow(p.user, p.userId, false));
+        askPic('user', p.user);
       }
     }, 'Seguir');
   }
@@ -1454,7 +1935,7 @@
   }
 
   // Miniatura: tocarla abre el post en el feed; abajo tiene «no me gusta» y «me gusta» a mano. En Me gusta
-  // e Historial no lleva botones: mantenerla presionada 2 s empieza a seleccionar (holdToSelect).
+  // e Historial no lleva botones: mantenerla presionada empieza a seleccionar (holdToSelect).
   function buildThumb(it, feed) {
     const p = it.post;
     const m = p.media[0];
@@ -1488,12 +1969,13 @@
     return cell;
   }
 
-  // ---- Seleccionar varios en Me gusta e Historial: mantener presionada una miniatura 2 s la marca y
+  // ---- Seleccionar varios en Me gusta e Historial: mantener presionada una miniatura (medio segundo; se
+  // cambia en Ajustes › Herramientas de debug) la marca y
   // empieza a seleccionar; después cada toque marca o desmarca. Arriba quedan cuántas van y «Eliminar»
   // (con Deshacer). La ✕, «atrás» o cambiar de página dejan de seleccionar.
-  const SELECT_HOLD_MS = 2000;
+  const selectHold = () => Number(S.settings.selectHold) || 500;
   function holdToSelect(cell, feed, id) {
-    longPress(cell, SELECT_HOLD_MS, 'pressing', () => startSelect(feed, id), () => !feed.sel);
+    longPress(cell, selectHold, 'pressing', () => startSelect(feed, id), () => !feed.sel);
   }
   function startSelect(feed, id) {
     feed.sel = new Set();
@@ -1515,12 +1997,16 @@
     feed.refreshHead();
     return true;
   }
-  function selectionHead(feed, what) {
+  // folder: la carpeta a la vista (ahí «Quitar» la saca de la carpeta en vez de eliminarla de Me gusta).
+  function selectionHead(feed, what, folder) {
     const n = feed.sel.size;
     return [
       h('button', { class: 'ib', 'aria-label': 'Dejar de seleccionar', onclick: () => endSelect(feed) }, icon('x', 24)),
       h('h1', { text: n === 1 ? '1 seleccionado' : n + ' seleccionados' }),
-      h('button', { class: 'pill danger', disabled: !n, onclick: () => deleteSelected(feed, what) }, icon('trash', 18), 'Eliminar')
+      what === 'likes' ? h('button', { class: 'pill', disabled: !n, onclick: () => moveSelected(feed, folder) }, icon('folder', 18), 'Mover') : null,
+      folder
+        ? h('button', { class: 'pill danger', disabled: !n, onclick: () => unfileSelected(feed, folder) }, 'Quitar')
+        : h('button', { class: 'pill danger', disabled: !n, 'aria-label': 'Eliminar', title: 'Eliminar', onclick: () => deleteSelected(feed, what) }, icon('trash', 18))
     ];
   }
   // what: 'likes' (los quita de Me gusta) o 'history' (los borra del historial).
@@ -2796,6 +3282,7 @@
     }
     blurPost();
     if (feed) setTimeout(refocusVisible, 700);
+    releasePics(viewEl);
     fill(viewEl, ...[].concat(nodes));
     current = { feed: feed || null };
     updateSnap();
@@ -2891,13 +3378,14 @@
     return { parts, q, key: raw };
   }
 
-  // Pestaña de abajo que se marca en cada página. Ajustes (y lo que cuelga de ahí) se abre desde Favoritos.
+  // Botón de abajo que se marca en cada página: Inicio, Buscar, (Aleatorio), Tú y Ajustes. Seguidos y
+  // Favoritos (Me gusta, Historial) son «Tú»; lo que cuelga de Ajustes, Ajustes.
   const TAB_OF = {
     home: 'home', tag: 'home', user: 'home', news: 'home',
-    search: 'search',
+    search: 'search', visited: 'search',
     random: 'random', mix: 'random',
-    following: 'following', favorites: 'following',
-    likes: 'likes', history: 'likes', visited: 'search', settings: 'likes', hidden: 'likes', blocked: 'likes', stats: 'likes', week: 'likes', recap: 'likes', topusers: 'likes', tree: 'likes'
+    following: 'me', favorites: 'me', likes: 'me', history: 'me',
+    settings: 'settings', hidden: 'settings', blocked: 'settings', debug: 'settings', stats: 'settings', week: 'settings', recap: 'settings', topusers: 'settings', tree: 'settings'
   };
   let lastNavWasBack = false;
   let lastNavFromTab = false; // se llegó tocando una pestaña de abajo
@@ -2924,10 +3412,12 @@
     replacing = false;
     closeViewer();
     closeSheet();
+    closeCropper();
 
     const name = parts[0] || 'home';
     document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === (TAB_OF[name] || 'home')));
     document.querySelectorAll('#tabs a').forEach((a) => (a.classList.contains('on') ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
+    syncTabs();
 
     if (name === 'tag' && parts[1]) return routeTag(parts[1], q);
     if (name === 'user' && parts[1]) return routeUser(parts[1]);
@@ -2936,7 +3426,7 @@
     // «favorites» era el nombre de Seguidos hasta la 1.0.9.
     if (name === 'following' || name === 'favorites') return routeFollowing(q);
     if (name === 'search') return routeSearch();
-    if (name === 'likes') return routeLikes();
+    if (name === 'likes') return routeLikes(q);
     if (name === 'history') return routeHistory();
     if (name === 'visited') return routeVisited();
     if (name === 'stats') return routeStats();
@@ -2945,6 +3435,7 @@
     if (name === 'tree') return routeTree(parts[1] || '');
     if (name === 'hidden') return routeHidden();
     if (name === 'blocked') return routeBlocked();
+    if (name === 'debug') return routeDebug();
     if (name === 'news') return routeNews();
     if (name === 'settings') return routeSettings();
     return routeHome(q);
@@ -2987,9 +3478,12 @@
     );
   }
 
-  // Círculo con la imagen del hashtag (la de JoyReactor); mientras carga, o si no tiene, «#».
+  // Círculo con la imagen del hashtag (la de JoyReactor); mientras carga, o si no tiene, «#». Si le pusiste
+  // un GIF (S.pics), ese; animate = que se mueva (página del hashtag y listas de Seguidos).
   const picCache = new Map();
-  function tagPic(name, cls, fallback, known) {
+  function tagPic(name, cls, fallback, known, animate) {
+    const own = picOf('tag', name);
+    if (own) return putPic(h('span', { class: cls }), own, animate);
     const c = colorFor(name);
     const el = h('span', { class: cls, style: { background: c[0], color: c[1] } }, fallback);
     const show = (pic) => {
@@ -3138,8 +3632,14 @@
     }
   }
 
+  // Versión nueva: se busca al abrir la app, al volver a ella (como mucho cada 10 minutos) y cada media
+  // hora mientras está abierta; el aviso sale en Inicio sin reiniciar. «Luego» lo esconde hasta que la
+  // app se vuelva a abrir.
+  const UPDATE_EVERY = 10 * 60000;
+  let lastUpdateCheck = 0;
+  let updateLater = '';
   function updateBanner() {
-    if (!S.update) return null;
+    if (!S.update || S.update.version === updateLater) return null;
     return h('div', { class: 'notice green' },
       h('strong', { text: 'Versión nueva disponible: ' + S.update.version }),
       h('span', { text: 'Toca Actualizar y después Instalar. Tus favoritos y lo que sigues se conservan.' }),
@@ -3148,7 +3648,7 @@
         h('button', {
           class: 'btn quiet',
           onclick: () => {
-            S.update = null;
+            updateLater = S.update.version;
             if (current && current.feed) current.feed.refresh();
           }
         }, 'Luego')
@@ -3158,6 +3658,8 @@
 
   // manual = se tocó el botón de Ajustes: si hay una versión nueva, se descarga e instala en el acto.
   async function lookForUpdate(manual, btn) {
+    const before = S.update ? S.update.version : '';
+    lastUpdateCheck = Date.now();
     try {
       S.update = await RS.checkForUpdate();
     } catch (e) {
@@ -3166,8 +3668,11 @@
     }
     if (manual && S.update && RS.android) return installUpdate(btn);
     if (manual) toast(S.update ? 'Hay una versión nueva: ' + S.update.version : 'Ya tienes la última versión (' + RS.version() + ')');
-    if (S.update && current && current.feed && /^home:/.test(current.feed.key)) current.feed.refresh();
+    if (S.update && S.update.version !== before && current && current.feed && /^home:/.test(current.feed.key)) current.feed.refresh();
   }
+  setInterval(() => {
+    if (!document.hidden && Date.now() - lastUpdateCheck > 30 * 60000) lookForUpdate(false);
+  }, 60000);
 
   // ================================================================ Inicio
 
@@ -3334,7 +3839,8 @@
           const inMix = !!(fav && S.mix.sources[fav.name] && S.mix.sources[fav.name].on);
           openSheet('Más opciones de #' + canon,
             tagSheetHead(canon),
-            fav
+            sheetRow('film', (picOf('tag', canon) ? 'Cambiar' : 'Poner') + ' el GIF o video', 'Un pedazo de un GIF o video de sus posts, como foto.', () => openPicSheet('tag', canon)),
+            fav && S.settings.randomTab
               ? h('div', { class: 'sheet-row' },
                   icon('shuffle', 22),
                   h('span', { class: 'grow' }, h('span', { class: 'sr-l', text: 'En tu Aleatorio' }), h('span', { class: 'sr-s', text: 'Sus posts salen al barajar en Aleatorio.' })),
@@ -3376,7 +3882,7 @@
       const blocked = isBlocked(name) || isBlocked(canon);
       fill(el,
         h('div', { class: 'hero-row' },
-          tagPic(canon, 'hero-tile', '#', info ? info.pic || 0 : undefined),
+          tagPic(canon, 'hero-tile', '#', info ? info.pic || 0 : undefined, true),
           h('div', { class: 'grow' }, h('h2', { text: canon }), h('span', { class: 'meta', text: blocked ? 'Bloqueado · sus posts no salen en ningún feed' : meta }))
         ),
         h('div', { class: 'hero-actions trio' }, followBtn, bellBtn, moreBtn),
@@ -3421,12 +3927,12 @@
       ]);
       return;
     }
-    // Un hashtag abre con todos sus posts barajados; si lo sigues como cuenta, en orden (lo más reciente
-    // primero) y en miniaturas, como el perfil de un usuario. El botón de barajar cambia entre los dos.
-    // Las pestañas eligen qué se ve (Todos, Videos y GIF y, en las cuentas, Favoritos).
+    // Un hashtag se ve siempre al azar (lo pidió el usuario en la 1.7.0: sin botón de orden). Si lo sigues
+    // como cuenta, como el perfil de un usuario: en orden (lo más reciente primero), en miniaturas, con
+    // Favoritos y con el botón de barajar. Las pestañas eligen qué se ve (Todos, Videos y GIF…).
     const profile = !!tagProfileOf(name);
     const type = 'ALL';
-    const random = q.get('order') ? q.get('order') === 'random' : !profile;
+    const random = profile ? q.get('order') === 'random' : true;
     const tab = profile && q.get('show') === 'fav' ? 'fav' : /[gv]/.test(q.get('media') || '') ? 'anim' : 'all';
     const kinds = tab === 'anim' ? ['gif', 'video'] : [];
     const key = 'tag:' + name.toLowerCase() + ':' + (random ? 'random' : 'recent') + ':' + tab + (profile ? ':perfil' : '');
@@ -3491,7 +3997,7 @@
     showFeed(f);
   }
 
-  // Pestañas de un hashtag, como las del perfil, y a la derecha el botón de barajar (encendido = barajado).
+  // Pestañas de un hashtag, como las del perfil; en las cuentas, a la derecha, el botón de barajar.
   function tagTabs(tab, profile, random, url) {
     const t = (id, ic, label) =>
       h('button', { class: 'ptab' + (tab === id ? ' on' : ''), role: 'tab', 'aria-selected': String(tab === id), onclick: () => tab !== id && navReplace(url({ tab: id })) }, icon(ic, 20), label);
@@ -3500,7 +4006,7 @@
       t('all', 'grid', 'Todos'),
       t('anim', 'film', 'Videos y GIF'),
       profile ? t('fav', 'heart', 'Favoritos') : null,
-      h('button', {
+      !profile ? null : h('button', {
         class: 'ptab shuf' + (random ? ' on' : ''),
         'aria-pressed': String(random),
         'aria-label': shuffleLabel,
@@ -3567,6 +4073,7 @@
           setFollow(shown, u ? u.id : 0, !on);
           toast(on ? 'Dejaste de seguir a ' + shown : 'Ahora sigues a ' + shown + ': está en Seguidos › Perfiles');
           draw();
+          if (!on) askPic('user', shown);
         }
       }, icon(on ? 'usercheck' : 'userplus', 19), on ? 'Siguiendo' : 'Seguir');
       const fol = S.following[userKey(shown)];
@@ -3744,6 +4251,8 @@
   }
 
   function userPic(name, userId, cls) {
+    const own = picOf('user', name);
+    if (own) return putPic(h('span', { class: cls || 'htile' }), own);
     const c = colorFor(name);
     const pic = h('span', { class: cls || 'htile', style: { background: c[1], color: '#0f0e0d' } }, String(name).charAt(0).toUpperCase());
     if (userId) {
@@ -3771,6 +4280,7 @@
       setFollow(name, userId, on);
       paint();
       if (onChange) onChange(on);
+      if (on) askPic('user', name);
     });
     paint();
     return b;
@@ -4255,14 +4765,15 @@
       const row = (f) =>
         h('div', { class: 'result' },
           h('a', { href: '#/tag/' + enc(f.name) },
-            tagPic(f.name, 'htile', f.kind === 'category' ? f.name.charAt(0).toUpperCase() : '#'),
+            tagPic(f.name, 'htile', f.kind === 'category' ? f.name.charAt(0).toUpperCase() : '#', undefined, true),
             h('span', { class: 'rtext' },
               h('span', { class: 'n', text: f.name }),
-              h('span', { class: 'm', text: (f.kind === 'category' ? 'Categoría · ' : 'Hashtag · ') + mixText(f.name) })
+              h('span', { class: 'm', text: (f.kind === 'category' ? 'Categoría' : 'Hashtag') + (S.settings.randomTab ? ' · ' + mixText(f.name) : '') })
             )
           ),
           bellBtn(f),
-          unfollowBtn(f)
+          unfollowBtn(f),
+          rowMore('tag', f.name)
         );
 
       fill(lists,
@@ -4274,7 +4785,7 @@
     }
 
     drawLists();
-    mount([h('header', { class: 'top' }, h('h1', { text: 'Seguidos' })), tabsEl, sb.el, sb.results, lists]);
+    mount([h('header', { class: 'top has-back' }, backBtn('/likes'), h('h1', { text: 'Seguidos' })), tabsEl, sb.el, sb.results, lists]);
     pageFollowHook = drawLists; // al seguir desde el buscador de arriba (menú «como hashtag o como cuenta»)
   }
 
@@ -4285,7 +4796,7 @@
     const tagRow = (x) =>
       h('div', { class: 'result' },
         h('a', { href: '#/tag/' + enc(x.name) },
-          tagPic(x.name, 'htile', '#', x.pic),
+          tagPic(x.name, 'htile', '#', x.pic, true),
           h('span', { class: 'rtext' }, h('span', { class: 'n', text: '#' + x.name }), h('span', { class: 'm', text: 'Hashtag que sigues como cuenta' }))
         ),
         h('button', {
@@ -4310,7 +4821,8 @@
               draw();
             });
           }
-        }, 'Siguiendo')
+        }, 'Siguiendo'),
+        rowMore('tag', x.name)
       );
     const draw = () => {
       fill(tabsEl, followTabs('users'));
@@ -4347,25 +4859,19 @@
                 persist('following', 0);
                 draw();
               });
-            })
+            }),
+            rowMore('user', x.name)
           )
         )
       );
     };
     const sb = searchBox('Buscar @usuario', false, null, true, { usersOnly: true, onFollow: () => draw() });
     draw();
-    mount([h('header', { class: 'top' }, h('h1', { text: 'Seguidos' })), tabsEl, sb.el, sb.results, listEl]);
+    mount([h('header', { class: 'top has-back' }, backBtn('/likes'), h('h1', { text: 'Seguidos' })), tabsEl, sb.el, sb.results, listEl]);
     pageFollowHook = draw;
   }
 
   // ================================================================ Favoritos: me gusta e historial
-
-  // Ajustes, con un puntito mientras haya un resumen de la semana sin mirar.
-  const settingsLink = () => {
-    const a = iconLink('gear', recapUnseen() ? 'Ajustes: tu resumen de la semana está listo' : 'Ajustes', '#/settings');
-    if (recapUnseen()) a.classList.add('has-dot');
-    return a;
-  };
 
   function favTabs(active) {
     return pageTabs('Favoritos', active, [
@@ -4376,23 +4882,33 @@
 
   // Dentro del Historial: los posts que miraste o los perfiles que visitaste.
   const likedItems = () => Object.values(S.likes).sort((a, b) => b.at - a.at).map((x) => ({ post: x.post }));
-  function routeLikes() {
+  function routeLikes(q) {
+    const fid = q && q.get('folder');
+    const folder = fid ? S.folders[fid] : null;
+    if (fid && !folder) return navReplace('#/likes');
     const all = Object.values(S.likes).sort((a, b) => b.at - a.at);
-    const items = likedItems();
-    const sig = all.length + '|' + (all[0] ? all[0].at : 0);
+    const pick = () => {
+      const f = fid && S.folders[fid];
+      const keep = f ? new Set(f.ids) : null;
+      return likedItems().filter((x) => !keep || keep.has(x.post.id));
+    };
+    const items = pick();
+    const sig = all.length + '|' + (all[0] ? all[0].at : 0) + (folder ? '|' + fid + ':' + folder.ids.length : '');
 
     const f = cached('likes:' + sig, () => new Feed({
       key: 'likes',
       kind: 'static',
       source: 'likes',
       items,
-      reload: likedItems,
-      memoryKey: 'likes',
-      anchor: feedMemory.get('likes'),
+      reload: pick,
+      memoryKey: 'likes' + (fid ? ':' + fid : ''),
+      anchor: feedMemory.get('likes' + (fid ? ':' + fid : '')),
       mode: 'grid',
-      head: (f) => (f.sel ? selectionHead(f, 'likes') : [h('h1', { text: 'Favoritos' }), settingsLink()]),
-      extra: () => favTabs('likes'),
-      empty: () => emptyBox('heart', 'Todavía no tienes me gusta', 'Toca el corazón en cualquier post.')
+      head: (f) => (f.sel ? selectionHead(f, 'likes', fid ? S.folders[fid] : null) : [h('h1', { text: 'Tú' })]),
+      extra: () => [meHeader(), favTabs('likes'), folderStrip(fid), fid && S.folders[fid] ? folderBar(S.folders[fid]) : null],
+      empty: () => (fid
+        ? emptyBox('folder', 'Esta carpeta está vacía', 'En Todos, mantén presionada una miniatura, elige los posts y toca Mover.')
+        : emptyBox('heart', 'Todavía no tienes me gusta', 'Toca el corazón en cualquier post.'))
     }));
     showFeed(f);
     gridOnArrival(f);
@@ -4805,8 +5321,9 @@
       memoryKey: 'history',
       anchor: feedMemory.get('history'),
       mode: 'grid',
-      head: (f) => (f.sel ? selectionHead(f, 'history') : [h('h1', { text: 'Favoritos' }), settingsLink()]),
+      head: (f) => (f.sel ? selectionHead(f, 'history') : [h('h1', { text: 'Tú' })]),
       extra: () => [
+        meHeader(),
         favTabs('history'),
         list.length
           ? h('div', { class: 'countline', style: { display: 'flex', alignItems: 'center', gap: '8px' } },
@@ -5010,13 +5527,13 @@
   // ---- Respaldo automático (app de Android). Al desinstalar, Android borra todo lo que la app guarda;
   // por eso, cada vez que la app pasa a segundo plano y cambió algo importante (o una vez al día), se
   // escribe un respaldo en Descargas › ReactorSwipe, que no se borra. Al reinstalar, se restaura desde
-  // ahí (restoreBanner en Inicio o Ajustes › Respaldo › Restaurar).
+  // ahí (restoreBanner en Novedades, que cuenta la campanita, o Ajustes › Respaldo y versión › Restaurar).
   const BACKUP_EVERY = 24 * 3600000;
   const hasUserData = () =>
     Object.keys(S.likes).length + Object.keys(S.favorites).length + Object.keys(S.following).length + Object.keys(S.tagProfiles).length + Object.keys(S.dislikes).length > 0;
   function backupSig() {
     const likes = Object.values(S.likes);
-    return [likes.length, likes.reduce((m, x) => Math.max(m, x.at || 0), 0), Object.keys(S.favorites).length, Object.keys(S.following).length, Object.keys(S.tagProfiles).length, Object.keys(S.dislikes).length, S.mix.exclude.length].join('|');
+    return [likes.length, likes.reduce((m, x) => Math.max(m, x.at || 0), 0), Object.keys(S.favorites).length, Object.keys(S.following).length, Object.keys(S.tagProfiles).length, Object.keys(S.dislikes).length, S.mix.exclude.length, Object.keys(S.pics).length, Object.values(S.pics).reduce((m, x) => Math.max(m, x.at || 0), 0), Object.values(S.folders).reduce((n, f) => n + f.ids.length + 1, 0)].join('|');
   }
   let backingUp = null;
   function autoBackup(force) {
@@ -5148,8 +5665,35 @@
     return rows;
   }
 
-  // Ajustes en cinco grupos, por uso: Tu actividad, Lo que no quieres ver, Avisos, Cómo se ve y Respaldo y
-  // versión. Lo que depende de un interruptor (cada cuánto revisar, la sensibilidad) solo se ve encendido.
+  // ---- Piezas de Ajustes (también las usa Herramientas de debug).
+  const navLine = (ic, title, text, href, dot) =>
+    h('a', { class: 'line navline', href },
+      h('span', { class: 'navline-ic' + (dot ? ' has-dot' : '') }, icon(ic, 20)),
+      h('div', { class: 'grow' }, h('span', { class: 'sname', text: title }), h('span', { class: 'smeta', text })),
+      icon('chevright', 18)
+    );
+  const setGroup = (title, ...kids) => h('div', { class: 'setgroup' }, h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: title }), ...kids);
+  // Un interruptor; sus opciones (sub) solo se ven mientras está encendido.
+  const switchLine = (title, text, on, onToggle, sub) => {
+    const subEl = sub ? h('div', { class: 'subopts' }, sub) : null;
+    if (subEl) subEl.hidden = !on;
+    return [
+      h('div', { class: 'line' },
+        h('div', { class: 'grow' }, h('span', { class: 'sname', text: title }), text ? h('span', { class: 'smeta', text }) : null),
+        switchBtn(on, title, (v) => {
+          onToggle(v);
+          if (subEl) subEl.hidden = !v;
+        })
+      ),
+      subEl
+    ];
+  };
+  const segField = (title, text, options, value, onPick) =>
+    h('div', { class: 'field' }, h('span', { class: 't', text: title }), text ? h('span', { class: 'd', text }) : null, seg(options, value, onPick));
+
+  // Ajustes (un botón de la barra de abajo), por uso: Tu actividad, Lo que no quieres ver, Avisos, Cómo se
+  // ve, Funciones para el futuro, Herramientas de debug y Respaldo y versión. Lo que depende de un
+  // interruptor (cada cuánto revisar, la sensibilidad) solo se ve encendido.
   function routeSettings() {
     const st = S.settings;
     const save = () => persist('settings', 0);
@@ -5160,42 +5704,17 @@
       fileInput.value = '';
     });
     const watching = watchList();
-
-    const navLine = (ic, title, text, href, dot) =>
-      h('a', { class: 'line navline', href },
-        h('span', { class: 'navline-ic' + (dot ? ' has-dot' : '') }, icon(ic, 20)),
-        h('div', { class: 'grow' }, h('span', { class: 'sname', text: title }), h('span', { class: 'smeta', text })),
-        icon('chevright', 18)
-      );
-    const group = (title, ...kids) => h('div', { class: 'setgroup' }, h('h2', { class: 'sec section-label', style: { padding: '18px 16px 6px' }, text: title }), ...kids);
-    // Un interruptor; sus opciones (sub) solo se ven mientras está encendido.
-    const switchLine = (title, text, on, onToggle, sub) => {
-      const subEl = sub ? h('div', { class: 'subopts' }, sub) : null;
-      if (subEl) subEl.hidden = !on;
-      return [
-        h('div', { class: 'line' },
-          h('div', { class: 'grow' }, h('span', { class: 'sname', text: title }), text ? h('span', { class: 'smeta', text }) : null),
-          switchBtn(on, title, (v) => {
-            onToggle(v);
-            if (subEl) subEl.hidden = !v;
-          })
-        ),
-        subEl
-      ];
-    };
-    const segField = (title, text, options, value, onPick) =>
-      h('div', { class: 'field' }, h('span', { class: 't', text: title }), text ? h('span', { class: 'd', text }) : null, seg(options, value, onPick));
+    const group = setGroup;
     const nHidden = Object.keys(S.dislikes).length;
     const nBlocked = S.mix.exclude.length;
 
     mount([
-      h('header', { class: 'top has-back' }, backBtn('/likes'), h('h1', { text: 'Ajustes' })),
+      h('header', { class: 'top' }, h('h1', { text: 'Ajustes' })),
       group('Tu actividad',
         recapUnseen()
           ? navLine('trophy', 'Resumen de la semana', 'Ya está el de la semana pasada: toca para verlo.', '#/recap', true)
           : navLine('trophy', 'Resumen de la semana', 'Los 10 usuarios y hashtags que más tiempo miraste.', '#/week'),
         navLine('chart', 'Estadísticas', 'Cuánto y cómo usas la app (solo en este teléfono).', '#/stats'),
-        navLine('hash', 'Árbol de hashtags', 'Herramienta temporal: qué hashtags hay dentro de cada uno.', '#/tree'),
         segField('Historial: guardar hasta', 'Los posts que miras más de 10 segundos. Al llenarse se borran los más viejos.', [[50, '50'], [100, '100'], [200, '200'], [500, '500']], Number(st.historyMax) || 100, (v) => {
           st.historyMax = v;
           S.history = (S.history || []).slice(0, v);
@@ -5234,11 +5753,6 @@
         RS.android ? null : h('p', { class: 'smeta', style: { padding: '0 16px 14px' }, text: 'Android puede cerrar Firefox en segundo plano para ahorrar batería y entonces los avisos se retrasan. Si no te llegan: Ajustes de Android → Apps → Firefox → Batería → Sin restricciones.' })
       ),
       group('Cómo se ve',
-        switchLine('Fecha de los posts', 'Cuándo se publicó cada post («hace 3 h»).', st.showDates, (on) => {
-          st.showDates = on;
-          save();
-          applyDisplay();
-        }),
         switchLine('Estrellas y rating', 'La reputación del autor (★) y el rating del post en JoyReactor (↑), en el feed y en pantalla completa.', st.showScores, (on) => {
           st.showScores = on;
           save();
@@ -5251,6 +5765,21 @@
           st.seekSpan = v;
           save();
         }))
+      ),
+      group('Funciones para el futuro',
+        switchLine('Aleatorio', 'Posts al azar de lo que sigues, con tu mezcla. Encendido, vuelve a la barra de abajo.', !!st.randomTab, (on) => {
+          st.randomTab = on;
+          save();
+          syncTabs();
+          for (const [k, f] of feeds) {
+            if (current && current.feed === f) continue;
+            f.destroy();
+            feeds.delete(k);
+          }
+        })
+      ),
+      group('Herramientas de debug',
+        navLine('sliders', 'Herramientas de debug', 'Tiempo para seleccionar, fecha de los posts y árbol de hashtags.', '#/debug')
       ),
       group('Respaldo y versión',
         h('div', { class: 'field' },
@@ -5305,6 +5834,31 @@
   // Ajustes › Hashtags bloqueados.
   function routeBlocked() {
     mount([h('header', { class: 'top has-back' }, backBtn('/settings'), h('h1', { text: 'Hashtags bloqueados' })), blockedField(null, false)]);
+  }
+
+  // Ajustes › Herramientas de debug: ajustes finos y herramientas para entender la app.
+  function routeDebug() {
+    const st = S.settings;
+    const save = () => persist('settings', 0);
+    mount([
+      h('header', { class: 'top has-back' }, backBtn('/settings'), h('h1', { text: 'Herramientas de debug' })),
+      setGroup('Gestos',
+        segField('Tiempo para seleccionar varios', 'Cuánto hay que mantener presionada una miniatura de Me gusta o Historial para empezar a seleccionar.', [[300, '0,3 s'], [500, '0,5 s'], [1000, '1 s'], [2000, '2 s']], Number(st.selectHold) || 500, (v) => {
+          st.selectHold = v;
+          save();
+        })
+      ),
+      setGroup('Posts',
+        switchLine('Fecha de los posts', 'Cuándo se publicó cada post («hace 3 h»).', st.showDates, (on) => {
+          st.showDates = on;
+          save();
+          applyDisplay();
+        })
+      ),
+      setGroup('Hashtags',
+        navLine('hash', 'Árbol de hashtags', 'Herramienta temporal: qué hashtags hay dentro de cada uno, como carpetas.', '#/tree')
+      )
+    ]);
   }
 
   // ================================================================ Estadísticas de uso (solo en este teléfono)
@@ -5777,7 +6331,6 @@
 
   // ================================================================ Arranque
 
-  let lastResumeCheck = 0;
   window.RSApp = {
     tabId: null,
     navigate(hash) {
@@ -5788,6 +6341,7 @@
     // 3) vuelve a las miniaturas si abriste un post desde ahí, 4) vuelve a la página anterior, 5) desde
     // otra sección vuelve a Inicio, 6) desde Inicio sale de la app.
     handleBack() {
+      if (closeCropper()) return 'handled';
       if (closeSheet()) return 'handled';
       if (current && current.feed && endSelect(current.feed)) return 'handled';
       if (viewer) {
@@ -5809,10 +6363,7 @@
     onResume() {
       loadNativeNews();
       if (/^#\/(settings|news)/.test(location.hash)) route();
-      if (Date.now() - lastResumeCheck > 3 * 3600000) {
-        lastResumeCheck = Date.now();
-        lookForUpdate(false);
-      }
+      if (Date.now() - lastUpdateCheck > UPDATE_EVERY) lookForUpdate(false);
     }
   };
   if (ext && ext.tabs && ext.tabs.getCurrent) {
@@ -5824,13 +6375,22 @@
       .catch(() => {});
   }
 
+  // Aleatorio solo está en la barra si lo encendiste (Ajustes › Funciones para el futuro), y Ajustes lleva
+  // un puntito mientras haya un resumen de la semana sin mirar.
+  function syncTabs() {
+    const r = document.querySelector('#tabs [data-tab="random"]');
+    if (r) r.hidden = !S.settings.randomTab;
+    const st = document.querySelector('#tabs [data-tab="settings"]');
+    if (st) st.classList.toggle('has-dot', recapUnseen());
+  }
   function initTabs() {
     document.querySelectorAll('#tabs [data-icon]').forEach((s) => s.replaceWith(icon(s.dataset.icon, 24)));
+    syncTabs();
     document.querySelectorAll('#tabs a').forEach((a) =>
       a.addEventListener('click', (e) => {
-        // Favoritos con un post en grande (Me gusta o Historial): vuelve a las miniaturas de esa lista.
+        // Tú con un post en grande (Me gusta o Historial): vuelve a las miniaturas de esa lista.
         const f = current && current.feed;
-        if (a.dataset.tab === 'likes' && f && f.mode === 'feed' && (f.source === 'likes' || f.source === 'history') && f.root.isConnected) {
+        if (a.dataset.tab === 'me' && f && f.mode === 'feed' && (f.source === 'likes' || f.source === 'history') && f.root.isConnected) {
           e.preventDefault();
           f.setMode('grid', f.topVisibleId());
           return;
@@ -5860,7 +6420,6 @@
     if (RS.android) {
       loadNativeNews();
       syncNative();
-      lastResumeCheck = Date.now();
     }
     initTabs();
     initPullToRefresh();
