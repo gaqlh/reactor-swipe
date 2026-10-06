@@ -1325,7 +1325,6 @@
       const want = picWant(kind, name);
       const sub = {
         image: 'Una imagen (o un GIF, quieto) de sus posts o de tus me gusta, recortada como quieras.',
-        any: 'Una imagen o un pedazo de un GIF de sus posts o de tus me gusta, recortado como quieras.',
         clip: 'Un pedazo de un GIF o video de sus posts o de tus me gusta, que se repite.'
       }[want];
       openSheet('Opciones de ' + (user ? '@' : '#') + name,
@@ -1353,12 +1352,12 @@
     route();
   }
 
-  // Qué se le pone: a un usuario, una imagen; a un hashtag, un GIF o video (lo pidió el usuario en la 1.7.1);
-  // a un hashtag que sigues como cuenta, cualquiera de las dos (1.8.0: 'any'). Para una imagen también se
-  // puede elegir un GIF (si no tiene fotos): queda quieto, en el momento que elijas (1.7.2).
-  const picWant = (kind, name) => (kind === 'user' ? 'image' : tagProfileOf(name) ? 'any' : 'clip');
+  // Qué se le pone: a un usuario y a un hashtag que sigues como cuenta, una imagen; a un hashtag, un GIF o
+  // video que se mueve. Eso distingue a los perfiles de los hashtags (lo pidió el usuario en la 1.7.1 y lo
+  // repitió en la 1.8.1). Para una imagen también vale un GIF: queda quieto, en el momento que elijas (1.7.2).
+  const picWant = (kind, name) => (kind === 'user' || tagProfileOf(name) ? 'image' : 'clip');
   const mediaFits = (m, want) => (want === 'clip' ? m.kind === 'video' : m.kind === 'image' || m.kind === 'video');
-  const picWhat = (want, the) => ({ image: the ? 'la foto' : 'una foto', any: the ? 'la foto o el GIF' : 'una foto o un GIF', clip: the ? 'el GIF' : 'un GIF' })[want];
+  const picWhat = (want, the) => ({ image: the ? 'la foto' : 'una foto', clip: the ? 'el GIF' : 'un GIF' })[want];
   // Las candidatas que vas marcando, por cuenta, mientras la app está abierta.
   const picCandidates = new Map();
 
@@ -1401,8 +1400,8 @@
       );
       return b;
     };
-    // En «Elegidas», más grandes y con los GIF moviéndose, para comparar (lo pidió el usuario en la 1.8.0):
-    // tocar una la recorta; la ✕ la desmarca.
+    // En «Elegidas», más grandes y, para un hashtag, con los GIF moviéndose para compararlos (lo pidió el
+    // usuario en la 1.8.0; para una foto, que queda quieta, se ven quietos): tocar una la recorta; la ✕ la desmarca.
     const liveGif = (m) => {
       const v = document.createElement('video');
       v.muted = true;
@@ -1422,7 +1421,7 @@
     const finalCell = (x) =>
       h('div', { class: 'pickfinal' },
         h('button', { type: 'button', class: 'pick big', 'aria-label': 'Usar esta', onclick: () => onPick(x.m, x.post) },
-          x.m.kind === 'video' ? liveGif(x.m) : h('img', { src: RS.imageUrl(x.m), alt: '', draggable: 'false' }),
+          x.m.kind === 'video' && want === 'clip' ? liveGif(x.m) : h('img', { src: x.m.kind === 'image' ? RS.imageUrl(x.m) : RS.posterUrl(x.m), alt: '', draggable: 'false' }),
           x.m.kind === 'video' ? h('span', { class: 'tb', text: 'GIF' }) : null
         ),
         h('button', { type: 'button', class: 'pickx', 'aria-label': 'Desmarcar', onclick: () => {
@@ -1554,7 +1553,6 @@
     const title = (want === 'clip' ? 'GIF de ' : 'Foto de ') + who;
     const howTo = {
       image: 'Toca las imágenes que te gusten (o un GIF, que queda quieto) y después elige la definitiva',
-      any: 'Toca las imágenes o los GIF que te gusten y después elige el definitivo',
       clip: 'Toca los GIF que te gusten y después elige el definitivo'
     }[want];
     const picker = picPicker(kind, name, want, (m, post) => {
@@ -1598,8 +1596,7 @@
     if (c.onCancel) c.onCancel();
     return true;
   }
-  // want: 'clip' (un pedazo que se repite), 'image' (una imagen; si es un GIF, el momento elegido, quieto)
-  // o 'any' (una cuenta: una imagen, o el pedazo de un GIF que se repite).
+  // want: 'clip' (un pedazo que se repite) o 'image' (una imagen; si es un GIF, el momento elegido, quieto).
   function openCropper(kind, name, m, postId, want, onCancel) {
     closeCropper();
     const isVid = m.kind === 'video';
@@ -2151,7 +2148,7 @@
   }
   // Menú de un hashtag (al mantenerlo presionado): qué es, seguirlo y bloquearlo.
   function openTagSheet(name) {
-    openSheet('#' + name, tagSheetHead(name), h('span', { class: 'sheet-label', text: 'Seguir' }), ...followRows(name, false), blockRow(name));
+    openSheet('#' + name, tagSheetHead(name), h('span', { class: 'sheet-label', text: 'Seguir' }), ...followRows(name, false), crossRow(name), blockRow(name));
   }
 
   // ---- Reputación del autor (ver RS.reputation en shared.js).
@@ -3176,6 +3173,10 @@
       this.total = 0; // cuántos posts dice JoyReactor que hay (para descontar los retirados)
       this.hero = null; // cabecera del hashtag o del usuario, que muestra cuántos posts hay
       this.reloadItems = o.reload || null; // listas guardadas (Me gusta, Historial): se releen al recargar
+      this.cross = o.cross || null; // cruzar hashtags: los que tiene que llevar cada post (kind 'cross')
+      this.crossOrder = null; // sus páginas, en orden aleatorio
+      this.crossFirst = null; // los posts de la página 1, que llegan con la cuenta
+      this.onTotal = o.onTotal || null;
       this.listeners = new Set();
 
       this.headEl = h('header', { class: 'top' + (o.back ? ' has-back' : '') });
@@ -3372,6 +3373,32 @@
           scan.note(list[i], this.last, res.posts, this.total);
           n += this.add(res.posts.map((post) => ({ post })));
         });
+        this.dry = !n;
+        return n;
+      }
+      if (this.kind === 'cross') {
+        // Cruzar hashtags: los posts que llevan todos (RS.fetchCross). Se ven al azar, como un hashtag: la
+        // primera consulta dice cuántas páginas hay y después se piden en orden aleatorio, de a 3.
+        if (!this.crossOrder) {
+          const first = await RS.fetchCross(this.cross, [1]);
+          this.total = first.count;
+          if (this.onTotal) this.onTotal(first.count);
+          this.crossFirst = first.pages[0].posts;
+          this.crossOrder = first.count ? RS.shuffle(Array.from({ length: first.lastPage }, (_, i) => i + 1)) : [];
+        }
+        const list = this.crossOrder.splice(0, this.dry ? 6 : 3);
+        const need = list.filter((pg) => pg !== 1);
+        const res = need.length ? await RS.fetchCross(this.cross, need) : { pages: [] };
+        const posts = [];
+        for (const pg of list) {
+          const got = pg === 1 ? { posts: this.crossFirst } : res.pages.find((x) => x.page === pg);
+          if (got) posts.push(...got.posts);
+        }
+        if (!this.crossOrder.length) {
+          this.done = true;
+          this.endText = this.total >= 1000 ? 'JoyReactor muestra hasta 1000 posts por búsqueda: ya los viste.' : 'No hay más posts que los lleven todos.';
+        }
+        const n = this.add(RS.shuffle(posts).map((post) => ({ post })));
         this.dry = !n;
         return n;
       }
@@ -3716,7 +3743,7 @@
   // Favoritos (Me gusta, Historial) son «Tú»; lo que cuelga de Ajustes, Ajustes.
   const TAB_OF = {
     home: 'home', tag: 'home', user: 'home', news: 'home',
-    search: 'search', visited: 'search',
+    search: 'search', visited: 'search', cross: 'search',
     random: 'random', mix: 'random',
     following: 'me', favorites: 'me', likes: 'me', history: 'me',
     settings: 'settings', hidden: 'settings', blocked: 'settings', debug: 'settings', stats: 'settings', week: 'settings', recap: 'settings', topusers: 'settings', tree: 'settings'
@@ -3760,6 +3787,7 @@
     // «favorites» era el nombre de Seguidos hasta la 1.0.9.
     if (name === 'following' || name === 'favorites') return routeFollowing(q);
     if (name === 'search') return routeSearch();
+    if (name === 'cross') return routeCross(q);
     if (name === 'likes') return routeLikes(q);
     if (name === 'history') return routeHistory();
     if (name === 'visited') return routeVisited();
@@ -3813,12 +3841,12 @@
   }
 
   // Círculo con la imagen del hashtag (la de JoyReactor); mientras carga, o si no tiene, «#». Si le pusiste
-  // un GIF o una foto (S.pics), esa; animate = que el GIF se mueva (página del hashtag y listas de Seguidos;
-  // desde la 1.8.0 también en las cuentas).
+  // un GIF (S.pics), ese; animate = que se mueva (página del hashtag y listas de Seguidos). Una cuenta no se
+  // mueve nunca: si tiene un GIF de cuando era hashtag (o de la 1.8.0), se ve quieto.
   const picCache = new Map();
   function tagPic(name, cls, fallback, known, animate) {
     const own = picOf('tag', name);
-    if (own) return putPic(h('span', { class: cls }), own, animate);
+    if (own) return putPic(h('span', { class: cls }), own, animate && !tagProfileOf(name));
     const c = colorFor(name);
     const el = h('span', { class: cls, style: { background: c[0], color: c[1] } }, fallback);
     const show = (pic) => {
@@ -4196,6 +4224,7 @@
                   })
                 )
               : null,
+            crossRow(canon),
             info ? sheetRow('hash', 'Ver en el árbol', 'Qué hashtags tiene dentro, como carpetas.', () => {
               closeSheet();
               nav('#/tree/' + enc(canon));
@@ -4718,13 +4747,13 @@
           if (my !== seq) return;
           const rows = [];
           if (user) rows.push(userRow(user, opts.onPick, opts.onFollow));
-          rows.push(...found.exact.slice(0, 15).map((t) => resultRow(t, onFav, opts.onPick)));
+          rows.push(...found.exact.slice(0, 15).map((t) => resultRow(t, onFav, opts.onPick, opts.pickOnly)));
           const likeUsers = withUsers
             ? closest(qUser, known.users, (u) => u.name, 3).filter((u) => !user || u.name.toLowerCase() !== user.name.toLowerCase())
             : [];
           if (found.similar.length || likeUsers.length) {
             rows.push(h('h2', { class: 'section-label similar-label', text: rows.length ? 'Parecidos' : 'Quizás buscabas' }));
-            rows.push(...found.similar.map((t) => resultRow(t, onFav, opts.onPick)));
+            rows.push(...found.similar.map((t) => resultRow(t, onFav, opts.onPick, opts.pickOnly)));
             rows.push(...likeUsers.map((u) => personRow(u.name, u.userId, 'Usuario', () => opts.onPick && opts.onPick({ type: 'user', name: u.name, pic: u.userId }), followPill(u.name, u.userId, opts.onFollow))));
           }
           fill(results, ...(rows.length ? rows : [h('div', { class: 'status', text: 'Sin resultados para «' + q + '»' })]));
@@ -4741,6 +4770,7 @@
       const first = results.dataset.q === q && results.querySelector('.result a');
       if (first) return first.click();
       if (opts.usersOnly) return nav('#/user/' + enc(q.replace(/^@/, '')));
+      if (opts.pickOnly) return opts.onPick({ type: 'tag', name: q });
       if (opts.onPick) opts.onPick({ type: 'tag', name: q });
       nav('#/tag/' + enc(q));
     });
@@ -4754,10 +4784,14 @@
   }
 
   // Fila de un hashtag en los resultados: + abre «Seguir como hashtag o como cuenta» (✓ si ya lo sigues).
-  function resultRow(t, onFav, onPick) {
-    const star = followTagBtn(t.name);
+  // pickOnly: tocarlo solo lo elige (cruzar hashtags), no abre el hashtag ni ofrece seguirlo.
+  function resultRow(t, onFav, onPick, pickOnly) {
+    const star = pickOnly ? null : followTagBtn(t.name);
     return h('div', { class: 'result' },
-      h('a', { href: '#/tag/' + enc(t.name), onclick: () => onPick && onPick({ type: 'tag', name: t.name, pic: t.image ? RS.numId(t.id) : 0 }) },
+      h('a', { href: '#/tag/' + enc(t.name), onclick: (e) => {
+        if (pickOnly) e.preventDefault();
+        if (onPick) onPick({ type: 'tag', name: t.name, pic: t.image ? RS.numId(t.id) : 0 });
+      } },
         tagPic(t.name, 'htile', '#', t.image ? RS.numId(t.id) : 0),
         h('span', { class: 'rtext' },
           h('span', { class: 'n' }, t.name, t.nsfw ? h('span', { class: 'nsfw', text: 'NSFW' }) : null),
@@ -4869,7 +4903,7 @@
   function routeSearch() {
     let sb = null;
     const idle = () => {
-      const parts = [recentSearches(() => fill(sb.results, idle())), visitedRow(), suggestedTags()].filter(Boolean);
+      const parts = [crossLink(), recentSearches(() => fill(sb.results, idle())), visitedRow(), suggestedTags()].filter(Boolean);
       return parts.length ? h('div', {}, parts) : h('p', { class: 'foot-note', text: 'Aquí verás lo que buscaste. Escribe un hashtag, una categoría o el nombre de un usuario.' });
     };
     sb = searchBox('Buscar hashtag o @usuario', true, null, true, { onPick: recordSearch, idle });
@@ -4882,6 +4916,85 @@
     pageFollowHook = () => {
       if (!sb.input.value.trim()) fill(sb.results, idle());
     };
+  }
+
+  // ================================================================ Cruzar hashtags (1.8.1)
+  //
+  // Los posts que llevan varios hashtags a la vez (#/cross?t=A&t=B…), con la búsqueda de JoyReactor, que
+  // cuenta hasta 1000. Se ven al azar, como un hashtag. Se llega desde Buscar («Cruzar hashtags») o desde
+  // el menú de un hashtag («Cruzar con otro hashtag…»). Arriba, cada hashtag es una ficha (tocarla lo
+  // quita) y «Añadir» abre el buscador.
+  const CROSS_MAX = 5;
+  const crossUrl = (tags) => '#/cross' + (tags.length ? '?' + tags.map((t) => 't=' + enc(t)).join('&') : '');
+  const crossLink = () =>
+    h('a', { class: 'cross-link', href: '#/cross' },
+      icon('hash', 22),
+      h('span', { class: 'grow' }, h('b', { text: 'Cruzar hashtags' }), h('small', { text: 'Los posts que llevan varios a la vez' })),
+      icon('chevright', 18)
+    );
+  const crossRow = (name) =>
+    sheetRow('search', 'Cruzar con otro hashtag…', 'Solo los posts que llevan los dos.', () => {
+      closeSheet();
+      nav(crossUrl([name]));
+    });
+  // Buscador para elegir otro hashtag: tocar uno lo suma (no abre el hashtag).
+  function crossPicker(tags, autofocus) {
+    return searchBox(tags.length ? 'Otro hashtag para cruzar' : 'Buscar un hashtag', autofocus, null, false, {
+      pickOnly: true,
+      onPick: (x) => {
+        if (x.type !== 'tag' || !x.name) return;
+        closeSheet();
+        if (!tags.some((t) => tkey(t) === tkey(x.name))) navReplace(crossUrl(tags.concat(x.name)));
+      }
+    });
+  }
+  function crossChips(tags, onAdd) {
+    return h('div', { class: 'wrap cross-chips' },
+      tags.map((t) => h('button', { type: 'button', class: 'xchip cross', 'aria-label': 'Quitar #' + t, onclick: () => navReplace(crossUrl(tags.filter((x) => x !== t))) }, '#' + t, icon('x', 16))),
+      tags.length < CROSS_MAX ? h('button', { type: 'button', class: 'xchip add', onclick: onAdd }, icon('plus', 16), 'Añadir') : null
+    );
+  }
+  function openCrossAdd(tags) {
+    const sb = crossPicker(tags, true);
+    openSheet('Añadir un hashtag', h('div', { class: 'sheet-title', text: 'Cruzar también con…' }), sb.el, sb.results);
+  }
+  function routeCross(q) {
+    const tags = [];
+    for (const raw of q.getAll('t')) {
+      const t = raw.trim().replace(/^#/, '');
+      if (t && tags.length < CROSS_MAX && !tags.some((x) => tkey(x) === tkey(t))) tags.push(t);
+    }
+    if (tags.length < 2) {
+      // Falta al menos uno: el buscador queda en la página.
+      const sb = crossPicker(tags, true);
+      mount([
+        h('header', { class: 'top has-back' }, backBtn('/search'), h('h1', { text: 'Cruzar hashtags' })),
+        tags.length ? crossChips(tags, () => sb.input.focus()) : null,
+        h('p', { class: 'countline cross-note', text: tags.length ? 'Elige otro: verás solo los posts que llevan los dos.' : 'Elige dos o más hashtags: verás solo los posts que los llevan todos.' }),
+        sb.el,
+        sb.results
+      ]);
+      return;
+    }
+    const key = 'cross:' + tags.map(tkey).sort().join('|');
+    const los = 'los ' + ['', '', 'dos', 'tres', 'cuatro', 'cinco'][tags.length];
+    const countEl = h('p', { class: 'countline' });
+    const showCount = (n) => fill(countEl, n >= 1000 ? '1000 o más posts llevan ' + los + ' (JoyReactor cuenta hasta 1000)' : n === 1 ? 'Un post lleva ' + los : fmt(n) + ' posts llevan ' + los);
+    const f = cached(key, () => new Feed({
+      key,
+      kind: 'cross',
+      cross: tags,
+      mode: 'feed',
+      back: true,
+      onTotal: showCount,
+      head: (f) => [backBtn('/search'), h('h1', { text: 'Cruzar hashtags' }), viewToggle(f)],
+      extra: (f) => {
+        if (f.crossOrder) showCount(f.total);
+        return [crossChips(tags, () => openCrossAdd(tags)), countEl];
+      },
+      empty: () => emptyBox('hash', 'Ningún post los lleva todos', 'Quita alguno tocando su ficha.')
+    }));
+    showFeed(f);
   }
 
   // ================================================================ Aleatorio

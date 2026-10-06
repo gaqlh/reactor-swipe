@@ -288,6 +288,23 @@
     };
   };
 
+  /**
+   * Cruzar hashtags (1.8.1): los posts que llevan todos los de tags, con search(tagNames). JoyReactor cuenta
+   * como mucho 1000 y aquí la página 1 es la más nueva. Varias páginas en una sola consulta:
+   * { count, lastPage, pages: [{ page, posts }] }.
+   */
+  RS.fetchCross = async function (tags, pages) {
+    const parts = pages.map((pg, i) => `p${i}: posts(page:${Number(pg)}){ ${POST_FIELDS} }`).join(' ');
+    const d = await gql(`query($t:[String!]){ search(query:"", tagNames:$t, showNsfw:true){ postPager{ count ${parts} } } }`, { t: tags });
+    const pp = (d.search && d.search.postPager) || {};
+    const count = pp.count || 0;
+    return {
+      count,
+      lastPage: Math.max(1, Math.ceil(count / PAGE_SIZE)),
+      pages: pages.map((pg, i) => ({ page: pg, posts: (pp['p' + i] || []).map(RS.normalizePost) }))
+    };
+  };
+
   // ---- Caché en el teléfono (IndexedDB) para lo que se puede volver a pedir, como los GIF y videos ya
   // encontrados en cada hashtag. No son datos del usuario: si se borra, solo se vuelve a pedir.
   const cacheDb = (() => {
