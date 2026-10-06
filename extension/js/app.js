@@ -2284,6 +2284,7 @@
     const p = it.post;
     const m = p.media[0];
     const quiet = !!feed && (feed.source === 'likes' || feed.source === 'history');
+    const explore = !!feed && feed.source === 'explore';
     const cell = h('div', { class: 'thumb' + (quiet && feed.sel && feed.sel.has(p.id) ? ' picked' : ''), 'data-id': p.id });
     const open = h('button', {
       class: 'thumb-open',
@@ -2298,6 +2299,12 @@
     else if (m && (m.kind === 'embed' || (m.kind === 'video' && m.real))) cell.append(h('span', { class: 'tb' }, icon('play', 14)));
     else if (m && (m.kind === 'video' || m.ext === 'gif')) cell.append(h('span', { class: 'tb', text: 'GIF' }));
 
+    // Explorar, como Instagram: sin botones; los GIF y videos en un cuadro alto y lo de Descubrir con su marca.
+    if (explore) {
+      if (m && (m.kind === 'video' || m.ext === 'gif')) cell.classList.add('tall');
+      if (it.discover) cell.append(h('span', { class: 'tnew', text: '✦ Nuevo' }));
+      return cell;
+    }
     if (quiet) {
       cell.append(h('span', { class: 'selmark', 'aria-hidden': 'true' }, icon('check', 16)));
       holdToSelect(cell, feed, p.id);
@@ -3199,6 +3206,8 @@
       this.hero = null; // cabecera del hashtag o del usuario, que muestra cuántos posts hay
       this.reloadItems = o.reload || null; // listas guardadas (Me gusta, Historial): se releen al recargar
       this.cross = o.cross || null; // cruzar hashtags: los que tiene que llevar cada post (kind 'cross')
+      this.chip = o.chip || 'all'; // Explorar (kind 'explore'): la ficha elegida
+      this.exp = null; // Explorar: tus hashtags y lo ya cargado (ver fetchExplore)
       this.crossOrder = null; // sus páginas, en orden aleatorio
       this.crossFirst = null; // los posts de la página 1, que llegan con la cuenta
       this.onTotal = o.onTotal || null;
@@ -3401,6 +3410,7 @@
         this.dry = !n;
         return n;
       }
+      if (this.kind === 'explore') return this.add(await fetchExplore(this));
       if (this.kind === 'cross') {
         // Cruzar hashtags: los posts que llevan todos (RS.fetchCross). Se ven al azar, como un hashtag: la
         // primera consulta dice cuántas páginas hay y después se piden en orden aleatorio, de a 3.
@@ -3587,6 +3597,7 @@
       this.userSrc = null;
       this.scan = null;
       this.preluded = false;
+      this.exp = null; // Explorar: otra mezcla, con tus hashtags al día
       return this.reset();
     }
 
@@ -3768,7 +3779,7 @@
   // Favoritos (Me gusta, Historial) son «Tú»; lo que cuelga de Ajustes, Ajustes.
   const TAB_OF = {
     home: 'home', tag: 'home', user: 'home', news: 'home',
-    search: 'search', visited: 'search', cross: 'search',
+    search: 'search', find: 'search', visited: 'search', cross: 'search',
     random: 'random', mix: 'random',
     following: 'me', favorites: 'me', likes: 'me', history: 'me',
     settings: 'settings', hidden: 'settings', blocked: 'settings', debug: 'settings', stats: 'settings', week: 'settings', recap: 'settings', topusers: 'settings', tree: 'settings'
@@ -3812,7 +3823,8 @@
     if (name === 'mix') return routeMix();
     // «favorites» era el nombre de Seguidos hasta la 1.0.9.
     if (name === 'following' || name === 'favorites') return routeFollowing(q);
-    if (name === 'search') return routeSearch();
+    if (name === 'search') return routeSearch(q);
+    if (name === 'find') return routeFind();
     if (name === 'cross') return routeCross(q);
     if (name === 'likes') return routeLikes(q);
     if (name === 'history') return routeHistory();
@@ -5082,7 +5094,119 @@
     );
   }
 
-  function routeSearch() {
+  // ================================================================ Explorar (1.9.0)
+  //
+  // Buscar es como el Explorar de Instagram (lo eligió el usuario, opción B): arriba la lupa, que abre el
+  // buscador (#/find), y unas fichas (Para ti, tus hashtags más mirados, ✦ Descubrir); debajo, una
+  // cuadrícula de posts con los GIF y videos en un cuadro alto. Tocar uno lo abre en grande y se sigue
+  // deslizando, como en Instagram; «atrás» (o tocar Buscar abajo) vuelve a la cuadrícula.
+  // · Para ti: posts «Bueno» al azar de tus hashtags, pesados por lo que más miras (exploreTags), sin
+  //   repetir lo que ya viste.
+  // · Descubrir: más o menos 1 de cada 6 viene de un hashtag que no sigues ni miraste esta semana pero que
+  //   sale junto a los tuyos (en tus me gusta, tu historial o lo ya cargado aquí). Lleva «✦ Nuevo».
+  // Sin nada de eso (la app recién instalada), sale lo «Bueno» de todo JoyReactor.
+  function exploreTags() {
+    const score = new Map();
+    const add = (t, w) => {
+      if (!t || isBlocked(t) || RS.isFormatTag(t)) return;
+      const x = score.get(tkey(t)) || { name: t, w: 0 };
+      x.w += w;
+      score.set(tkey(t), x);
+    };
+    for (const [t, ms] of Object.entries(weekTime().tags || {})) add(t, ms / 60000); // 1 por minuto mirado
+    // Sin el árbol de un hashtag cuentan también sus carpetas (#anime, #fandoms): se pide para la próxima vez.
+    for (const x of Object.values(S.likes)) if (x.post) {
+      needTree(x.post.tags);
+      for (const t of leafTags(x.post.tags)) add(t.name, 2);
+    }
+    for (const f of favList()) add(f.name, 5);
+    for (const t of Object.values(S.tagProfiles)) add(t.name, 5);
+    return Array.from(score.values()).sort((a, b) => b.w - a.w).slice(0, 15);
+  }
+  function discoverTags(mine, extra) {
+    const known = new Set(mine.map((x) => tkey(x.name)));
+    const watched = new Set(Object.keys(weekTime().tags || {}).map(tkey));
+    const count = new Map();
+    const posts = Object.values(S.likes).map((x) => x.post).concat((S.history || []).map((x) => x.post), extra || []);
+    for (const p of posts) {
+      if (!p || !p.tags) continue;
+      for (const t of leafTags(p.tags)) {
+        const k = tkey(t.name);
+        if (known.has(k) || watched.has(k) || isFollowedTag(t.name) || isBlocked(t.name) || RS.isFormatTag(t.name)) continue;
+        const x = count.get(k) || { name: t.name, w: 0 };
+        x.w++;
+        count.set(k, x);
+      }
+    }
+    return Array.from(count.values()).sort((a, b) => b.w - a.w).slice(0, 12);
+  }
+  async function fetchExplore(f) {
+    const ex = f.exp || (f.exp = { mine: exploreTags(), loaded: [] });
+    const chip = f.chip;
+    const st = { favorites: S.favorites, mix: S.mix, seenSet: S.seenSet, filter: pass };
+    const opts = { type: 'GOOD', era: 'any', noRepeat: true, skip: f.ids, hideNsfw: S.settings.hideNsfw };
+    const toSrc = (list) => list.map((x) => ({ name: x.name, kind: null, w: x.w }));
+    const mine = chip === 'all' ? toSrc(ex.mine) : chip === 'new' ? null : [{ name: chip, kind: null, w: 1 }];
+    const disc = chip === 'all' || chip === 'new' ? toSrc(discoverTags(ex.mine, ex.loaded)) : [];
+    const [a, b] = await Promise.all([
+      // Sin hashtags tuyos, sources: [] = lo «Bueno» de todo JoyReactor.
+      mine ? RS.randomBatch(st, Object.assign({ n: 5, sources: mine }, opts)) : Promise.resolve([]),
+      disc.length ? RS.randomBatch(st, Object.assign({ n: chip === 'new' ? 5 : 1, sources: disc }, opts)).catch(() => []) : Promise.resolve([])
+    ]);
+    const out = a.map((x) => ({ post: x.post, label: x.source ? 'Porque ves #' + x.source : null, icon: 'search' }));
+    // Los de Descubrir, repartidos entre los tuyos.
+    for (const x of b) out.splice(Math.floor(Math.random() * (out.length + 1)), 0, { post: x.post, discover: x.source, label: '✦ Nuevo para ti · #' + x.source, icon: 'search', color: 'var(--accent)' });
+    ex.loaded = ex.loaded.concat(out.map((it) => it.post)).slice(-200);
+    if (!out.length) {
+      f.emptyStreak++;
+      if (f.emptyStreak >= 4) {
+        f.done = true;
+        f.endText = 'No encontré más posts nuevos. Desliza hacia abajo arriba del todo para otra mezcla.';
+      }
+    } else f.emptyStreak = 0;
+    return out;
+  }
+  // Las fichas: Para ti, tus 3 hashtags más mirados y Descubrir.
+  function exploreChips(chip) {
+    const list = [['all', 'Para ti']].concat(exploreTags().slice(0, 3).map((x) => [x.name, '#' + x.name]), [['new', '✦ Descubrir']]);
+    if (!list.some(([id]) => id === chip)) list.splice(1, 0, [chip, '#' + chip]);
+    return h('nav', { class: 'chips', 'aria-label': 'Qué ver' },
+      list.map(([id, label]) =>
+        h('button', {
+          class: 'chip' + (id === chip ? ' on' : ''),
+          'aria-pressed': String(id === chip),
+          onclick: () => id !== chip && navReplace('#/search' + (id === 'all' ? '' : '?c=' + enc(id)))
+        }, label)
+      )
+    );
+  }
+  function routeSearch(q) {
+    const chip = (q && q.get('c')) || 'all';
+    const key = 'explore:' + tkey(chip);
+    const f = cached(key, () => {
+      const feed = new Feed({
+        key,
+        kind: 'explore',
+        source: 'explore',
+        chip,
+        mode: 'grid',
+        head: (f) => (f.mode === 'feed'
+          ? [backBtn('/search'), h('h1', { text: 'Explorar' })]
+          : [h('button', { type: 'button', class: 'search-pill', onclick: () => nav('#/find') }, icon('search', 20), h('span', { text: 'Buscar' }))]),
+        extra: () => exploreChips(chip),
+        empty: () => (chip === 'new'
+          ? emptyBox('search', 'Todavía no hay nada para descubrir', 'Mira posts y dales me gusta: de ahí salen los hashtags nuevos para ti.')
+          : emptyBox('search', 'No encontré posts', 'Desliza hacia abajo arriba del todo para intentar otra vez.'))
+      });
+      feed.root.classList.add('explore-feed');
+      return feed;
+    });
+    showFeed(f);
+    gridOnArrival(f);
+  }
+
+  // El buscador (la lupa de Explorar): recientes, cruzar hashtags, perfiles que visitaste y sugerencias.
+  function routeFind() {
     let sb = null;
     const idle = () => {
       const parts = [crossLink(), recentSearches(() => fill(sb.results, idle())), visitedRow(), suggestedTags()].filter(Boolean);
@@ -5090,7 +5214,7 @@
     };
     sb = searchBox('Buscar hashtag o @usuario', true, null, true, { onPick: recordSearch, idle });
     mount([
-      h('header', { class: 'top' }, h('h1', { text: 'Buscar' })),
+      h('header', { class: 'top has-back' }, backBtn('/search'), h('h1', { text: 'Buscar' })),
       sb.el,
       sb.results
     ]);
@@ -5150,7 +5274,7 @@
       // Falta al menos uno: el buscador queda en la página.
       const sb = crossPicker(tags, true);
       mount([
-        h('header', { class: 'top has-back' }, backBtn('/search'), h('h1', { text: 'Cruzar hashtags' })),
+        h('header', { class: 'top has-back' }, backBtn('/find'), h('h1', { text: 'Cruzar hashtags' })),
         tags.length ? crossChips(tags, () => sb.input.focus()) : null,
         h('p', { class: 'countline cross-note', text: tags.length ? 'Elige otro: verás solo los posts que llevan los dos.' : 'Elige dos o más hashtags: verás solo los posts que los llevan todos.' }),
         sb.el,
@@ -5169,7 +5293,7 @@
       mode: 'feed',
       back: true,
       onTotal: showCount,
-      head: (f) => [backBtn('/search'), h('h1', { text: 'Cruzar hashtags' }), viewToggle(f)],
+      head: (f) => [backBtn('/find'), h('h1', { text: 'Cruzar hashtags' }), viewToggle(f)],
       extra: (f) => {
         if (f.crossOrder) showCount(f.total);
         return [crossChips(tags, () => openCrossAdd(tags)), countEl];
@@ -6024,7 +6148,7 @@
       );
     };
     draw();
-    mount([h('header', { class: 'top has-back' }, backBtn('/search'), h('h1', { text: 'Perfiles visitados' })), body]);
+    mount([h('header', { class: 'top has-back' }, backBtn('/find'), h('h1', { text: 'Perfiles visitados' })), body]);
   }
 
   function routeHidden() {
@@ -7037,9 +7161,9 @@
     syncTabs();
     document.querySelectorAll('#tabs a').forEach((a) =>
       a.addEventListener('click', (e) => {
-        // Tú con un post en grande (Me gusta o Historial): vuelve a las miniaturas de esa lista.
+        // Tú con un post en grande (Me gusta o Historial) o Buscar con uno de Explorar: vuelve a las miniaturas.
         const f = current && current.feed;
-        if (a.dataset.tab === 'me' && f && f.mode === 'feed' && (f.source === 'likes' || f.source === 'history') && f.root.isConnected) {
+        if (f && f.mode === 'feed' && f.root.isConnected && ((a.dataset.tab === 'me' && (f.source === 'likes' || f.source === 'history')) || (a.dataset.tab === 'search' && f.source === 'explore'))) {
           e.preventDefault();
           f.setMode('grid', f.topVisibleId());
           return;
@@ -7054,6 +7178,38 @@
     );
   }
 
+  // ================================================================ Intro al abrir (1.9.0)
+  //
+  // Mosaico (lo eligió el usuario, opción C): al abrir la app de cero, miniaturas de tus últimos me gusta
+  // pasan por detrás del logo y se abren hacia Inicio, que se va cargando por detrás. Dura INTRO_MS y un
+  // toque lo salta. No sale al volver a la app desde segundo plano: boot corre una sola vez.
+  const INTRO_MS = 1500;
+  function showIntro() {
+    const posts = Object.values(S.likes)
+      .sort((a, b) => b.at - a.at)
+      .map((x) => x.post)
+      .filter((p) => p && p.media && p.media[0] && p.media[0].kind !== 'embed');
+    const tiles = [];
+    for (let i = 0; i < 15; i++) {
+      const m = posts.length ? posts[i % posts.length].media[0] : null;
+      const src = m ? (m.kind === 'video' ? RS.posterUrl(m) : RS.imageUrl(m)) : '';
+      tiles.push(h('i', { style: '--d:' + (i % 5) * 0.08 + 's' + (src ? ';background-image:url("' + src + '")' : '') }));
+    }
+    let done = false;
+    const el = h('div', { id: 'intro', 'aria-hidden': 'true', onclick: () => end() },
+      h('div', { class: 'in-wall' }, tiles),
+      h('div', { class: 'in-logo' }, h('b', { text: 'Reactor' }), h('span', { text: 'Swipe' }))
+    );
+    const end = () => {
+      if (done) return;
+      done = true;
+      el.classList.add('out');
+      setTimeout(() => el.remove(), 350);
+    };
+    document.body.append(el);
+    setTimeout(end, INTRO_MS);
+  }
+
   async function boot() {
     try {
       history.scrollRestoration = 'manual';
@@ -7061,6 +7217,7 @@
       /* no disponible */
     }
     Object.assign(S, await RS.load(RS.KEYS.filter((k) => k !== 'eraCache')));
+    showIntro();
     S.seenSet = new Set(S.seen);
     startUsageClock();
     refreshFilter();

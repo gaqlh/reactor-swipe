@@ -1336,3 +1336,26 @@ html:not(.show-scores) .card .head .rating { display: none; }
 .zoom-disc img { width: 100%; height: 100%; object-fit: cover; display: block; }
 @keyframes piczoom { from { opacity: 0; transform: scale(0.94); } }
 @media (prefers-reduced-motion: reduce) { .piczoom { animation: none; } }
+
+/* ---------- 1.9.0 ---------- */
+/* Explorar: la lupa arriba, las fichas y la cuadrícula con cuadros altos para los GIF y videos */
+.search-pill { flex: 1 1 auto; min-width: 0; height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text-2); font: inherit; font-size: 15px; text-align: left; }
+.explore-feed .list.grid { grid-auto-flow: dense; grid-auto-rows: calc((min(100vw, var(--maxw)) - 4px) / 3); }
+.explore-feed .list.grid .thumb { aspect-ratio: auto; }
+.explore-feed .list.grid .thumb.tall { grid-row: span 2; }
+.tnew { position: absolute; left: 6px; bottom: 6px; padding: 2px 6px; border-radius: 6px; background: var(--accent); color: var(--accent-ink); font-size: 10.5px; font-weight: 800; pointer-events: none; }
+/* Intro al abrir: mosaico de tus me gusta detrás del logo */
+#intro { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; overflow: hidden; background: var(--bg); transition: opacity 0.3s ease; }
+#intro.out { opacity: 0; pointer-events: none; }
+.in-wall { position: absolute; inset: -12%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: center; gap: 6px; transform: rotate(-8deg) scale(1.1); animation: inWall 1.5s ease-in-out forwards; }
+.in-wall i { aspect-ratio: 3 / 4; border-radius: 10px; background: linear-gradient(150deg, var(--surface-2), var(--accent-soft)) center / cover; opacity: 0; animation: inTile 0.45s var(--d) ease-out forwards; }
+@keyframes inTile { from { opacity: 0; transform: scale(0.85); } to { opacity: 0.6; transform: none; } }
+@keyframes inWall { 75% { transform: rotate(-8deg) scale(1.1) translateY(-5%); } 100% { transform: rotate(0) scale(1.9) translateY(-5%); opacity: 0; } }
+.in-logo { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; text-shadow: 0 2px 16px rgba(0, 0, 0, 0.9); animation: inLogo 0.5s 0.25s ease-out both; }
+.in-logo b { font-size: 40px; font-weight: 800; letter-spacing: -0.02em; color: var(--text); }
+.in-logo span { font-size: 15px; font-weight: 800; letter-spacing: 0.32em; text-transform: uppercase; color: var(--accent); }
+@keyframes inLogo { from { opacity: 0; transform: translateY(10px); } }
+@media (prefers-reduced-motion: reduce) {
+  .in-wall, .in-wall i, .in-logo { animation: none; }
+  .in-wall i { opacity: 0.5; }
+}
