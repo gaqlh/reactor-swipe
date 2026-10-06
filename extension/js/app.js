@@ -1953,7 +1953,33 @@
     v.removeAttribute('src');
     v.load();
   }
-  document.addEventListener('keydown', (e) => e.key === 'Escape' && closeSheet());
+  document.addEventListener('keydown', (e) => e.key === 'Escape' && (closePicZoom() || closeSheet()));
+
+  // ---- Foto de perfil en grande (1.8.2): tocar la foto de la cabecera de un usuario, un hashtag o una
+  // cuenta la abre en un círculo grande (el GIF de un hashtag, moviéndose); un toque, «atrás» o Esc la cierran.
+  let zoomEl = null;
+  function closePicZoom() {
+    if (!zoomEl) return false;
+    const el = zoomEl;
+    zoomEl = null;
+    releasePics(el);
+    el.remove();
+    return true;
+  }
+  function zoomable(el, make) {
+    el.classList.add('zoomable');
+    el.setAttribute('role', 'button');
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('aria-label', 'Ver la foto en grande');
+    const open = () => {
+      closePicZoom();
+      zoomEl = h('div', { class: 'piczoom', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Foto de perfil', onclick: () => closePicZoom() }, make());
+      document.body.append(zoomEl);
+    };
+    el.addEventListener('click', open);
+    el.addEventListener('keydown', (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), open()));
+    return el;
+  }
   const sheetRow = (ic, label, sub, onclick, cls, right) =>
     h('button', { type: 'button', class: 'sheet-row' + (cls ? ' ' + cls : ''), onclick },
       icon(ic, 22),
@@ -2404,7 +2430,8 @@
     }
   }
 
-  function openViewer(feed, p, mediaIndex) {
+  // story: son historias (sin barra para adelantar; la rayita de arriba la pone startStory).
+  function openViewer(feed, p, mediaIndex, story) {
     closeViewer();
     let items = feed ? feed.items.filter((it) => !S.dislikes[it.post.id]) : [];
     if (!items.some((it) => it.post.id === p.id)) {
@@ -2413,7 +2440,7 @@
     }
     const scroller = h('div', { class: 'vw-feed' });
     // El sonido empieza siempre apagado; se prende con el botón amarillo.
-    const v = { feed, scroller, current: null, muted: true, onAdd: null, openedAt: Date.now() };
+    const v = { feed, scroller, current: null, muted: true, onAdd: null, openedAt: Date.now(), story: story ? {} : null };
     viewer = v;
     stats().fsOpens++;
     saveStats();
@@ -2500,7 +2527,11 @@
         s._ratio = m.w && m.h ? m.h / m.w : 0;
         if (s._ratio > window.innerHeight / Math.max(1, window.innerWidth)) s.classList.add('tall');
         s.append(h('img', { src: RS.imageUrl(m, true), alt: '', decoding: 'async' }));
-        onTaps(s, () => exitViewer());
+        // En una historia, un toque rápido en el centro también pausa una imagen (detiene la rayita).
+        if (viewer.story) {
+          s.append(h('span', { class: 'vw-paused', 'aria-hidden': 'true' }, icon('play', 40)));
+          onTaps(s, () => exitViewer(), (tap) => pauseTap(tap) && storyPause(s));
+        } else onTaps(s, () => exitViewer());
       } else if (m.kind === 'video') {
         const vid = h('video', { src: RS.videoUrl(m), loop: true, playsinline: true, poster: RS.posterUrl(m), preload: 'auto' });
         retryOnError(vid, RS.videoUrl(m));
@@ -2556,8 +2587,9 @@
     );
     // Solo los videos tienen sonido: con GIF el botón no aparece.
     if (sndBtn) sndBtn.hidden = !videos.some((x) => x._real);
-    // Barra mínima, como la de los GIF, también para los videos (con el tiempo en chiquito).
-    const scrub = videos.length ? scrubBar(null) : null;
+    // Barra mínima, como la de los GIF, también para los videos (con el tiempo en chiquito). En las
+    // historias no hay: no se adelanta (manda la rayita de arriba).
+    const scrub = videos.length && !viewer.story ? scrubBar(null) : null;
     if (scrub) scrub.watch(media);
     page._scrub = scrub;
     const info = h('div', { class: 'vw-info' },
@@ -2732,7 +2764,7 @@
         };
         const slideEl = e.target.closest('.vw-slide');
         const vid = slideEl && slideEl.querySelector('video');
-        if (vid && S.settings.seekDrag && !e.target.closest('button, a')) g.timer = setTimeout(() => startSeek(g, vid), SEEK_HOLD_MS);
+        if (vid && S.settings.seekDrag && !v.story && !e.target.closest('button, a')) g.timer = setTimeout(() => startSeek(g, vid), SEEK_HOLD_MS);
       },
       { passive: true }
     );
@@ -2906,6 +2938,7 @@
     if (!viewer) return;
     const v = viewer;
     viewer = null;
+    if (v.story) clearInterval(v.story.timer);
     stats().fsMs += Math.min(Date.now() - (v.openedAt || Date.now()), 2 * 3600000);
     saveStats();
     blurPost();
@@ -3774,6 +3807,7 @@
     closeViewer();
     closeSheet();
     closeCropper();
+    closePicZoom();
 
     const name = parts[0] || 'home';
     document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === (TAB_OF[name] || 'home')));
@@ -3841,12 +3875,13 @@
   }
 
   // Círculo con la imagen del hashtag (la de JoyReactor); mientras carga, o si no tiene, «#». Si le pusiste
-  // un GIF (S.pics), ese; animate = que se mueva (página del hashtag y listas de Seguidos). Una cuenta no se
-  // mueve nunca: si tiene un GIF de cuando era hashtag (o de la 1.8.0), se ve quieto.
+  // un GIF (S.pics), ese, moviéndose en todos lados (lo pidió el usuario en la 1.8.2: Inicio, Buscar, Tú,
+  // menús…; picIO solo reproduce los que están a la vista). Una cuenta no se mueve nunca: si tiene un GIF
+  // de cuando era hashtag (o de la 1.8.0), se ve quieto.
   const picCache = new Map();
-  function tagPic(name, cls, fallback, known, animate) {
+  function tagPic(name, cls, fallback, known) {
     const own = picOf('tag', name);
-    if (own) return putPic(h('span', { class: cls }), own, animate && !tagProfileOf(name));
+    if (own) return putPic(h('span', { class: cls }), own, !tagProfileOf(name));
     const c = colorFor(name);
     const el = h('span', { class: cls, style: { background: c[0], color: c[1] } }, fallback);
     const show = (pic) => {
@@ -3909,7 +3944,7 @@
         .sort((a, b) => storyUnseen(b) - storyUnseen(a) || b.posts[b.posts.length - 1].time - a.posts[a.posts.length - 1].time);
       fill(row,
         live.map((s) =>
-          h('button', { type: 'button', class: 'story', 'aria-label': 'Historia de ' + (s.kind === 'user' ? '@' : '#') + s.name + ': ' + s.posts.length + (s.posts.length === 1 ? ' post' : ' posts') + ' de las últimas 24 horas', onclick: () => openStory(s, () => draw(list)) },
+          h('button', { type: 'button', class: 'story', 'aria-label': 'Historia de ' + (s.kind === 'user' ? '@' : '#') + s.name + ': ' + s.posts.length + (s.posts.length === 1 ? ' post' : ' posts') + ' de las últimas 24 horas', onclick: () => openStory(s, () => draw(list), live) },
             h('span', { class: 'ring' + (storyUnseen(s) ? '' : ' seen') }, s.kind === 'user' ? userPic(s.name, s.userId, 'disc') : tagPic(s.name, 'disc', '#', s.pic)),
             h('span', { class: 'label', text: s.name })
           )
@@ -3932,13 +3967,126 @@
   }
 
   // Abre una historia: sus posts de las últimas 24 horas en pantalla completa, desde el primero sin ver.
-  function openStory(s, after) {
-    const items = s.posts.map((post) => ({ post, label: (s.kind === 'user' ? 'Historia de @' : 'Historia de #') + s.name + ' · ' + ago(post.time), icon: 'clock' }));
+  // Como en Instagram (1.8.2): arriba, una rayita por post que se llena (storyTick); al terminar sigue con
+  // la siguiente historia de la fila (por eso van todas seguidas, desde la que tocaste) y, después de la
+  // última, se cierra. En las historias los videos no se adelantan (lo pidió el usuario).
+  function openStory(s, after, list) {
+    const groups = list && list.includes(s) ? list.slice(list.indexOf(s)) : [s];
+    const items = [];
+    const ids = new Set();
+    groups.forEach((st, g) => {
+      for (const post of st.posts) {
+        if (ids.has(post.id)) continue; // un post puede estar en dos historias: sale en la primera
+        ids.add(post.id);
+        items.push({ post, story: g, label: (st.kind === 'user' ? 'Historia de @' : 'Historia de #') + st.name + ' · ' + ago(post.time), icon: 'clock' });
+      }
+    });
     const first = s.posts.find((p) => !S.seenSet.has(p.id)) || s.posts[0];
     // La pantalla completa trabaja sobre un feed: este no se dibuja en ningún lado.
     const feed = { items, listeners: new Set(), list: h('div'), mode: 'feed', loadMore() {}, scrollToPost: () => false };
-    openViewer(feed, first, 0);
-    if (viewer) viewer.onClose = after;
+    openViewer(feed, first, 0, true);
+    if (!viewer) return;
+    viewer.onClose = after;
+    startStory(viewer);
+  }
+
+  // ---- La rayita de las historias. Una imagen dura STORY_IMG_MS; un GIF, lo que dura (repitiéndose hasta
+  // STORY_IMG_MS si es corto); un video con sonido, hasta que termina. En un carrusel, la rayita del post
+  // se reparte entre sus imágenes y pasa sola de una a otra. Pausar (toque rápido en el centro) la detiene.
+  // Se cuenta con un temporizador y no con requestAnimationFrame, que se congela si no se ve.
+  const STORY_IMG_MS = 5000;
+  function startStory(v) {
+    v.el.classList.add('stories-on');
+    v.story = { bars: h('div', { class: 'vw-story', 'aria-hidden': 'true' }), group: -1, key: '', elapsed: 0, paused: false, moving: '', last: Date.now() };
+    v.el.append(v.story.bars);
+    v.story.timer = setInterval(() => storyTick(v), 100);
+    storyTick(v);
+  }
+  function storyTick(v) {
+    const st = v.story;
+    if (viewer !== v) return clearInterval(st.timer);
+    const now = Date.now();
+    const dt = Math.min(400, now - st.last);
+    st.last = now;
+    const page = v.current;
+    if (!page || !page._it) return;
+    const g = page._it.story;
+    const group = Array.prototype.filter.call(v.scroller.children, (x) => x._it.story === g);
+    if (st.group !== g || st.bars.childElementCount !== group.length) {
+      st.group = g;
+      fill(st.bars, group.map(() => h('span', {}, h('i'))));
+    }
+    const track = page._track;
+    const nSlides = track ? track.children.length : 1;
+    const si = track ? Math.min(track._idx || 0, nSlides - 1) : 0;
+    const key = page.dataset.id + ':' + si;
+    if (st.key !== key) {
+      st.key = key;
+      st.elapsed = 0;
+      st.paused = false;
+      st.moving = '';
+    }
+    const slideEl = track ? track.children[si] : page.querySelector('.vw-slide');
+    const vid = slideEl ? slideEl.querySelector('video') : null;
+    let r;
+    if (vid && vid._real && !vid.error) {
+      // Video con sonido: la rayita va con el video y pasa al siguiente cuando termina.
+      if (vid.loop) vid.loop = false;
+      r = vid.duration ? vid.currentTime / vid.duration : 0;
+      if (vid.ended) r = 1;
+    } else {
+      const playing = !document.hidden && !st.paused && (!vid || vid.error || (!vid.paused && vid.readyState >= 3));
+      if (playing) st.elapsed += dt;
+      const dur = vid && vid.duration && !vid.error ? Math.max(STORY_IMG_MS, vid.duration * 1000) : STORY_IMG_MS;
+      r = st.elapsed / dur;
+    }
+    r = Math.max(0, Math.min(1, r));
+    const idx = group.indexOf(page);
+    Array.prototype.forEach.call(st.bars.children, (b, j) => {
+      b.firstChild.style.transform = 'scaleX(' + (j < idx ? 1 : j > idx ? 0 : (si + r) / nSlides) + ')';
+    });
+    if (r >= 1 && st.moving !== key) {
+      st.moving = key;
+      storyNext(v, page, track, si, nSlides);
+    }
+  }
+  function storyNext(v, page, track, si, nSlides) {
+    if (track && si < nSlides - 1) {
+      track.scrollTo({ left: (si + 1) * track.clientWidth, behavior: 'smooth' });
+      // Respaldo, por si el carrusel no avisa que se movió.
+      setTimeout(() => {
+        if (viewer !== v || (track._idx || 0) !== si) return;
+        track.scrollLeft = (si + 1) * track.clientWidth;
+        track._idx = si + 1;
+      }, 900);
+      return;
+    }
+    const next = page.nextElementSibling;
+    if (!next) return exitViewer();
+    // Al pasar a otra historia, empieza en su primer post sin ver (de un salto, sin marcar los de en medio).
+    let to = next;
+    if (next._it.story !== page._it.story) {
+      for (let x = next; x && x._it.story === next._it.story; x = x.nextElementSibling) {
+        if (!S.seenSet.has(x.dataset.id)) {
+          to = x;
+          break;
+        }
+      }
+    }
+    fillPage(to, 0);
+    v.scroller.scrollTo({ top: to.offsetTop, behavior: to === next ? 'smooth' : 'auto' });
+    // Respaldo, por si el desplazamiento suave no ocurrió o no avisó: salta a ese post.
+    setTimeout(() => {
+      if (viewer !== v || v.current !== page) return;
+      v.scroller.scrollTop = to.offsetTop;
+      setCurrentPage(to, true);
+    }, 900);
+  }
+  // Pausar una imagen de una historia (en los GIF y videos pausa el video, y la rayita lo sigue).
+  function storyPause(slideEl) {
+    if (!viewer || !viewer.story) return;
+    viewer.story.paused = !viewer.story.paused;
+    slideEl.classList.toggle('paused', viewer.story.paused);
   }
 
   function switchBtn(on, label, onToggle) {
@@ -4257,7 +4405,10 @@
       const blocked = isBlocked(name) || isBlocked(canon);
       fill(el,
         h('div', { class: 'hero-row' },
-          tagPic(canon, 'hero-tile', '#', info ? info.pic || 0 : undefined, true),
+          // Sin foto propia ni imagen de JoyReactor no hay nada que agrandar (solo el «#»).
+          picOf('tag', canon) || (info && info.pic)
+            ? zoomable(tagPic(canon, 'hero-tile', '#', info ? info.pic || 0 : undefined), () => tagPic(canon, 'zoom-disc', '#', info ? info.pic || 0 : undefined))
+            : tagPic(canon, 'hero-tile', '#', info ? info.pic || 0 : undefined),
           h('div', { class: 'grow' }, h('h2', { text: canon }), h('span', { class: 'meta', text: blocked ? 'Bloqueado · sus posts no salen en ningún feed' : meta }))
         ),
         h('div', { class: 'hero-actions trio' }, followBtn, bellBtn, moreBtn),
@@ -4465,7 +4616,7 @@
       const total = u ? validCount(userJunkKey(name), (totalOf && totalOf()) || u.posts) : 0;
       fill(el,
         h('div', { class: 'hero-row' },
-          userPic(name, u && u.id, 'hero-tile'),
+          zoomable(userPic(name, u && u.id, 'hero-tile'), () => userPic(name, u && u.id, 'zoom-disc')),
           h('div', { class: 'grow' },
             h('h2', { text: shown }),
             h('span', { class: 'meta', text: u ? fmt(total) + ' posts · rating ' + Number(u.rating).toLocaleString('es', { maximumFractionDigits: 0 }) : 'Cargando…' })
@@ -5224,7 +5375,7 @@
       const row = (f) =>
         h('div', { class: 'result' },
           h('a', { href: '#/tag/' + enc(f.name) },
-            tagPic(f.name, 'htile', f.kind === 'category' ? f.name.charAt(0).toUpperCase() : '#', undefined, true),
+            tagPic(f.name, 'htile', f.kind === 'category' ? f.name.charAt(0).toUpperCase() : '#'),
             h('span', { class: 'rtext' },
               h('span', { class: 'n', text: f.name }),
               h('span', { class: 'm', text: (f.kind === 'category' ? 'Categoría' : 'Hashtag') + (S.settings.randomTab ? ' · ' + mixText(f.name) : '') })
@@ -5255,7 +5406,7 @@
     const tagRow = (x) =>
       h('div', { class: 'result' },
         h('a', { href: '#/tag/' + enc(x.name) },
-          tagPic(x.name, 'htile', '#', x.pic, true),
+          tagPic(x.name, 'htile', '#', x.pic),
           h('span', { class: 'rtext' }, h('span', { class: 'n', text: '#' + x.name }), h('span', { class: 'm', text: 'Hashtag que sigues como cuenta' }))
         ),
         h('button', {
@@ -6807,6 +6958,7 @@
     // 3) vuelve a las miniaturas si abriste un post desde ahí, 4) vuelve a la página anterior, 5) desde
     // otra sección vuelve a Inicio, 6) desde Inicio sale de la app.
     handleBack() {
+      if (closePicZoom()) return 'handled';
       if (cancelCropper()) return 'handled';
       if (closeSheet()) return 'handled';
       if (current && current.feed && endSelect(current.feed)) return 'handled';
