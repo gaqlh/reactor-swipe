@@ -1110,6 +1110,16 @@
   // Para unir con RedGifs: etiquetas que empiezan así (con cuántos posts) y creadores que se llaman parecido.
   RS.rgSuggest = async (q) => ((await rgGet('/v2/search/suggest?query=' + encodeURIComponent(q))) || []).filter((x) => x && x.type === 'tag').slice(0, 12);
   RS.rgCreators = async (q) => ((await rgGet('/v2/creators/search?query=' + encodeURIComponent(q) + '&count=12')) || {}).items || [];
+  // Un creador por su nombre exacto (el buscador de creadores no siempre lo pone primero), o null si no existe.
+  RS.rgUser = async (name) => {
+    if (!/^[A-Za-z0-9_.-]{2,40}$/.test(name)) return null;
+    try {
+      const u = await rgGet('/v1/users/' + encodeURIComponent(name.toLowerCase()));
+      return u && u.username ? u : null;
+    } catch (e) {
+      return null;
+    }
+  };
   // Una lista de RedGifs que se pide de a páginas: en orden, o al azar entre las primeras RG_RANDOM_PAGES
   // (q.random: como un hashtag de JoyReactor, que se ve barajado).
   const RG_RANDOM_PAGES = 30;

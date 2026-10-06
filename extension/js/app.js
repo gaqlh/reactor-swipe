@@ -768,7 +768,11 @@
         route();
       });
     } else toast('Sigues #' + name + ' (RedGifs) como ' + (as === 'account' ? 'cuenta' : 'hashtag'));
-    route();
+    // En el buscador solo se repintan sus botones (rehacer la página borraría lo escrito).
+    document.querySelectorAll('[data-follow-rgtag]').forEach((b) => b._paint && b._paint());
+    if (/^#\/(find|following)/.test(location.hash)) {
+      if (pageFollowHook) pageFollowHook();
+    } else route();
     if (as && !before && !picOf('rgtag', name)) askPic('rgtag', name);
   }
   function openRgFollowSheet(name) {
@@ -5460,73 +5464,184 @@
       .map((r) => r.x);
   }
 
+  // RedGifs (1.10.2): con RedGifs encendido en Ajustes › Fuentes, salen también sus etiquetas y creadores, y
+  // cada fila dice de dónde es (JR o RG). Pegar un enlace de un creador (redgifs.com/users/nombre) lo busca.
+  // Enter ya no abre el primer resultado: esconde el teclado y deja la lista (lo pidió el usuario); solo al
+  // cruzar hashtags (pickOnly) Enter elige el primero.
+  const RG_USER_LINK = /redgifs\.com\/(?:users|u)\/([A-Za-z0-9_.-]+)/i;
   function searchBox(placeholder, autofocus, onFav, withUsers, opts) {
     opts = opts || {};
     const input = h('input', { type: 'search', placeholder, 'aria-label': placeholder, autocomplete: 'off', enterkeyhint: 'search' });
     const results = h('div', { class: 'results' });
     let timer = null;
     let seq = 0;
+    const run = async (q) => {
+      const my = ++seq;
+      try {
+        const link = RG_USER_LINK.exec(q);
+        const rgOn = !opts.pickOnly && srcMode() !== 'jr';
+        const qUser = link ? link[1] : q.replace(/^@/, '');
+        const onlyUsers = !!link || q.startsWith('@') || opts.usersOnly;
+        const known = knownNames();
+        // Lo que se predice como siempre (el autocompletado de JoyReactor) y, debajo, lo parecido:
+        // con errores de tipeo, con una palabra del medio o con lo escrito a medias. Si RedGifs no
+        // responde, quedan los resultados de JoyReactor.
+        const [found, user, rgTags, rgExact, rgMore] = await Promise.all([
+          onlyUsers ? Promise.resolve({ exact: [], similar: [] }) : RS.searchTags(q, closest(q, known.tags, (t) => t, 8)),
+          withUsers && !link ? RS.fetchUserInfo(qUser).catch(() => null) : Promise.resolve(null),
+          rgOn && !onlyUsers ? RS.rgSuggest(q).catch(() => []) : [],
+          rgOn && (withUsers || link) ? RS.rgUser(qUser) : null,
+          rgOn && withUsers && !link ? RS.rgCreators(qUser).catch(() => []) : []
+        ]);
+        if (my !== seq) return;
+        // Con RedGifs encendido, cada fila lleva su fuente.
+        const badge = (s) => (rgOn ? srcChip(s) : null);
+        const accounts = [];
+        if (user) accounts.push(userRow(user, opts.onPick, opts.onFollow, badge('jr')));
+        if (rgExact) accounts.push(rgCreatorRow(rgExact, opts.onPick, badge('rg')));
+        const exactAccount = accounts.length > 0;
+        accounts.push(...rgMore.filter((c) => !rgExact || rgKey(c.username) !== rgKey(rgExact.username)).slice(0, exactAccount ? 3 : 5).map((c) => rgCreatorRow(c, opts.onPick, badge('rg'))));
+        // Hashtags de las dos fuentes, turnándose (cada lista ya trae primero lo que más se parece).
+        const jrTags = found.exact.slice(0, 15).map((t) => resultRow(t, onFav, opts.onPick, opts.pickOnly, badge('jr')));
+        const rgRows = rgTags.slice(0, 10).map((t) => rgTagResult(t, opts.onPick, badge('rg')));
+        const tagRows = [];
+        for (let i = 0; i < Math.max(jrTags.length, rgRows.length); i++) tagRows.push(jrTags[i], rgRows[i]);
+        const label = (text) => h('h2', { class: 'section-label similar-label', text });
+        const tagList = tagRows.filter(Boolean);
+        const both = accounts.length && tagList.length;
+        const rows = [];
+        const putAccounts = () => accounts.length && rows.push(both ? label('Cuentas') : null, ...accounts);
+        const putTags = () => tagList.length && rows.push(both ? label('Hashtags') : null, ...tagList);
+        // Primero las cuentas solo si una se llama igual que lo escrito y tiene más posts que el hashtag de
+        // ese nombre («susanna» es una cuenta; «cosplay» es sobre todo un hashtag).
+        const k = tkey(qUser);
+        const accountPosts = Math.max(user ? user.posts || 0 : 0, rgExact ? rgExact.gifs || rgExact.publishedGifs || 0 : 0);
+        const tagPosts = Math.max(0, ...found.exact.filter((t) => tkey(t.name) === k).map((t) => t.count || 0), ...rgTags.filter((t) => tkey(t.text) === k).map((t) => t.gifs || 0));
+        if (exactAccount && accountPosts >= tagPosts) {
+          putAccounts();
+          putTags();
+        } else {
+          putTags();
+          putAccounts();
+        }
+        const likeUsers = withUsers && !link
+          ? closest(qUser, known.users, (u) => u.name, 3).filter((u) => !user || u.name.toLowerCase() !== user.name.toLowerCase())
+          : [];
+        if (found.similar.length || likeUsers.length) {
+          rows.push(label(rows.length ? 'Parecidos' : 'Quizás buscabas'));
+          rows.push(...found.similar.map((t) => resultRow(t, onFav, opts.onPick, opts.pickOnly, badge('jr'))));
+          rows.push(...likeUsers.map((u) => personRow(u.name, u.userId, 'Usuario', () => opts.onPick && opts.onPick({ type: 'user', name: u.name, pic: u.userId }), followPill(u.name, u.userId, opts.onFollow))));
+        }
+        const shown = rows.filter(Boolean);
+        fill(results, ...(shown.length ? shown : [h('div', { class: 'status', text: 'Sin resultados para «' + (link ? link[1] : q) + '»' })]));
+        results.dataset.q = q;
+      } catch (e) {
+        if (my === seq) fill(results, h('div', { class: 'status', text: errText(e) }));
+      }
+    };
     input.addEventListener('input', () => {
       clearTimeout(timer);
       const q = input.value.trim().replace(/^#/, '');
       if (q.length < 2) {
+        seq++;
+        delete results.dataset.q;
         fill(results, opts.idle ? opts.idle() : null);
         return;
       }
-      timer = setTimeout(async () => {
-        const my = ++seq;
-        try {
-          const qUser = q.replace(/^@/, '');
-          const onlyUsers = q.startsWith('@') || opts.usersOnly;
-          const known = knownNames();
-          // Lo que se predice como siempre (el autocompletado de JoyReactor) y, debajo, lo parecido:
-          // con errores de tipeo, con una palabra del medio o con lo escrito a medias.
-          const [found, user] = await Promise.all([
-            onlyUsers ? Promise.resolve({ exact: [], similar: [] }) : RS.searchTags(q, closest(q, known.tags, (t) => t, 8)),
-            withUsers ? RS.fetchUserInfo(qUser).catch(() => null) : Promise.resolve(null)
-          ]);
-          if (my !== seq) return;
-          const rows = [];
-          if (user) rows.push(userRow(user, opts.onPick, opts.onFollow));
-          rows.push(...found.exact.slice(0, 15).map((t) => resultRow(t, onFav, opts.onPick, opts.pickOnly)));
-          const likeUsers = withUsers
-            ? closest(qUser, known.users, (u) => u.name, 3).filter((u) => !user || u.name.toLowerCase() !== user.name.toLowerCase())
-            : [];
-          if (found.similar.length || likeUsers.length) {
-            rows.push(h('h2', { class: 'section-label similar-label', text: rows.length ? 'Parecidos' : 'Quizás buscabas' }));
-            rows.push(...found.similar.map((t) => resultRow(t, onFav, opts.onPick, opts.pickOnly)));
-            rows.push(...likeUsers.map((u) => personRow(u.name, u.userId, 'Usuario', () => opts.onPick && opts.onPick({ type: 'user', name: u.name, pic: u.userId }), followPill(u.name, u.userId, opts.onFollow))));
-          }
-          fill(results, ...(rows.length ? rows : [h('div', { class: 'status', text: 'Sin resultados para «' + q + '»' })]));
-          results.dataset.q = q;
-        } catch (e) {
-          fill(results, h('div', { class: 'status', text: errText(e) }));
-        }
-      }, 250);
+      timer = setTimeout(() => run(q), 250);
     });
     input.addEventListener('keydown', (e) => {
       const q = input.value.trim().replace(/^#/, '');
       if (e.key !== 'Enter' || !q) return;
-      // Enter abre el primer resultado (si lo escrito no existe tal cual, el más parecido).
-      const first = results.dataset.q === q && results.querySelector('.result a');
-      if (first) return first.click();
-      if (opts.usersOnly) return nav('#/user/' + enc(q.replace(/^@/, '')));
-      if (opts.pickOnly) return opts.onPick({ type: 'tag', name: q });
-      if (opts.onPick) opts.onPick({ type: 'tag', name: q });
-      nav('#/tag/' + enc(q));
+      e.preventDefault();
+      if (opts.pickOnly) {
+        // Cruzar hashtags: Enter elige el primero (o lo escrito tal cual).
+        const first = results.dataset.q === q && results.querySelector('.result a');
+        if (first) return first.click();
+        return opts.onPick({ type: 'tag', name: q });
+      }
+      // Esconde el teclado y deja a la vista la lista de resultados.
+      input.blur();
+      if (q.length < 2) return;
+      clearTimeout(timer);
+      if (results.dataset.q !== q) {
+        fill(results, h('div', { class: 'status' }, icon('spinner', 18, 'spin'), 'Buscando…'));
+        run(q);
+      }
     });
     if (autofocus) setTimeout(() => input.focus(), 60);
     if (opts.idle) fill(results, opts.idle());
     return { el: h('div', { class: 'search' }, h('label', {}, icon('search', 20), input)), results, input };
   }
 
-  function userRow(u, onPick, onFollow) {
-    return personRow(u.name, u.id, 'Usuario · ' + fmt(validCount(userJunkKey(u.name), u.posts)) + ' posts', () => onPick && onPick({ type: 'user', name: u.name, pic: u.id }), followPill(u.name, u.id, onFollow));
+  function userRow(u, onPick, onFollow, badge) {
+    const row = personRow(u.name, u.id, 'Usuario · ' + fmt(validCount(userJunkKey(u.name), u.posts)) + ' posts', () => onPick && onPick({ type: 'user', name: u.name, pic: u.id }), followPill(u.name, u.id, onFollow));
+    if (badge) row.querySelector('.n').append(' ', badge);
+    return row;
+  }
+  // La fuente de una fila del buscador: JR (JoyReactor) o RG (RedGifs).
+  const srcChip = (s) => h('span', { class: 'srcb ' + s, title: s === 'rg' ? 'De RedGifs' : 'De JoyReactor', text: s.toUpperCase() });
+  // Un creador de RedGifs en los resultados: su foto, cuántos posts tiene y Seguir.
+  function rgCreatorRow(c, onPick, badge) {
+    const name = c.username;
+    const extra = c.name && c.name.toLowerCase() !== name.toLowerCase() ? c.name.slice(0, 40) + ' · ' : '';
+    return h('div', { class: 'result' },
+      h('a', { href: '#/rguser/' + enc(name), onclick: () => onPick && onPick({ type: 'rguser', name, pic: c.profileImageUrl || '' }) },
+        rgPic(name, c.profileImageUrl, 'htile'),
+        h('span', { class: 'rtext' },
+          h('span', { class: 'n' }, '@' + name, badge ? ' ' : null, badge),
+          h('span', { class: 'm ellipsis', text: extra + 'Creador · ' + fmt(c.gifs || c.publishedGifs || 0) + ' posts en RedGifs' })
+        )
+      ),
+      rgFollowPill(name, c.profileImageUrl || '')
+    );
+  }
+  function rgFollowPill(name, pic) {
+    const b = h('button', { class: 'small-btn follow' });
+    const paint = () => {
+      const on = isRgFollowed(name);
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+      b.setAttribute('aria-label', (on ? 'Dejar de seguir a ' : 'Seguir a ') + name);
+      fill(b, on ? 'Siguiendo' : 'Seguir');
+    };
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      const on = !isRgFollowed(name);
+      setRgFollow(name, on, pic);
+      paint();
+      toast(on ? 'Sigues a ' + name + ' (RedGifs)' : 'Dejaste de seguir a ' + name);
+      if (on && !picOf('rguser', name)) askPic('rguser', name);
+    });
+    paint();
+    return b;
+  }
+  // Una etiqueta de RedGifs en los resultados: + abre «Seguir como hashtag o como cuenta».
+  function rgTagResult(t, onPick, badge) {
+    const name = t.text;
+    const b = h('button', { class: 'ib followb', 'data-follow-rgtag': name, 'aria-haspopup': 'dialog', onclick: () => openRgFollowSheet(name) });
+    b._paint = () => {
+      const on = !!rgTagOf(name);
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-label', on ? 'Siguiendo #' + name + ' (RedGifs)' : 'Seguir #' + name + ' (RedGifs)');
+      fill(b, icon(on ? 'check' : 'plus', 22));
+    };
+    b._paint();
+    return h('div', { class: 'result' },
+      h('a', { href: '#/rgtag/' + enc(name), onclick: () => onPick && onPick({ type: 'rgtag', name }) },
+        rgTagPic(name, 'htile'),
+        h('span', { class: 'rtext' },
+          h('span', { class: 'n' }, name, badge ? ' ' : null, badge),
+          h('span', { class: 'm', text: fmt(t.gifs || 0) + ' posts en RedGifs' })
+        )
+      ),
+      b
+    );
   }
 
   // Fila de un hashtag en los resultados: + abre «Seguir como hashtag o como cuenta» (✓ si ya lo sigues).
   // pickOnly: tocarlo solo lo elige (cruzar hashtags), no abre el hashtag ni ofrece seguirlo.
-  function resultRow(t, onFav, onPick, pickOnly) {
+  function resultRow(t, onFav, onPick, pickOnly, badge) {
     const star = pickOnly ? null : followTagBtn(t.name);
     return h('div', { class: 'result' },
       h('a', { href: '#/tag/' + enc(t.name), onclick: (e) => {
@@ -5535,8 +5650,8 @@
       } },
         tagPic(t.name, 'htile', '#', t.image ? RS.numId(t.id) : 0),
         h('span', { class: 'rtext' },
-          h('span', { class: 'n' }, t.name, t.nsfw ? h('span', { class: 'nsfw', text: 'NSFW' }) : null),
-          h('span', { class: 'm', text: fmt(validCount(tagJunkKey(t.name), t.count)) + ' posts' })
+          h('span', { class: 'n' }, t.name, t.nsfw ? h('span', { class: 'nsfw', text: 'NSFW' }) : null, badge ? ' ' : null, badge),
+          h('span', { class: 'm', text: fmt(validCount(tagJunkKey(t.name), t.count)) + ' posts' + (badge ? ' en JoyReactor' : '') })
         )
       ),
       star
@@ -5557,14 +5672,21 @@
     const list = S.searches || [];
     if (!list.length) return null;
     const rows = list.map((x) => {
-      const href = x.type === 'user' ? '#/user/' + enc(x.name) : '#/tag/' + enc(x.name);
-      const pic = x.type === 'user' ? userPic(x.name, x.pic) : tagPic(x.name, 'htile', '#', x.pic === undefined ? undefined : x.pic);
+      // Lo de RedGifs (1.10.2) lleva su marca y abre su página.
+      const rg = x.type === 'rguser' || x.type === 'rgtag';
+      const person = x.type === 'user' || x.type === 'rguser';
+      const href = '#/' + (x.type === 'user' || rg ? x.type : 'tag') + '/' + enc(x.name);
+      const pic =
+        x.type === 'user' ? userPic(x.name, x.pic)
+        : x.type === 'rguser' ? rgPic(x.name, x.pic, 'htile')
+        : x.type === 'rgtag' ? rgTagPic(x.name, 'htile')
+        : tagPic(x.name, 'htile', '#', x.pic === undefined ? undefined : x.pic);
       return h('div', { class: 'result' },
         h('a', { href, onclick: () => recordSearch(x) },
           pic,
           h('span', { class: 'rtext' },
-            h('span', { class: 'n', text: (x.type === 'user' ? '@' : '#') + x.name }),
-            h('span', { class: 'm', text: (x.type === 'user' ? 'Usuario' : 'Hashtag') + ' · ' + ago(x.at) })
+            h('span', { class: 'n' }, (person ? '@' : '#') + x.name, rg ? ' ' : null, rg ? srcChip('rg') : null),
+            h('span', { class: 'm', text: (x.type === 'user' ? 'Usuario' : x.type === 'rguser' ? 'Creador de RedGifs' : x.type === 'rgtag' ? 'Hashtag de RedGifs' : 'Hashtag') + ' · ' + ago(x.at) })
           )
         ),
         h('button', {
