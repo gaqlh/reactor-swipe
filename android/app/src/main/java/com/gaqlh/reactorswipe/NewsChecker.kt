@@ -62,14 +62,18 @@ object NewsChecker {
         0L
     }
 
-    private fun hasExcluded(p: JSONObject, exclude: Set<String>): Boolean {
+    /**
+     * Un hashtag que sigues gana sobre uno bloqueado, salvo que el bloqueado esté dentro del que sigues
+     * (lo mismo que RS.makeFilter en shared.js). parents: las carpetas de arriba de cada bloqueado.
+     */
+    private fun hasExcluded(p: JSONObject, exclude: Set<String>, followed: Set<String>, parents: Map<String, Set<String>>): Boolean {
         if (exclude.isEmpty()) return false
         val tags = p.optJSONArray("tags") ?: return false
-        for (k in 0 until tags.length()) {
-            val name = tags.optJSONObject(k)?.optString("name") ?: continue
-            if (name.lowercase() in exclude) return true
-        }
-        return false
+        val names = (0 until tags.length()).mapNotNull { tags.optJSONObject(it)?.optString("name")?.lowercase() }
+        val hit = names.filter { it in exclude }
+        if (hit.isEmpty()) return false
+        val mine = names.filter { it in followed }
+        return hit.any { b -> val up = parents[b] ?: emptySet(); mine.all { it in up } }
     }
 
     /** Post retirado por JoyReactor (derechos de autor): sin imágenes y con una imagen de aviso como texto. */
@@ -110,6 +114,14 @@ object NewsChecker {
         val hideNsfw = settings.optBoolean("hideNsfw", false)
         val excl = cfg.optJSONArray("exclude") ?: JSONArray()
         val exclude = (0 until excl.length()).map { excl.optString(it).lowercase() }.toHashSet()
+        val fol = cfg.optJSONArray("followedTags") ?: JSONArray()
+        val followed = (0 until fol.length()).map { fol.optString(it).lowercase() }.toHashSet()
+        val bp = cfg.optJSONObject("blockedParents") ?: JSONObject()
+        val parents = HashMap<String, Set<String>>()
+        for (k in bp.keys()) {
+            val arr = bp.optJSONArray(k) ?: continue
+            parents[k.lowercase()] = (0 until arr.length()).map { arr.optString(it).lowercase() }.toHashSet()
+        }
 
         // Un usuario se pide con user(username), que exige String!, y su lista no tiene tipo.
         fun declOf(f: JSONObject, i: Int) = if (f.optBoolean("user")) "\$n$i:String!" else "\$n$i:String"
@@ -174,7 +186,7 @@ object NewsChecker {
                     val id = p.optString("id")
                     if (id.isEmpty() || id in prevSet || id in have) continue
                     if (hideNsfw && (p.optBoolean("nsfw") || p.optBoolean("unsafe"))) continue
-                    if (hasExcluded(p, exclude)) continue
+                    if (hasExcluded(p, exclude, followed, parents)) continue
                     if (isJunk(p)) continue
                     all.add(JSONObject().put("id", id).put("tag", name).put("kind", f.optString("kind")).put("at", now).put("raw", p))
                     have.add(id)

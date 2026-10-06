@@ -1300,3 +1300,14 @@ html:not(.show-scores) .card .head .rating { display: none; }
 .pickbar { position: sticky; bottom: 0; z-index: 3; display: flex; align-items: center; gap: 12px; margin-top: 4px; padding: 10px 16px; background: var(--surface); border-top: 1px solid var(--line-2); font-size: 14px; font-weight: 700; }
 .pickbar[hidden], .sheet-label[hidden] { display: none; }
 .pickbar .grow { flex: 1 1 auto; }
+
+/* ---------- 1.8.0 ---------- */
+/* Elegir foto: en «Elegidas» los GIF se mueven, del mismo tamaño que las imágenes */
+.pick video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+/* Tú: cuatro números (cuentas, hashtags, me gusta, historial); el de la cuadrícula que se ve, en naranja */
+.mestats { justify-content: space-between; padding: 16px 18px 2px; }
+.mestat { min-width: 66px; }
+.mestat.on b { color: var(--accent); }
+/* Tarjeta: con el botón de descarga, los puntitos del carrusel van en el espacio libre de la fila */
+.dots-slot { display: flex; justify-content: center; overflow: hidden; }
+.dots-slot .dots.ig { position: static; transform: none; flex-shrink: 0; }

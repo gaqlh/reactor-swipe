@@ -210,6 +210,9 @@
           following: Object.values(S.following).map((f) => ({ name: f.name, notify: !!f.notify })),
           settings: S.settings,
           exclude: S.mix.exclude,
+          // Para que lo que sigues gane sobre lo bloqueado también en los avisos (ver RS.makeFilter).
+          followedTags: Object.values(S.favorites).concat(Object.values(S.tagProfiles)).flatMap((f) => [f.name].concat(f.aliases || [])),
+          blockedParents: Object.fromEntries(S.mix.exclude.map((b) => [b.toLowerCase(), (knownTree(b) || { p: [] }).p])),
           postFields: RS.POST_FIELDS
         })
       );
@@ -247,7 +250,14 @@
   });
   window.addEventListener('pagehide', flush);
 
-  const refreshFilter = () => (pass = RS.makeFilter(S));
+  // Lo que sigues gana sobre lo bloqueado, salvo que lo bloqueado esté dentro (ver RS.makeFilter): para
+  // eso hacen falta las carpetas de arriba de cada hashtag bloqueado (S.tagTree; si faltan, se piden).
+  const blockedParents = (t) => {
+    const k = knownTree(t);
+    if (!k) needTree([t]);
+    return k ? k.p : null;
+  };
+  const refreshFilter = () => (pass = RS.makeFilter(S, isFollowedTag, blockedParents));
   // La fecha de cada post y, en pantalla completa, la reputación y el rating se dibujan siempre y se
   // ocultan con CSS (así cambiar el ajuste no recarga nada).
   function applyDisplay() {
@@ -370,7 +380,10 @@
   function setBlocked(t, on) {
     const low = String(t).toLowerCase();
     S.mix.exclude = S.mix.exclude.filter((x) => x.toLowerCase() !== low);
-    if (on) S.mix.exclude.push(t);
+    if (on) {
+      S.mix.exclude.push(t);
+      needTree([t]);
+    }
     persist('mix');
     refreshFilter();
     // Los feeds guardados tienen posts que ahora sobran o faltan: se rehacen (menos el que está a la vista).
@@ -400,7 +413,7 @@
     const draw = () =>
       fill(el,
         withTitle === false ? null : h('span', { class: 't', text: 'Hashtags bloqueados' }),
-        h('span', { class: 'd', text: 'Los posts con estos hashtags no salen en ningún feed ni en los avisos. También puedes bloquear un hashtag manteniéndolo presionado, o desde el botón ⋯ de su página.' }),
+        h('span', { class: 'd', text: 'Los posts con estos hashtags no salen en ningún feed ni en los avisos, salvo los que llevan un hashtag que sigues (si el bloqueado no está dentro de ese). También puedes bloquear un hashtag manteniéndolo presionado, o desde el botón ⋯ de su página.' }),
         S.mix.exclude.length
           ? h('div', { class: 'wrap' },
               S.mix.exclude.map((x) =>
@@ -509,6 +522,66 @@
       }
     });
     if (feed) feed.checkMore();
+  }
+
+  // ================================================================ Descargar un post (1.8.0)
+  //
+  // El botón de descarga (al lado de comentarios, en la tarjeta y en pantalla completa) guarda las
+  // imágenes en tamaño completo y los GIF y videos como mp4. En Android van a la galería, en
+  // Imágenes › ReactorSwipe (Bridge.saveMedia). Con varias, pregunta si solo la que ves o todas.
+  const savable = (p) => p.media.filter((m) => m.kind === 'image' || m.kind === 'video');
+  const saving = new Set();
+  function downloadPost(p, idx) {
+    const list = savable(p);
+    if (!list.length) return;
+    const here = p.media[idx || 0];
+    if (list.length === 1) return saveFiles(p, list);
+    const n = list.length;
+    openSheet('Descargar',
+      h('div', { class: 'sheet-title', text: 'Descargar' }),
+      list.includes(here)
+        ? sheetRow(here.kind === 'video' ? 'film' : 'image', 'Solo esta', (list.indexOf(here) + 1) + ' de ' + n, () => {
+            closeSheet();
+            saveFiles(p, [here]);
+          })
+        : null,
+      sheetRow('download', 'Todas (' + n + ')', null, () => {
+        closeSheet();
+        saveFiles(p, list);
+      })
+    );
+  }
+  async function saveFiles(p, ms) {
+    if (saving.has(p.id)) return toast('Ya se está descargando');
+    saving.add(p.id);
+    const all = savable(p);
+    let done = 0;
+    try {
+      for (const m of ms) {
+        const f = RS.fileOf(m);
+        const name = 'reactor-' + p.num + (all.length > 1 ? '-' + (all.indexOf(m) + 1) : '') + '.' + f.ext;
+        if (ms.length > 1) toast('Descargando ' + (done + 1) + ' de ' + ms.length + '…');
+        else toast('Descargando…');
+        if (RS.android) await RS.native('saveMedia', f.url, name);
+        else await saveInBrowser(f.url, name);
+        done++;
+      }
+      toast((done === 1 ? 'Guardado' : done + ' archivos guardados') + (RS.android ? ' en la galería, en ReactorSwipe' : ''));
+    } catch (e) {
+      toast((done ? 'Se guardaron ' + done + ' de ' + ms.length + '. ' : 'No se pudo descargar. ') + errText(e));
+    }
+    saving.delete(p.id);
+  }
+  // Fuera de Android (la PC): se baja el archivo y el navegador lo guarda.
+  async function saveInBrowser(url, name) {
+    const r = await fetch(RS.viaProxy(url));
+    if (!r.ok) throw new Error('JoyReactor respondió ' + r.status);
+    const href = URL.createObjectURL(await r.blob());
+    const a = h('a', { href, download: name });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 10000);
   }
 
   // ================================================================ Observadores (videos y vistos)
@@ -999,6 +1072,8 @@
       const paths = await RS.fetchTagPaths(names);
       const now = Date.now();
       for (const n of names) S.tagTree[tkey(n)] = { p: paths[n] || [], at: now };
+      // Llegaron las carpetas de un hashtag bloqueado: Android las usa para los avisos.
+      if (names.some(isBlocked)) syncNative();
       const keys = Object.keys(S.tagTree);
       if (keys.length > TREE_MAX) {
         keys
@@ -1247,11 +1322,16 @@
     const user = kind === 'user';
     return h('button', { type: 'button', class: 'ib', 'aria-haspopup': 'dialog', 'aria-label': 'Más opciones de ' + (user ? '@' : '#') + name, onclick: () => {
       const own = picOf(kind, name);
-      const img = picWant(kind, name) === 'image';
+      const want = picWant(kind, name);
+      const sub = {
+        image: 'Una imagen (o un GIF, quieto) de sus posts o de tus me gusta, recortada como quieras.',
+        any: 'Una imagen o un pedazo de un GIF de sus posts o de tus me gusta, recortado como quieras.',
+        clip: 'Un pedazo de un GIF o video de sus posts o de tus me gusta, que se repite.'
+      }[want];
       openSheet('Opciones de ' + (user ? '@' : '#') + name,
         h('div', { class: 'sheet-title', text: (user ? '@' : '#') + name }),
-        sheetRow(img ? 'camera' : 'film', (own ? 'Cambiar ' : 'Poner ') + (img ? 'la foto' : 'el GIF o video'), img ? 'Una imagen (o un GIF, quieto) de sus posts o de tus me gusta, recortada como quieras.' : 'Un pedazo de un GIF o video de sus posts o de tus me gusta, que se repite.', () => openPicSheet(kind, name)),
-        own ? sheetRow('x', 'Quitar ' + (img ? 'la foto' : 'el GIF'), user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null
+        sheetRow(want === 'clip' ? 'film' : 'camera', (own ? 'Cambiar ' : 'Poner ') + picWhat(want, true), sub, () => openPicSheet(kind, name)),
+        own ? sheetRow('x', 'Quitar ' + picWhat(own.len ? 'clip' : 'image', true), user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null
       );
     } }, icon('dots', 22));
   }
@@ -1259,7 +1339,7 @@
     closeSheet();
     delete S.pics[picKey(kind, own.name)];
     persist('pics', 0);
-    toast(kind === 'user' ? 'Quitaste la foto' : 'Quitaste el GIF', 'Deshacer', () => {
+    toast('Quitaste ' + picWhat(own.len ? 'clip' : 'image', true), 'Deshacer', () => {
       S.pics[picKey(kind, own.name)] = own;
       persist('pics', 0);
       picsChanged();
@@ -1273,11 +1353,12 @@
     route();
   }
 
-  // Qué se le pone: a un usuario y a un hashtag que sigues como cuenta, una imagen; a un hashtag, un GIF o
-  // video (lo pidió el usuario en la 1.7.1). Para una imagen también se puede elegir un GIF (si no tiene
-  // fotos): queda quieto, en el momento que elijas (1.7.2).
-  const picWant = (kind, name) => (kind === 'user' || tagProfileOf(name) ? 'image' : 'clip');
+  // Qué se le pone: a un usuario, una imagen; a un hashtag, un GIF o video (lo pidió el usuario en la 1.7.1);
+  // a un hashtag que sigues como cuenta, cualquiera de las dos (1.8.0: 'any'). Para una imagen también se
+  // puede elegir un GIF (si no tiene fotos): queda quieto, en el momento que elijas (1.7.2).
+  const picWant = (kind, name) => (kind === 'user' ? 'image' : tagProfileOf(name) ? 'any' : 'clip');
   const mediaFits = (m, want) => (want === 'clip' ? m.kind === 'video' : m.kind === 'image' || m.kind === 'video');
+  const picWhat = (want, the) => ({ image: the ? 'la foto' : 'una foto', any: the ? 'la foto o el GIF' : 'una foto o un GIF', clip: the ? 'el GIF' : 'un GIF' })[want];
   // Las candidatas que vas marcando, por cuenta, mientras la app está abierta.
   const picCandidates = new Map();
 
@@ -1294,20 +1375,12 @@
     const status = h('div', { class: 'pickstatus' });
     const sentinel = h('div', { class: 'picksentinel' });
     const bar = h('div', { class: 'pickbar' });
-    // Para una imagen, las imágenes arriba y los GIF (que quedan quietos) en su propio grupo, debajo.
-    const gifGrid = h('div', { class: 'pickgrid' });
-    const imgLab = h('span', { class: 'sheet-label', text: 'Imágenes', hidden: true });
-    const gifLab = h('span', { class: 'sheet-label', text: 'GIF · quedan como una imagen quieta', hidden: true });
-    const body = h('div', {}, imgLab, grid, gifLab, gifGrid, status, sentinel);
-    const put = (list) => {
-      for (const x of list) (want === 'image' && x.m.kind === 'video' ? gifGrid : grid).append(cell(x));
-      gifLab.hidden = !gifGrid.children.length;
-      imgLab.hidden = gifLab.hidden || !grid.children.length;
-    };
+    // Imágenes y GIF juntos, en el mismo orden que en su feed (lo pidió el usuario en la 1.8.0).
+    const body = h('div', {}, grid, status, sentinel);
+    const put = (list) => grid.append(...list.map(cell));
     const clear = () => {
+      grid.querySelectorAll('video').forEach(stopVideo);
       fill(grid);
-      fill(gifGrid);
-      imgLab.hidden = gifLab.hidden = true;
     };
     let tab = 'posts';
     let io = null;
@@ -1328,11 +1401,28 @@
       );
       return b;
     };
-    // En «Elegidas», más grandes: tocar una la recorta; la ✕ la desmarca.
+    // En «Elegidas», más grandes y con los GIF moviéndose, para comparar (lo pidió el usuario en la 1.8.0):
+    // tocar una la recorta; la ✕ la desmarca.
+    const liveGif = (m) => {
+      const v = document.createElement('video');
+      v.muted = true;
+      v.defaultMuted = true;
+      v.loop = true;
+      v.autoplay = true;
+      v.playsInline = true;
+      v.setAttribute('muted', '');
+      v.setAttribute('playsinline', '');
+      v.preload = 'auto';
+      v.poster = RS.posterUrl(m);
+      v.src = RS.videoUrl(m);
+      // Respaldo del autoplay (a veces no arranca solo).
+      v.addEventListener('canplay', () => v.paused && v.play().catch(() => {}), { once: true });
+      return v;
+    };
     const finalCell = (x) =>
       h('div', { class: 'pickfinal' },
         h('button', { type: 'button', class: 'pick big', 'aria-label': 'Usar esta', onclick: () => onPick(x.m, x.post) },
-          h('img', { src: x.m.kind === 'image' ? RS.imageUrl(x.m) : RS.posterUrl(x.m), alt: '', draggable: 'false' }),
+          x.m.kind === 'video' ? liveGif(x.m) : h('img', { src: RS.imageUrl(x.m), alt: '', draggable: 'false' }),
           x.m.kind === 'video' ? h('span', { class: 'tb', text: 'GIF' }) : null
         ),
         h('button', { type: 'button', class: 'pickx', 'aria-label': 'Desmarcar', onclick: () => {
@@ -1360,7 +1450,7 @@
     async function loadMore() {
       if (loading || tab !== 'posts' || src.done) return;
       loading = true;
-      fill(status, icon('spinner', 18, 'spin'), want === 'clip' ? 'Buscando GIF y videos…' : 'Buscando imágenes…');
+      fill(status, icon('spinner', 18, 'spin'), want === 'clip' ? 'Buscando GIF y videos…' : 'Buscando imágenes y GIF…');
       try {
         // Hasta encontrar una tanda (o revisar bastante): los hashtags grandes tienen pocos GIF por página.
         let added = 0;
@@ -1398,7 +1488,7 @@
       const list = fromPosts(liked);
       clear();
       put(list);
-      fill(status, list.length ? '' : 'Todavía no le diste me gusta a ' + (want === 'clip' ? 'GIF' : 'imágenes') + ' de ' + (user ? '@' : '#') + name + '.');
+      fill(status, list.length ? '' : 'Todavía no le diste me gusta a ' + (want === 'clip' ? 'GIF' : 'imágenes ni GIF') + ' de ' + (user ? '@' : '#') + name + '.');
     };
     function showChosen() {
       grid.className = 'pickgrid two';
@@ -1460,18 +1550,24 @@
     const user = kind === 'user';
     const want = picWant(kind, name);
     const who = (user ? '@' : '#') + name;
-    const what = want === 'clip' ? 'un GIF' : 'una foto';
+    const what = picWhat(want);
+    const title = (want === 'clip' ? 'GIF de ' : 'Foto de ') + who;
+    const howTo = {
+      image: 'Toca las imágenes que te gusten (o un GIF, que queda quieto) y después elige la definitiva',
+      any: 'Toca las imágenes o los GIF que te gusten y después elige el definitivo',
+      clip: 'Toca los GIF que te gusten y después elige el definitivo'
+    }[want];
     const picker = picPicker(kind, name, want, (m, post) => {
       closeSheet();
       openCropper(kind, name, m, post, want, () => openPicSheet(kind, name, ask, (picCandidates.get(picKey(kind, name)) || new Map()).size > 1 ? 'chosen' : null));
     }, first);
-    openSheet((want === 'clip' ? 'GIF de ' : 'Foto de ') + who,
+    openSheet(title,
       h('div', { class: 'sheet-title sheet-title-row' },
-        h('span', { class: 'grow', text: ask ? '¿Le pones ' + what + ' a ' + who + '?' : (want === 'clip' ? 'GIF de ' : 'Foto de ') + who }),
+        h('span', { class: 'grow', text: ask ? '¿Le pones ' + what + ' a ' + who + '?' : title }),
         ask ? h('button', { type: 'button', class: 'link-btn', onclick: () => closeSheet() }, 'Ahora no') : null
       ),
-      h('span', { class: 'sheet-label', text: (want === 'clip' ? 'Toca los GIF que te gusten y después elige el definitivo' : 'Toca las imágenes que te gusten (o un GIF, que queda quieto) y después elige la definitiva') + (ask ? '. También puedes hacerlo después, desde el ⋯ de Seguidos.' : '.') }),
-      !ask && own ? sheetRow('x', 'Quitar ' + (want === 'clip' ? 'el GIF' : 'la foto'), user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null,
+      h('span', { class: 'sheet-label', text: howTo + (ask ? '. También puedes hacerlo después, desde el ⋯ de Seguidos.' : '.') }),
+      !ask && own ? sheetRow('x', 'Quitar ' + picWhat(own.len ? 'clip' : 'image', true), user ? 'Vuelve la de JoyReactor.' : 'Vuelve la imagen del hashtag.', () => removePic(kind, own), 'danger') : null,
       picker.tabs,
       picker.body,
       picker.bar
@@ -1502,7 +1598,8 @@
     if (c.onCancel) c.onCancel();
     return true;
   }
-  // want: 'clip' (un pedazo que se repite) o 'image' (una imagen; si es un GIF, el momento elegido, quieto).
+  // want: 'clip' (un pedazo que se repite), 'image' (una imagen; si es un GIF, el momento elegido, quieto)
+  // o 'any' (una cuenta: una imagen, o el pedazo de un GIF que se repite).
   function openCropper(kind, name, m, postId, want, onCancel) {
     closeCropper();
     const isVid = m.kind === 'video';
@@ -1669,12 +1766,26 @@
   //
   // Como el perfil de Instagram: arriba tus números y, en círculos, lo que sigues («Ver todos» abre
   // Seguidos); abajo, en cuadrícula, tus me gusta (con tus carpetas) y el historial.
-  function meHeader() {
+  // Arriba, cuatro números (lo pidió el usuario en la 1.8.0): cuentas seguidas (usuarios y hashtags que
+  // sigues como cuenta), hashtags seguidos, me gusta e historial. Los dos primeros abren Seguidos; me gusta
+  // e historial cambian la cuadrícula de abajo, como sus pestañas (active: la que se ve).
+  function meHeader(active) {
     const nTags = Object.keys(S.favorites).length;
     const nProf = Object.keys(S.following).length + Object.keys(S.tagProfiles).length;
     const nLikes = Object.keys(S.likes).length;
-    const stat = (n, one, many, href) =>
-      h(href ? 'a' : 'span', { class: 'mestat', href: href || null }, h('b', { text: fmt(n) }), h('span', { text: n === 1 ? one : many }));
+    const nHist = historyList().length;
+    const stat = (n, one, many, href, tab) =>
+      h('a', {
+        class: 'mestat' + (tab && tab === active ? ' on' : ''),
+        href,
+        'aria-current': tab && tab === active ? 'page' : null,
+        onclick: tab
+          ? (e) => {
+              e.preventDefault();
+              if (tab !== active) navReplace(href);
+            }
+          : null
+      }, h('b', { text: fmt(n) }), h('span', { text: n === 1 ? one : many }));
     const circles = Object.values(S.following)
       .map((u) => ({ at: u.addedAt || 0, el: () => h('a', { class: 'story', href: '#/user/' + enc(u.name) }, h('span', { class: 'ring plain' }, userPic(u.name, u.userId, 'disc')), h('span', { class: 'label', text: u.name })) }))
       .concat(Object.values(S.tagProfiles).map((t) => ({ at: t.addedAt || 0, el: () => h('a', { class: 'story', href: '#/tag/' + enc(t.name) }, h('span', { class: 'ring plain' }, tagPic(t.name, 'disc', '#', t.pic)), h('span', { class: 'label', text: t.name })) })))
@@ -1684,9 +1795,10 @@
       .map((x) => x.el());
     return h('section', { class: 'mehead' },
       h('div', { class: 'mestats' },
+        stat(nProf, 'cuenta', 'cuentas', '#/following?tab=users'),
         stat(nTags, 'hashtag', 'hashtags', '#/following'),
-        stat(nProf, 'perfil', 'perfiles', '#/following?tab=users'),
-        stat(nLikes, 'me gusta', 'me gusta')
+        stat(nLikes, 'me gusta', 'me gusta', '#/likes', 'likes'),
+        stat(nHist, 'historial', 'historial', '#/history', 'history')
       ),
       circles.length
         ? [
@@ -1834,8 +1946,15 @@
     const el = sheetEl;
     sheetEl = null;
     el.classList.remove('open');
+    // Los GIF que se mueven dentro (las Elegidas del selector de foto) sueltan su reproductor.
+    el.querySelectorAll('video').forEach(stopVideo);
     setTimeout(() => el.remove(), 220);
     return true;
+  }
+  function stopVideo(v) {
+    v.pause();
+    v.removeAttribute('src');
+    v.load();
   }
   document.addEventListener('keydown', (e) => e.key === 'Escape' && closeSheet());
   const sheetRow = (ic, label, sub, onclick, cls, right) =>
@@ -1866,11 +1985,7 @@
     }
     if (!info) return toast('No existe el hashtag «' + name + '»');
     const { fav, prof } = followedAs(name, info);
-    const before = {
-      fav: fav && Object.assign({}, fav),
-      mix: fav && S.mix.sources[fav.name] ? Object.assign({}, S.mix.sources[fav.name]) : null,
-      prof: prof && Object.assign({}, prof)
-    };
+    const before = followSnapshot(fav, prof);
     // Al cambiar de forma se conserva la campanita.
     const bell = !!(notify || (fav && fav.notify) || (prof && prof.notify));
     if (fav && as !== 'tag') removeFavorite(fav.name);
@@ -1894,6 +2009,12 @@
     followChanged(name, !!prof !== (as === 'account'), info.name);
     if (as && !fav && !prof) askPic('tag', info.name);
   }
+  // Cómo lo seguías, para Deshacer (restoreFollow).
+  const followSnapshot = (fav, prof) => ({
+    fav: fav && Object.assign({}, fav),
+    mix: fav && S.mix.sources[fav.name] ? Object.assign({}, S.mix.sources[fav.name]) : null,
+    prof: prof && Object.assign({}, prof)
+  });
   function restoreFollow(b) {
     if (b.fav) {
       S.favorites[b.fav.name] = b.fav;
@@ -1957,11 +2078,21 @@
       if (canon !== name) setBlocked(canon, false);
       toast('#' + canon + ' desbloqueado');
     } else {
+      // Lo que sigues gana sobre lo bloqueado: bloquear uno que sigues es dejar de seguirlo.
+      const { fav, prof } = followedAs(name, info);
+      const before = fav || prof ? followSnapshot(fav, prof) : null;
+      if (fav) removeFavorite(fav.name);
+      if (prof) setTagProfile(prof.name, info, false);
       setBlocked(canon, true);
-      toast('#' + canon + ' bloqueado: sus posts ya no salen en ningún lado', 'Deshacer', () => {
+      toast('#' + canon + ' bloqueado' + (before ? ' y dejaste de seguirlo' : ': sus posts ya no salen en ningún lado'), 'Deshacer', () => {
         setBlocked(canon, false);
+        if (before) {
+          restoreFollow(before);
+          followChanged(name, false, canon);
+        }
         redo();
       });
+      if (before) followChanged(name, false, canon);
     }
     redo();
   }
@@ -2012,7 +2143,8 @@
   }
   function blockRow(name) {
     const blocked = isBlocked(name);
-    return sheetRow('ban', (blocked ? 'Desbloquear #' : 'Bloquear #') + name, blocked ? null : 'Sus posts no salen en ningún feed ni en los avisos.', () => {
+    const sub = blocked ? null : isFollowedTag(name) ? 'Dejas de seguirlo y sus posts no salen en ningún feed ni en los avisos.' : 'Sus posts no salen en ningún feed ni en los avisos (salvo los que llevan un hashtag que sigues).';
+    return sheetRow('ban', (blocked ? 'Desbloquear #' : 'Bloquear #') + name, sub, () => {
       closeSheet();
       blockTag(name, !blocked);
     }, blocked ? '' : 'danger');
@@ -2096,11 +2228,12 @@
     if (dots) dots.className = 'dots ig';
     card.append(
       h('div', { class: 'actions' },
-        dots,
         h('button', { class: 'act like' + (liked ? ' on' : ''), 'aria-label': 'Me gusta', 'aria-pressed': String(liked), onclick: () => toggleLike(p) }, icon('heart', 27)),
         h('button', { class: 'act', 'aria-label': 'No me gusta: ocultar para siempre', onclick: () => dislike(it, card, feed) }, icon('down', 25)),
         h('a', { class: 'act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': p.comments + ' comentarios en JoyReactor' }, icon('comment', 24), fmt(p.comments)),
-        h('span', { class: 'grow' }),
+        savable(p).length ? h('button', { class: 'act', 'aria-label': 'Descargar', onclick: () => downloadPost(p, currentIndex(card)) }, icon('download', 25)) : null,
+        // Los puntitos del carrusel, centrados en el espacio que queda (con la descarga ya no caben al medio).
+        h('span', { class: 'grow dots-slot' }, dots),
         media ? h('button', { class: 'act dim', 'aria-label': 'Pantalla completa', onclick: () => openViewer(feed, p, currentIndex(card)) }, icon('expand', 21)) : null
       )
     );
@@ -2421,6 +2554,7 @@
       h('button', { class: 'vw-act like' + (liked ? ' on' : ''), 'aria-label': 'Me gusta', 'aria-pressed': String(liked), onclick: () => toggleLike(p) }, icon('heart', 31)),
       h('button', { class: 'vw-act', 'aria-label': 'No me gusta: ocultar para siempre', onclick: () => dislikeInViewer(page) }, icon('down', 29)),
       h('a', { class: 'vw-act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': p.comments + ' comentarios en JoyReactor' }, icon('comment', 29), h('span', { text: fmt(p.comments) })),
+      savable(p).length ? h('button', { class: 'vw-act', 'aria-label': 'Descargar', onclick: () => downloadPost(p, page._track ? page._track._idx || 0 : 0) }, icon('download', 29)) : null,
       (sndBtn = videos.length ? soundButton() : null)
     );
     // Solo los videos tienen sonido: con GIF el botón no aparece.
@@ -3679,11 +3813,12 @@
   }
 
   // Círculo con la imagen del hashtag (la de JoyReactor); mientras carga, o si no tiene, «#». Si le pusiste
-  // un GIF (S.pics), ese; animate = que se mueva (página del hashtag y listas de Seguidos).
+  // un GIF o una foto (S.pics), esa; animate = que el GIF se mueva (página del hashtag y listas de Seguidos;
+  // desde la 1.8.0 también en las cuentas).
   const picCache = new Map();
   function tagPic(name, cls, fallback, known, animate) {
     const own = picOf('tag', name);
-    if (own) return putPic(h('span', { class: cls }), own, animate && !tagProfileOf(name));
+    if (own) return putPic(h('span', { class: cls }), own, animate);
     const c = colorFor(name);
     const el = h('span', { class: cls, style: { background: c[0], color: c[1] } }, fallback);
     const show = (pic) => {
@@ -3987,15 +4122,24 @@
     return overlapCache.get(key);
   }
   function postsText(info, total, overlap) {
-    const above = (info.path || []).find((t) => isBlocked(t));
-    if (above) return '0 posts · está dentro de #' + above + ', que bloqueaste';
-    const hit = (overlap || []).filter((x) => x.n > 0);
+    // Si sigues este hashtag o una carpeta donde está, todos sus posts la llevan y lo que sigues gana
+    // sobre lo bloqueado (ver RS.makeFilter): solo se descuenta lo bloqueado que está dentro de eso.
+    const mine = [info.name].concat(info.path || []).filter(isFollowedTag).map(tkey);
+    // Los posts que además llevan otro hashtag que sigues se ven igual: entonces lo que queda es un mínimo.
+    const others = Object.values(S.favorites).concat(Object.values(S.tagProfiles)).some((f) => !mine.includes(tkey(f.name)));
+    const onlyMine = 'solo ves los que llevan algo que sigues';
+    const above = !mine.length && (info.path || []).find((t) => isBlocked(t));
+    if (above) return others ? 'Está dentro de #' + above + ', que bloqueaste: ' + onlyMine : '0 posts · está dentro de #' + above + ', que bloqueaste';
+    const hit = (overlap || []).filter((x) => x.n > 0 && mine.every((f) => x.path.some((p) => tkey(p) === f)));
     // Uno que está dentro de otro bloqueado ya se descontó con ese.
     const top = hit.filter((x) => !hit.some((y) => y !== x && x.path.some((p) => tkey(p) === tkey(y.name))));
     if (!top.length) return fmt(total) + ' posts';
     const left = Math.max(0, total - top.reduce((a, x) => a + x.n, 0));
     const names = top.sort((a, b) => b.n - a.n).map((x) => '#' + x.name);
-    return (top.some((x) => x.capped) ? 'como mucho ' : '') + fmt(left) + ' posts · sin ' + names.slice(0, 2).join(', ') + (names.length > 2 ? ' y ' + (names.length - 2) + ' más' : '');
+    const list = names.slice(0, 2).join(', ') + (names.length > 2 ? ' y ' + (names.length - 2) + ' más' : '');
+    if (!left && others) return 'Casi todos tienen ' + list + ': ' + onlyMine;
+    const capped = top.some((x) => x.capped);
+    return (capped && others ? 'unos ' : capped ? 'como mucho ' : others ? 'al menos ' : '') + fmt(left) + ' posts · sin ' + list;
   }
 
   /** totalOf (opcional): cuántos posts dice la lista del hashtag, para descontar los retirados. */
@@ -5077,7 +5221,7 @@
 
   function favTabs(active) {
     return pageTabs('Favoritos', active, [
-      { id: 'likes', href: '#/likes', ic: 'heart', label: 'Me gusta', n: Object.keys(S.likes).length },
+      { id: 'likes', href: '#/likes', ic: 'heart', label: 'Me gusta' },
       { id: 'history', href: '#/history', ic: 'clock', label: 'Historial' }
     ]);
   }
@@ -5107,7 +5251,7 @@
       anchor: feedMemory.get('likes' + (fid ? ':' + fid : '')),
       mode: 'grid',
       head: (f) => (f.sel ? selectionHead(f, 'likes', fid ? S.folders[fid] : null) : [h('h1', { text: 'Tú' })]),
-      extra: () => [meHeader(), favTabs('likes'), folderStrip(fid), fid && S.folders[fid] ? folderBar(S.folders[fid]) : null],
+      extra: () => [meHeader('likes'), favTabs('likes'), folderStrip(fid), fid && S.folders[fid] ? folderBar(S.folders[fid]) : null],
       empty: () => (fid
         ? emptyBox('folder', 'Esta carpeta está vacía', 'En Todos, mantén presionada una miniatura, elige los posts y toca Mover.')
         : emptyBox('heart', 'Todavía no tienes me gusta', 'Toca el corazón en cualquier post.'))
@@ -5525,7 +5669,7 @@
       mode: 'grid',
       head: (f) => (f.sel ? selectionHead(f, 'history') : [h('h1', { text: 'Tú' })]),
       extra: () => [
-        meHeader(),
+        meHeader('history'),
         favTabs('history'),
         list.length
           ? h('div', { class: 'countline', style: { display: 'flex', alignItems: 'center', gap: '8px' } },
@@ -6624,6 +6768,7 @@
     S.seenSet = new Set(S.seen);
     startUsageClock();
     refreshFilter();
+    needTree(S.mix.exclude);
     applyDisplay();
     refreshFavIndex();
     if (RS.android) {

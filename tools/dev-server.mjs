@@ -82,7 +82,8 @@ window.RSAndroid = {
   checkNow(cb) { setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ total: 0, per: {} })), 50); },
   saveFile(n, c, cb) { setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ ok: true, message: 'Simulado: ' + n })), 50); },
   autoBackup(c, cb) { window.__simBackup = c; setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ ok: true })), 50); },
-  installUpdate(u, cb) { setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ ok: true })), 50); }
+  installUpdate(u, cb) { setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ ok: true })), 50); },
+  saveMedia(u, n, cb) { (window.__simSaved = window.__simSaved || []).push({ url: u, name: n }); setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ ok: true, name: n })), 300); }
 };
 window.__RS_DEV_PROXY = true;
 </script>`;

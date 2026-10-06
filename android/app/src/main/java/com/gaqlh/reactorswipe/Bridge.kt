@@ -12,6 +12,8 @@ import android.provider.Settings
 import android.webkit.JavascriptInterface
 import org.json.JSONObject
 import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -100,6 +102,10 @@ class Bridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun installUpdate(url: String, cb: String) = async(cb) { Updater.downloadAndInstall(activity, url) }
 
+    /** Descargar un post: la imagen o el mp4 va a la galería, en Imágenes/ReactorSwipe. */
+    @JavascriptInterface
+    fun saveMedia(url: String, name: String, cb: String) = async(cb) { saveToGallery(url, name) }
+
     private fun async(cb: String, work: () -> JSONObject) {
         io.execute {
             val result = try {
@@ -148,6 +154,68 @@ class Bridge(private val activity: MainActivity) {
         prefs.edit().putString("backupUri", uri.toString()).apply()
         return JSONObject().put("ok", true)
     }
+
+    /**
+     * Baja un archivo de JoyReactor (pide el Referer de joyreactor.com) y lo guarda con MediaStore en
+     * Imágenes/ReactorSwipe, así sale en la galería. Si la imagen en tamaño completo no existe, usa la normal.
+     */
+    private fun saveToGallery(url: String, name: String): JSONObject {
+        if (!Regex("""^https://img\d*\.joyreactor\.com/pics/post/""").containsMatchIn(url)) throw IOException("Enlace no válido")
+        val safeName = name.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        var conn = openMedia(url)
+        if (conn.responseCode != 200 && url.contains("/full/")) {
+            conn.disconnect()
+            conn = openMedia(url.replace("/full/", "/"))
+        }
+        try {
+            if (conn.responseCode != 200) throw IOException("JoyReactor respondió ${conn.responseCode}")
+            val ext = safeName.substringAfterLast('.', "").lowercase()
+            val video = ext == "mp4"
+            val mime = when (ext) {
+                "mp4" -> "video/mp4"
+                "png" -> "image/png"
+                "gif" -> "image/gif"
+                "webp" -> "image/webp"
+                else -> "image/jpeg"
+            }
+            val resolver = ctx.contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+                put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/ReactorSwipe")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val collection = if (video) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            val made = try {
+                resolver.insert(collection, values)
+            } catch (e: IllegalArgumentException) {
+                // Por si este Android no deja videos en Imágenes: van a Películas/ReactorSwipe.
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/ReactorSwipe")
+                resolver.insert(collection, values)
+            }
+            val uri = made ?: throw IOException("No se pudo crear el archivo en la galería")
+            try {
+                val out = resolver.openOutputStream(uri) ?: throw IOException("No se pudo escribir el archivo")
+                out.use { o -> conn.inputStream.use { it.copyTo(o) } }
+                resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+            } catch (e: Exception) {
+                resolver.delete(uri, null, null)
+                throw e
+            }
+            return JSONObject().put("ok", true).put("name", safeName)
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun openMedia(url: String): HttpURLConnection =
+        (URL(url).openConnection() as HttpURLConnection).apply {
+            instanceFollowRedirects = true
+            connectTimeout = 20000
+            readTimeout = 60000
+            setRequestProperty("Referer", "https://joyreactor.com/")
+            setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) ReactorSwipe")
+        }
 
     private fun saveToDownloads(name: String, content: String): JSONObject {
         val safeName = name.replace(Regex("[^A-Za-z0-9._-]"), "_")

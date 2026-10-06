@@ -226,6 +226,10 @@
   RS.imageUrl = (m, full) => IMG + (full ? 'full/' : '') + 'post-' + m.id + '.' + (m.ext || 'jpeg');
   RS.videoUrl = (m) => viaProxy(IMG + 'mp4/post-' + m.id + '.mp4');
   RS.posterUrl = (m) => IMG + 'static/post-' + m.id + '.jpeg';
+  // Para descargar: la imagen en tamaño completo o el mp4 (también el de los GIF). La app de Android la
+  // pide sin el proxy; en el navegador, si hace falta, pasa por él (viaProxy).
+  RS.fileOf = (m) => (m.kind === 'video' ? { url: IMG + 'mp4/post-' + m.id + '.mp4', ext: 'mp4' } : { url: RS.imageUrl(m, true), ext: m.ext || 'jpeg' });
+  RS.viaProxy = viaProxy;
   // Avatares de usuarios y hashtags: también exigen el Referer de joyreactor.com.
   RS.avatarUrl = (p) => (p.userId ? viaProxy('https://img10.joyreactor.com/pics/avatar/user/' + p.userId) : '');
   RS.tagImageUrl = (tagId) => viaProxy('https://img10.joyreactor.com/pics/avatar/tag/' + tagId);
@@ -828,12 +832,36 @@
   };
   RS.save = (obj) => area.set(obj);
 
-  /** Filtro común a todos los feeds: no me gusta, hashtags excluidos, NSFW y posts retirados. */
-  RS.makeFilter = function (st) {
+  /**
+   * Filtro común a todos los feeds: no me gusta, hashtags excluidos, NSFW y posts retirados.
+   * Un hashtag que sigues (como hashtag o como cuenta) gana sobre uno bloqueado (lo pidió el usuario en la
+   * 1.8.0), salvo que el bloqueado esté dentro del que sigues: si sigues #anime y bloqueas #Anime Ero, el
+   * bloqueo sigue valiendo. isFollowed(t) y parentsOf(t) (las carpetas de arriba de t, o null si no se
+   * saben) los pone la app; sin ellos se usan los seguidos de st y no se sabe qué está dentro de qué.
+   */
+  RS.makeFilter = function (st, isFollowed, parentsOf) {
     const dis = st.dislikes || {};
     const ex = new Set(((st.mix && st.mix.exclude) || []).map((s) => s.toLowerCase()));
     const hideNsfw = st.settings && st.settings.hideNsfw;
-    return (p) => !dis[p.id] && !RS.isJunk(p) && !(hideNsfw && (p.nsfw || p.unsafe)) && !p.tags.some((t) => ex.has(t.toLowerCase()));
+    if (!isFollowed) {
+      const mine = new Set();
+      for (const f of Object.values(st.favorites || {}).concat(Object.values(st.tagProfiles || {}))) {
+        mine.add(f.name.toLowerCase());
+        for (const a of f.aliases || []) mine.add(String(a).toLowerCase());
+      }
+      isFollowed = (t) => mine.has(t.toLowerCase());
+    }
+    const blocked = (p) => {
+      const hit = p.tags.filter((t) => ex.has(t.toLowerCase()));
+      if (!hit.length) return false;
+      const mine = p.tags.filter(isFollowed).map((t) => t.toLowerCase());
+      // Se bloquea si algún hashtag bloqueado está dentro de todos los que sigues del post (o no sigues ninguno).
+      return hit.some((b) => {
+        const up = new Set(((parentsOf && parentsOf(b)) || []).map((x) => x.toLowerCase()));
+        return mine.every((f) => up.has(f));
+      });
+    };
+    return (p) => !dis[p.id] && !RS.isJunk(p) && !(hideNsfw && (p.nsfw || p.unsafe)) && !blocked(p);
   };
 
   RS.label = (name, kind) =>
