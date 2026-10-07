@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Environment
 import android.os.PowerManager
@@ -60,6 +62,16 @@ class Bridge(private val activity: MainActivity) {
     fun syncWeek(json: String) {
         Store.saveWeek(ctx, json)
         Weekly.onSeen(ctx)
+    }
+
+    /** ¿Hay Wi-Fi (o cable)? En Buscar, con Wi-Fi la vista previa de cada video dura más (1.13.2). */
+    @JavascriptInterface
+    fun onWifi(): Boolean = try {
+        val cm = ctx.getSystemService(ConnectivityManager::class.java)
+        val caps = cm?.getNetworkCapabilities(cm.activeNetwork)
+        caps != null && (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
+    } catch (e: Exception) {
+        false
     }
 
     @JavascriptInterface

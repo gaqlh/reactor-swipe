@@ -1222,7 +1222,7 @@
     }
     if (v._cutting) return;
     v._cutting = true;
-    previewSrc(v.dataset.src).then((url) => {
+    previewSrc(v.dataset.src, v._previewS || PREVIEW_S).then((url) => {
       v._cutting = false;
       if (v._srcWanted && v.isConnected && !v.getAttribute('src')) v.src = url;
     });
@@ -1235,10 +1235,11 @@
   // es como se espera, se usa el archivo entero (y si el pedazo no se puede reproducir, retryOnError
   // vuelve al entero).
   const PROBE = 65536;
-  const previews = new Map(); // URL -> promesa de la URL del pedazo (o la misma URL, si no se cortó)
-  function previewSrc(url) {
-    if (!previews.has(url)) {
-      previews.set(url, cutMp4(url, PREVIEW_S).then((b) => (b ? URL.createObjectURL(b) : url), () => url));
+  const previews = new Map(); // 'segundos|URL' -> promesa de la URL del pedazo (o la misma URL, si no se cortó)
+  function previewSrc(url, secs) {
+    const key = secs + '|' + url;
+    if (!previews.has(key)) {
+      previews.set(key, cutMp4(url, secs).then((b) => (b ? URL.createObjectURL(b) : url), () => url));
       // Quedan los últimos 8; los demás se sueltan un rato después.
       if (previews.size > 8) {
         const [old, pr] = previews.entries().next().value;
@@ -1246,7 +1247,7 @@
         pr.then((u) => u.startsWith('blob:') && setTimeout(() => URL.revokeObjectURL(u), 60000));
       }
     }
-    return previews.get(url);
+    return previews.get(key);
   }
   const fourcc = (dv, p) => String.fromCharCode(dv.getUint8(p), dv.getUint8(p + 1), dv.getUint8(p + 2), dv.getUint8(p + 3));
   // La caja de mp4 que empieza en p (rest = lo que queda: una caja de tamaño 0 llega hasta el final).
@@ -1534,6 +1535,33 @@
   // Solo aparece mientras tocas la pantalla (y un momento después); se arrastra para ir a otro momento.
   // Con un video muestra además el tiempo, en chiquito.
   const SCRUB_HIDE_MS = 1800;
+  // Adelantar (1.13.2): pedir un lugar nuevo en cada movimiento del dedo congelaba los videos de RedGifs
+  // (pasan por Android; ver RedGifs.kt). Mientras arrastras se busca como mucho cada SEEK_GAP; mientras el
+  // video busca, solo se anota el último lugar pedido y se va ahí al terminar. final (al soltar): sin esperar.
+  // Si en 1,5 s no avisa que llegó, se pide igual.
+  const SEEK_GAP = 400;
+  function seekVideo(v, t, final) {
+    v._seekTo = t;
+    clearTimeout(v._seekTimer);
+    if (v._seekBusy && Date.now() - v._seekAt < 1500) return;
+    const wait = final ? 0 : SEEK_GAP - (Date.now() - (v._seekAt || 0));
+    if (wait > 0) {
+      v._seekTimer = setTimeout(() => v._seekTo != null && seekVideo(v, v._seekTo, true), wait);
+      return;
+    }
+    const to = v._seekTo;
+    v._seekTo = null;
+    v._seekBusy = true;
+    v._seekAt = Date.now();
+    v.addEventListener('seeked', () => {
+      v._seekBusy = false;
+      if (v._seekTo != null) seekVideo(v, v._seekTo);
+    }, { once: true });
+    v.currentTime = to;
+  }
+  // Dónde está (o adónde va) el video, para dibujar la barra.
+  const seekPos = (v) => (v._seekTo != null ? v._seekTo : v.currentTime);
+
   function scrubBar(initial) {
     const bar = h('span', { class: 'scrub-fill' });
     const time = h('span', { class: 'scrub-time' });
@@ -1545,10 +1573,10 @@
     let wasPlaying = false;
     const paint = () => {
       const d = v && v.duration;
-      const r = d ? Math.min(1, v.currentTime / d) : 0;
+      const r = d ? Math.min(1, seekPos(v) / d) : 0;
       bar.style.transform = 'scaleX(' + r + ')';
       el.setAttribute('aria-valuenow', String(Math.round(r * 100)));
-      if (el.classList.contains('timed') && d) time.textContent = fmtTime(v.currentTime) + ' / ' + fmtTime(d);
+      if (el.classList.contains('timed') && d) time.textContent = fmtTime(seekPos(v)) + ' / ' + fmtTime(d);
     };
     const loop = () => {
       paint();
@@ -1570,7 +1598,7 @@
     const seekTo = (x) => {
       if (!v || !v.duration) return;
       const r = el.getBoundingClientRect();
-      v.currentTime = Math.max(0, Math.min(0.999, (x - r.left) / Math.max(1, r.width))) * v.duration;
+      seekVideo(v, Math.max(0, Math.min(0.999, (x - r.left) / Math.max(1, r.width))) * v.duration);
       paint();
     };
     el.addEventListener('pointerdown', (e) => {
@@ -1595,6 +1623,7 @@
       if (!dragging) return;
       dragging = false;
       el.classList.remove('drag');
+      if (v && v._seekTo != null) seekVideo(v, v._seekTo, true);
       if (v && wasPlaying) v.play().catch(() => {});
       hideSoon();
     };
@@ -1626,20 +1655,36 @@
   }
 
   // Buscar (1.12.0, lo pidió el usuario para gastar menos datos): un GIF o video largo se ve como una vista
-  // previa que repite sus primeros PREVIEW_S segundos, sin barra para adelantar, y de su archivo se baja
-  // solo ese pedazo (previewSrc). Entero, en pantalla completa (dos toques). Un GIF corto (hasta
-  // PREVIEW_S + 2 s) se repite entero: pesa poco.
+  // previa que repite sus primeros segundos, sin barra para adelantar, y de su archivo se baja solo ese
+  // pedazo (previewSrc). Entero, en pantalla completa (dos toques). Un GIF corto (hasta 2 s más que la
+  // vista previa) se repite entero: pesa poco. Desde la 1.13.2 (lo eligió el usuario) la vista previa dura
+  // PREVIEW_WIFI_S con Wi-Fi y PREVIEW_S con datos móviles (o si no se sabe). Sin leyenda (1.13.1).
   const PREVIEW_S = 3;
-  // (Desde la 1.13.1 sin la leyenda «· 3 s» en la etiqueta: lo pidió el usuario.)
+  const PREVIEW_WIFI_S = 5;
+  let wifiMemo = { at: 0, on: false };
+  function onWifi() {
+    if (Date.now() - wifiMemo.at < 10000) return wifiMemo.on;
+    let on = false;
+    try {
+      if (RS.android && typeof RS.android.onWifi === 'function') on = !!RS.android.onWifi();
+      else on = !!(navigator.connection && /^(wifi|ethernet)$/.test(navigator.connection.type || ''));
+    } catch (e) {
+      on = false;
+    }
+    wifiMemo = { at: Date.now(), on };
+    return on;
+  }
   function previewOnly(v, ctl) {
+    const secs = onWifi() ? PREVIEW_WIFI_S : PREVIEW_S;
     v._preview = true;
+    v._previewS = secs;
     v.addEventListener('loadedmetadata', () => {
-      if (!(v.duration > PREVIEW_S + 2)) return;
+      if (!(v.duration > secs + 2)) return;
       v._capped = true;
       ctl.bind(null);
     });
     v.addEventListener('timeupdate', () => {
-      if (v._capped && v.currentTime >= PREVIEW_S) v.currentTime = 0;
+      if (v._capped && v.currentTime >= secs) v.currentTime = 0;
     });
   }
 
@@ -1647,23 +1692,21 @@
     const box = h('div', { class: 'slide' });
     if (m.kind === 'image') {
       box.append(h('img', { src: RS.imageUrl(m), alt: '', loading: 'lazy', decoding: 'async', width: m.w, height: m.h }));
-      if (m.ext === 'gif') box.append(h('span', { class: 'mbadge', text: 'GIF' }));
       if (isTall(m)) box.append(h('button', { class: 'more', onclick: () => openViewer(feed, p, i) }, icon('expand', 18), 'Ver completa'));
       onTaps(box, () => openViewer(feed, p, i));
     } else if (m.kind === 'video') {
       const v = makeVideo(m);
       const snd = soundBtn(v);
       snd.hidden = !m.real; // los GIF no suenan: el botón aparece si resulta ser un video
-      const badge = h('span', { class: 'mbadge', text: m.real ? 'VIDEO' : 'GIF' });
+      // Sin etiqueta GIF ni VIDEO (1.13.2, lo pidió el usuario): el botón del sonido ya dice que es un video.
       // GIF y videos: la barra mínima que aparece al tocar (en los videos, con el tiempo).
       const ctl = scrubBar(null);
       ctl.bind(v, !!m.real);
       ctl.watch(box);
-      box.append(v, h('span', { class: 'vw-paused', 'aria-hidden': 'true' }, icon('play', 40)), badge, snd, ctl.el);
+      box.append(v, h('span', { class: 'vw-paused', 'aria-hidden': 'true' }, icon('play', 40)), snd, ctl.el);
       if (feed && feed.source === 'explore') previewOnly(v, ctl);
       watchAudio(v, () => {
         m.real = true;
-        badge.textContent = 'VIDEO';
         snd.hidden = false;
         ctl.bind(v._capped ? null : v, true);
       });
@@ -3171,7 +3214,6 @@
     cell.append(open);
     if (p.media.length > 1) cell.append(h('span', { class: 'tb' }, icon('multi', 15)));
     else if (m && (m.kind === 'embed' || (m.kind === 'video' && m.real))) cell.append(h('span', { class: 'tb' }, icon('play', 14)));
-    else if (m && (m.kind === 'video' || m.ext === 'gif')) cell.append(h('span', { class: 'tb', text: 'GIF' }));
     const sb = srcBadge(p, 'tsrc');
     if (sb) cell.append(sb);
 
@@ -3749,21 +3791,22 @@
     if (!d) return;
     const span = Math.min(d, Number(S.settings.seekSpan) || 60);
     const to = Math.max(0, Math.min(d - 0.05, g.t0 + (dx / Math.max(1, window.innerWidth)) * span));
-    v.currentTime = to;
+    seekVideo(v, to);
     showSeek(v, to - g.t0);
   }
   function endSeek(g) {
     g.vid._seekedAt = Date.now();
+    if (g.vid._seekTo != null) seekVideo(g.vid, g.vid._seekTo, true);
     if (g.wasPlaying && !g.vid._userPaused) g.vid.play().catch(() => {});
     if (viewer) viewer.seekEl.classList.remove('show');
   }
   function showSeek(vid, delta) {
     if (!viewer) return;
     const d = vid.duration || 0;
-    const pct = d ? Math.round((vid.currentTime / d) * 100) : 0;
+    const pct = d ? Math.round((seekPos(vid) / d) * 100) : 0;
     fill(viewer.seekEl,
       h('b', { text: (delta < 0 ? '−' : '+') + fmtTime(Math.abs(delta)) }),
-      h('span', { text: fmtTime(vid.currentTime) + ' / ' + fmtTime(d) }),
+      h('span', { text: fmtTime(seekPos(vid)) + ' / ' + fmtTime(d) }),
       h('i', {}, h('u', { style: 'width:' + pct + '%' }))
     );
     viewer.seekEl.classList.add('show');
