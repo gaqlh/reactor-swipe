@@ -1385,3 +1385,19 @@ html:not(.show-scores) .card .head .rating { display: none; }
 /* Herramientas de debug › Intro al abrir: «Ver el intro» es un botón con la forma de las filas que navegan */
 button.navline { width: 100%; border: 0; background: transparent; font: inherit; text-align: left; color: var(--text); padding-top: 8px; padding-bottom: 8px; padding-right: 14px; }
 button.navline:active { background: var(--surface); }
+
+/* ---------- 1.11.0 ---------- */
+/* Pantalla completa: la foto al lado del nombre. El nombre, Seguir y los hashtags se ven al llegar a cada
+   post y se esconden solos (info-off); tocar abajo los vuelve a mostrar */
+.vw-av { width: 26px; height: 26px; border-radius: 50%; overflow: hidden; position: relative; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; text-shadow: none; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.85); }
+.vw-av img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.vw-user { gap: 7px; }
+.vw-who, .vw-tags, .vw-src { transition: opacity 0.35s ease; }
+.viewer.info-off .vw-who, .viewer.info-off .vw-tags, .viewer.info-off .vw-src { opacity: 0; pointer-events: none; }
+/* Historias: se pasa con toques y deslizando a los lados, no desplazando de arriba abajo */
+.viewer.stories-on .vw-feed { overflow-y: hidden; }
+.viewer.stories-on .vw-track { overflow-x: hidden; }
+/* Perfil de un creador que sigues y publicó hace menos de 24 h: el aro de la historia en la foto */
+.hero-ring { flex-shrink: 0; padding: 3px; border: 2px solid var(--accent); border-radius: 50%; background: transparent; display: block; line-height: 0; }
+.hero-ring.seen { border-color: var(--line-2); }
+.vw-who .vw-user, .vw-who .srcb, .vw-who .fol-inline { vertical-align: middle; }

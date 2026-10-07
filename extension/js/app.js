@@ -883,12 +883,18 @@
     const key = 'rguser:' + rgKey(name);
     const hero = h('section', { class: 'hero' });
     let info = null;
+    let fresh = []; // sus posts de las últimas 24 h: su historia
     const drawHero = () => {
       const on = isRgFollowed(name);
       const pic = info && info.profileImageUrl;
+      // Como en Instagram (1.11.0): si lo sigues y publicó en las últimas 24 h, la foto lleva el aro y
+      // tocarla abre su historia (esos posts no salen abajo ni en Inicio hasta que dejan de ser historia).
+      const story = on && fresh.length ? { kind: 'rg', name, pic, posts: fresh } : null;
       fill(hero,
         h('div', { class: 'hero-row' },
-          zoomable(rgPic(name, pic, 'hero-tile'), () => rgPic(name, pic, 'zoom-disc')),
+          story
+            ? h('button', { type: 'button', class: 'hero-ring' + (storyUnseen(story) ? '' : ' seen'), 'aria-label': 'Ver la historia de ' + name, onclick: () => openStory(story, drawHero, [story]) }, rgPic(name, pic, 'hero-tile'))
+            : zoomable(rgPic(name, pic, 'hero-tile'), () => rgPic(name, pic, 'zoom-disc')),
           h('div', { class: 'grow' },
             h('h2', {}, name, ' ', h('span', { class: 'srcb rg', text: 'RG' })),
             h('span', { class: 'meta', text: info ? fmt(info.gifs || info.publishedGifs || 0) + ' posts en RedGifs' : 'Creador de RedGifs' })
@@ -927,6 +933,8 @@
     RS.rgPage({ user: name, order: 'latest' }, 1)
       .then((r) => {
         info = r.user;
+        const since = Date.now() - STORY_WINDOW;
+        fresh = r.posts.filter((p) => p.time >= since && !S.dislikes[p.id] && !RS.isJunk(p)).sort((a, b) => a.time - b.time);
         drawHero();
       })
       .catch(() => {});
@@ -935,6 +943,7 @@
         key,
         kind: 'pager',
         rgPlan: () => ({ q: { user: name, order: 'latest' }, only: true, always: true }),
+        hideFresh: () => isRgFollowed(name),
         mode: 'grid',
         back: true,
         head: (f) => [backBtn('/home'), h('h1', { text: name }), viewToggle(f)],
@@ -952,8 +961,9 @@
   // acaban, los GIF y videos nuevos no arrancan. Por eso en los feeds quedan cargados solo los últimos
   // MAX_LOADED que estuvieron cerca de la pantalla; al cargar uno más se suelta el más viejo
   // (releaseVideo), y si vuelves a él se carga otra vez (casi siempre desde lo ya descargado). La
-  // pantalla completa suelta sola los posts lejanos (emptyPage) y todo al cerrarse.
-  const MAX_LOADED = 30;
+  // pantalla completa suelta sola los posts lejanos (emptyPage) y todo al cerrarse. Desde la 1.11.0 manda
+  // además la ventana del feed (videoWindow): por eso MAX_LOADED bajó de 30 a 10.
+  const MAX_LOADED = 10;
   const loaded = new Set(); // en orden: el primero es el que hace más que no se ve
   function releaseVideo(v) {
     loaded.delete(v);
@@ -972,6 +982,33 @@
       if (old._near && old.isConnected) continue; // el que está a la vista (o casi) no se suelta
       releaseVideo(old);
     }
+  }
+  // Ventana de videos del feed (1.11.0, lo pidió el usuario para que la app consuma menos): quedan cargados
+  // el post a la vista, los VIDEO_AHEAD siguientes (precargados, para que al llegar ya se vean bien) y los
+  // VIDEO_BEHIND anteriores (por si vuelves); a los demás se les suelta el video y dejan de descargarse.
+  // La pantalla completa ya hacía lo mismo con sus páginas (v.near: dos pantallas a cada lado).
+  const VIDEO_AHEAD = 2;
+  const VIDEO_BEHIND = 2;
+  let windowCard = null;
+  function videoWindow(card) {
+    if (!card || card === windowCard || !card.parentNode) return;
+    windowCard = card;
+    const cards = Array.from(card.parentNode.children);
+    const at = cards.indexOf(card);
+    cards.forEach((c, i) => {
+      const d = i - at;
+      if (d < -VIDEO_BEHIND || d > VIDEO_AHEAD) {
+        c.querySelectorAll('video').forEach((v) => !v._thumb && releaseVideo(v));
+      } else if (d > 0) {
+        // Del post que viene se precarga el primer video (en un carrusel, el que se ve al llegar).
+        const v = c.querySelector('video');
+        if (v && !v._thumb && v.dataset.src) {
+          v.preload = 'auto';
+          v._near = true;
+          loadVideo(v);
+        }
+      }
+    });
   }
   // Si un video no carga (red o reproductor), se vuelve a intentar una vez, un momento después.
   function retryOnError(v, url) {
@@ -1066,8 +1103,10 @@
     (entries) => {
       if (viewer) return;
       for (const e of entries) {
-        if (e.isIntersecting && e.intersectionRatio >= 0.6) focusPost(e.target._post);
-        else if (dwell && dwell.id === e.target.dataset.id) blurPost();
+        if (e.isIntersecting && e.intersectionRatio >= 0.6) {
+          focusPost(e.target._post);
+          if (e.target.classList.contains('card')) videoWindow(e.target);
+        } else if (dwell && dwell.id === e.target.dataset.id) blurPost();
       }
     },
     { threshold: [0, 0.6] }
@@ -2755,6 +2794,11 @@
   function toggleSelect(feed, id) {
     if (feed.sel.has(id)) feed.sel.delete(id);
     else feed.sel.add(id);
+    // Al desmarcar el último se sale solo de la selección (lo pidió el usuario en la 1.11.0): sin «0 seleccionados».
+    if (!feed.sel.size) {
+      endSelect(feed);
+      return;
+    }
     const cell = feed.list.querySelector('[data-id="' + CSS.escape(id) + '"]');
     if (cell) cell.classList.toggle('picked', feed.sel.has(id));
     feed.refreshHead();
@@ -3025,7 +3069,7 @@
                 e.preventDefault();
                 closeViewerThen(() => nav((RS.isRg(p) ? '#/rguser/' : '#/user/') + enc(p.user)));
               }
-            }, icon('user', 15), p.user)
+            }, RS.isRg(p) ? rgPic(p.user, p.rgAvatar, 'vw-av') : userPic(p.user, p.userId, 'vw-av'), p.user)
           : h('strong', { text: 'anónimo' }),
         srcBadge(p),
         followInline(p, 'fol-inline vw-fol'),
@@ -3034,7 +3078,7 @@
         h('span', { class: 'when', text: ' · ' + ago(p.time) }),
         h('span', { class: 'vw-score' }, ' · ', h('span', { class: 'vw-rating' }, icon('up', 13), String(p.rating).replace('.', ',')))
       ),
-      p.tags.length ? tagsRow(p, (t) => closeViewerThen(() => nav('#/tag/' + enc(t))), 'vw-tags') : null
+      p.tags.length ? tagsRow(p, (t) => closeViewerThen(() => nav((RS.isRg(p) ? '#/rgtag/' : '#/tag/') + enc(t))), 'vw-tags') : null
     );
 
     fill(page, media, side, info);
@@ -3071,6 +3115,7 @@
       (viewer.current._videos || []).forEach((x) => (x._userPaused = false));
       viewer.current.querySelectorAll('.vw-slide.paused').forEach((x) => x.classList.remove('paused'));
     }
+    if (viewer.current !== page) showInfo();
     viewer.current = page;
     fillPage(page, 0);
     markSeen(page.dataset.id, page._it && page._it.post);
@@ -3148,6 +3193,19 @@
   }
   function viewerPointerDown(e) {
     if (!isLandscape() || e.clientY > window.innerHeight * (1 - LAND_CTL_ZONE)) showControls();
+    // Con el teléfono vertical, tocar la parte de abajo vuelve a mostrar el nombre, Seguir y los hashtags.
+    if (!isLandscape() && e.clientY > window.innerHeight - infoZone()) showInfo();
+  }
+  // Pantalla completa (1.11.0, lo pidió el usuario): la foto, el nombre, Seguir y los hashtags se ven al
+  // llegar a cada post y se esconden a los INFO_MS (como los botones de Android); tocar abajo los muestra.
+  const INFO_MS = 3000;
+  const infoZone = () => Math.max(140, window.innerHeight * 0.22);
+  function showInfo() {
+    const v = viewer;
+    if (!v) return;
+    v.el.classList.remove('info-off');
+    clearTimeout(v.infoTimer);
+    v.infoTimer = setTimeout(() => viewer === v && v.el.classList.add('info-off'), INFO_MS);
   }
 
   // ---- Gestos con el dedo en pantalla completa:
@@ -3230,6 +3288,25 @@
     const end = (e) => {
       if (!g) return;
       clearTimeout(g.timer);
+      // Historias (1.11.0, como Instagram): deslizar a la izquierda pasa a la cuenta siguiente, a la
+      // derecha a la anterior, y hacia abajo cierra. No se desplazan de arriba abajo.
+      if (v.story && e.type === 'touchend' && g.mode !== 'seek' && g.mode !== 'peek' && e.changedTouches[0]) {
+        const t = e.changedTouches[0];
+        const dx = t.clientX - g.x0;
+        const dy = t.clientY - g.y0;
+        if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+          v.story.swipedAt = Date.now();
+          storyJump(v, dx < 0 ? 1 : -1);
+          g = null;
+          return;
+        }
+        if (dy > 110 && dy > Math.abs(dx) * 1.2 && !g.bottom) {
+          v.story.swipedAt = Date.now();
+          g = null;
+          exitViewer();
+          return;
+        }
+      }
       if (g.mode === 'seek') endSeek(g);
       // Un toque rápido abajo (con el teléfono vertical) muestra los botones de Android.
       else if (e.type === 'touchend' && g.bottom && !g.moved && !g.onControl && !isLandscape() && Date.now() - g.at < 600) peekBars();
@@ -3456,6 +3533,7 @@
     const id = f.topVisibleId();
     const card = id && f.list.querySelector('[data-id="' + CSS.escape(id) + '"]');
     if (!card) return;
+    videoWindow(card); // por si el observador no avisó (la ventana de videos sigue al post a la vista)
     const slides = card.querySelectorAll('.slide');
     const sl = slides[currentIndex(card)] || slides[0];
     const v = sl && sl.querySelector('video');
@@ -3636,6 +3714,9 @@
       // RedGifs: rgPlan(feed) dice qué pedir, según la pestaña, lo que uniste y Ajustes › Fuentes (ver rgOn):
       // { q, general, only, mix, always } o null (solo JoyReactor).
       this.rgPlan = o.rgPlan || null;
+      // hideFresh() verdadero: los posts de las últimas 24 h no salen, todavía son historia (1.11.0: Inicio y
+      // el perfil de un creador de RedGifs que sigues).
+      this.hideFresh = o.hideFresh || null;
       this.rgSrcs = null;
       this.rgQueue = []; // posts de RedGifs que esperan para mezclarse (ver add)
       this.rgTurn = 0;
@@ -3786,8 +3867,8 @@
     // { rotate: [hashtags] } (Explorar: se turnan tus hashtags más mirados).
     async fillRg() {
       if (!this.rgSrcs) {
-        const qs = this.rgq.rotate ? this.rgq.rotate.map((t) => ({ tags: t, order: 'trending', random: true })) : [this.rgq];
-        this.rgSrcs = qs.map((q) => RS.createRgSource(q));
+        const qs = this.rgq.rotate ? this.rgq.rotate.map((t) => (typeof t === 'string' ? { tags: t, order: 'trending', random: true } : t)) : [this.rgq];
+        this.rgSrcs = qs.map((q) => Object.assign(RS.createRgSource(q), { q }));
       }
       const live = this.rgSrcs.filter((s) => !s.done);
       if (!live.length) return;
@@ -3795,6 +3876,8 @@
       try {
         for (const post of await src.more()) {
           if (this.ids.has(post.id) || S.dislikes[post.id] || (this.kinds.length && !RS.matchesKinds(post, this.kinds)) || (this.show === 'anim' && !RS.isAnimated(post))) continue;
+          // Buscar (1.11.0): de RedGifs solo videos de creadores, verticales y con sonido (no GIF sueltos).
+          if (src.q.creators && !RS.isCreatorVideo(post)) continue;
           this.rgQueue.push({ post });
         }
       } catch (e) {
@@ -3895,6 +3978,7 @@
         return n;
       }
       if (this.kind === 'explore') return this.add(await fetchExplore(this));
+      if (this.kind === 'following') return this.add(await fetchFollowing(this));
       if (this.kind === 'cross') {
         // Cruzar hashtags: los posts que llevan todos (RS.fetchCross). Se ven al azar, como un hashtag: la
         // primera consulta dice cuántas páginas hay y después se piden en orden aleatorio, de a 3.
@@ -3981,6 +4065,7 @@
           continue;
         }
         if (this.kind === 'static' ? !!S.dislikes[p.id] : !pass(p)) continue;
+        if (this.hideFresh && p.time && Date.now() - p.time < STORY_WINDOW && this.hideFresh()) continue;
         this.ids.add(p.id);
         this.items.push(it);
         frag.append(this.mode === 'grid' ? buildThumb(it, this) : buildCard(it, this));
@@ -4092,7 +4177,8 @@
     // Deslizar hacia abajo arriba del todo: se vuelve a pedir todo desde el principio.
     refreshAll() {
       if (this.reloadItems) this.staticItems = this.reloadItems();
-      if (this.prelude) recentMemo.clear(); // Inicio: lo nuevo de lo que sigues y las historias
+      if (this.prelude || this.kind === 'following') recentMemo.clear(); // Inicio: las historias, al día
+      this.fol = null; // Inicio: vuelve a pedir lo de cada creador
       this.userSrc = null;
       this.scan = null;
       this.preluded = false;
@@ -4373,12 +4459,6 @@
     document.querySelectorAll('[data-bell]').forEach(fillBell);
   }
 
-  function sortChips(currentType, onPick) {
-    return h('nav', { class: 'chips', 'aria-label': 'Orden' },
-      RS.TYPES.map((t) => h('button', { class: 'chip' + (t.id === currentType ? ' on' : ''), 'aria-pressed': String(t.id === currentType), onclick: () => onPick(t.id) }, t.label))
-    );
-  }
-
   // Círculo con la imagen del hashtag (la de JoyReactor); mientras carga, o si no tiene, «#». Si le pusiste
   // un GIF (S.pics), ese, moviéndose en todos lados (lo pidió el usuario en la 1.8.2: Inicio, Buscar, Tú,
   // menús…; picIO solo reproduce los que están a la vista). Una cuenta no se mueve nunca: si tiene un GIF
@@ -4592,6 +4672,40 @@
     if (prev) return storyGo(v, page, prev, true);
     page.querySelectorAll('video').forEach((x) => (x.currentTime = 0));
   }
+  // A la historia de la cuenta siguiente (dir 1, desde su primer post sin ver) o de la anterior (dir -1,
+  // desde su primer post). En la primera, vuelve a empezar la misma; después de la última, cierra.
+  function storyJump(v, dir) {
+    const page = v.current;
+    if (!page || !page._it) return;
+    const g = page._it.story;
+    const same = (x, k) => x && x._it && x._it.story === k;
+    let to = null;
+    if (dir > 0) {
+      let x = page.nextElementSibling;
+      while (same(x, g)) x = x.nextElementSibling;
+      if (!x) return exitViewer();
+      to = x;
+      for (let y = x; same(y, x._it.story); y = y.nextElementSibling) {
+        if (!S.seenSet.has(y.dataset.id)) {
+          to = y;
+          break;
+        }
+      }
+    } else {
+      let x = page.previousElementSibling;
+      while (same(x, g)) x = x.previousElementSibling;
+      const k = x ? x._it.story : g;
+      to = x || page;
+      while (same(to.previousElementSibling, k)) to = to.previousElementSibling;
+    }
+    v.story.elapsed = 0;
+    v.story.moving = v.story.key;
+    if (to === page) {
+      page.querySelectorAll('video').forEach((x) => (x.currentTime = 0));
+      return;
+    }
+    storyGo(v, page, to, false);
+  }
   // Pasa a otro post (de a uno, deslizando; de un salto, sin marcar los de en medio como vistos).
   function storyGo(v, page, to, smooth) {
     fillPage(to, 0);
@@ -4623,7 +4737,7 @@
       const v = viewer;
       if (!v || !v.story || !v.current || e.target.closest('button, a, input')) return;
       const ms = Date.now() - downAt;
-      if (ms > 450 || (RS.android && e.clientY > window.innerHeight - bottomZone())) return;
+      if (ms > 450 || Date.now() - (v.story.swipedAt || 0) < 500 || (RS.android && e.clientY > window.innerHeight - bottomZone())) return;
       const x = e.clientX / Math.max(1, window.innerWidth);
       const page = v.current;
       const track = page._track;
@@ -4741,47 +4855,62 @@
 
   // ================================================================ Inicio
 
-  function routeHome(q) {
-    const type = RS.validType(q.get('sort')) || RS.validType(S.settings.homeSort) || 'GOOD';
-    const f = cached('home:' + type, () =>
+  // Inicio (1.11.0, lo pidió el usuario): solo los posts de los creadores de RedGifs que sigues, lo más nuevo
+  // primero (sin hashtags, sin lo general de JoyReactor ni los botones Nuevo/Bueno/Top/Todo). Lo de las
+  // últimas 24 horas todavía es historia (arriba): pasa a Inicio cuando deja de serlo. Lo general, en Buscar.
+  function routeHome() {
+    const f = cached('home:following', () =>
       new Feed({
-        key: 'home:' + type,
-        kind: 'pager',
-        tag: null,
-        type,
-        prelude: followedFirst,
-        // RedGifs: Bueno = lo popular, Top = lo mejor de la semana, Nuevo y Todo = lo más nuevo.
-        rgPlan: () => ({ q: { order: type === 'GOOD' ? 'popular' : type === 'BEST' ? 'top7' : 'latest' }, general: true }),
+        key: 'home:following',
+        kind: 'following',
         head: (f) => [h('h1', { text: 'Inicio' }), bellLink(), viewToggle(f)],
         // En Inicio solo queda el aviso de versión nueva; los demás esperan en la campanita (Novedades).
-        extra: () => [
-          updateBanner(),
-          storiesRow(),
-          sortChips(type, (t) => {
-            S.settings.homeSort = t;
-            persist('settings');
-            navReplace('#/home?sort=' + t);
-          })
-        ]
+        extra: () => [updateBanner(), storiesRow()],
+        empty: () =>
+          srcMode() === 'jr'
+            ? emptyBox('home', 'Inicio muestra tus cuentas de RedGifs', 'RedGifs está apagado en Ajustes › Fuentes. Enciéndelo para verlas.')
+            : !Object.keys(S.rgFollowing).length
+              ? emptyBox('user', 'Todavía no sigues cuentas de RedGifs', 'Búscalas con la lupa de Buscar y toca Seguir: sus posts salen aquí y, los nuevos, en las historias.', h('a', { class: 'btn', href: '#/find' }, icon('search', 18), 'Buscar cuentas'))
+              : emptyBox('clock', 'Todavía no hay posts aquí', 'Lo que publicaron en las últimas 24 horas está en las historias, arriba.')
       })
     );
     showFeed(f);
   }
-
-  // Los posts nuevos (de la última semana y que no viste) de la gente que sigues y de los hashtags que
-  // guardaste como perfil van primero en Inicio, empezando por quien más me gusta te ha dado.
-  const FOLLOWED_DAYS = 7;
-  function likesByUser() {
-    const by = {};
-    for (const x of Object.values(S.likes)) {
-      const u = x.post && x.post.user;
-      if (u) by[userKey(u)] = (by[userKey(u)] || 0) + 1;
+  // Los posts de los creadores que sigues, de todos juntos y del más nuevo al más viejo: de cada uno se pide
+  // de a una página (20) y se toma siempre el más nuevo de los que esperan. Sin los de las últimas 24 h.
+  const HOME_CHUNK = 12;
+  async function fetchFollowing(f) {
+    if (srcMode() === 'jr') {
+      f.done = true;
+      return [];
     }
-    return by;
+    const st = f.fol || (f.fol = { srcs: Object.values(S.rgFollowing).map((u) => ({ src: RS.createRgSource({ user: u.name, order: 'latest' }), buf: [] })) });
+    const since = Date.now() - STORY_WINDOW;
+    const out = [];
+    while (out.length < HOME_CHUNK) {
+      // Para saber cuál es el más nuevo hace falta al menos un post de cada uno.
+      const empty = st.srcs.filter((s) => !s.buf.length && !s.src.done);
+      if (empty.length) {
+        await Promise.all(empty.map((s) => s.src.more().then((posts) => s.buf.push(...posts)).catch((e) => {
+          s.src.done = true;
+          s.error = e;
+        })));
+      }
+      const live = st.srcs.filter((s) => s.buf.length);
+      if (!live.length) {
+        if (!out.length && st.srcs.length && st.srcs.every((s) => s.error)) throw st.srcs[0].error;
+        f.done = true;
+        break;
+      }
+      let best = live[0];
+      for (const s of live) if (s.buf[0].time > best.buf[0].time) best = s;
+      const post = best.buf.shift();
+      if (post.time < since) out.push({ post });
+    }
+    return out;
   }
-  // Los últimos 20 posts de cada usuario o hashtag que sigues, guardados unos minutos: los usan Inicio
-  // (followedFirst) y las historias, que los piden a la vez (lo que ya se está pidiendo no se repite).
-  // Se piden de a 12 por consulta.
+  // Los últimos 20 posts de cada usuario o hashtag que sigues, guardados unos minutos, para las historias
+  // (lo que ya se está pidiendo no se repite). Se piden de a 12 por consulta.
   const recentMemo = new Map(); // 'user:nombre' | 'tag:nombre' -> { at, posts } o { at, wait: promesa }
   const RECENT_TTL = 5 * 60000;
   async function recentOf(kind, names) {
@@ -4804,37 +4933,6 @@
     return out;
   }
 
-  async function followedFirst() {
-    const users = Object.values(S.following);
-    const tags = Object.values(S.tagProfiles);
-    const rgUsers = srcMode() !== 'jr' ? Object.values(S.rgFollowing) : [];
-    const rgAccounts = srcMode() !== 'jr' ? Object.values(S.rgTags).filter((t) => t.as === 'account') : [];
-    if (!users.length && !tags.length && !rgUsers.length && !rgAccounts.length) return [];
-    const [byUser, byTag, byRg, byRgTag] = await Promise.all([
-      recentOf('user', users.map((f) => f.name)),
-      recentOf('tag', tags.map((t) => t.name)),
-      Promise.all(rgUsers.map((u) => RS.rgPage({ user: u.name, order: 'latest' }, 1).then((r) => r.posts).catch(() => []))),
-      Promise.all(rgAccounts.map((t) => RS.rgPage({ tags: t.name, order: 'latest' }, 1).then((r) => r.posts).catch(() => [])))
-    ]);
-    const likes = likesByUser();
-    const since = Date.now() - FOLLOWED_DAYS * 86400000;
-    const sources = users
-      .map((f) => ({ score: likes[userKey(f.name)] || 0, at: f.addedAt || 0, posts: byUser[f.name] || [], label: (p) => 'De @' + p.user + ', a quien sigues', icon: 'user' }))
-      .concat(tags.map((t) => ({ score: likedWithTag(t.name).length, at: t.addedAt || 0, posts: byTag[t.name] || [], label: () => 'De #' + t.name + ', que sigues como cuenta', icon: 'hash' })))
-      .concat(rgUsers.map((u, i) => ({ score: 0, at: u.addedAt || 0, posts: byRg[i] || [], label: () => 'De @' + u.name + ' (RedGifs), a quien sigues', icon: 'user' })))
-      .concat(rgAccounts.map((t, i) => ({ score: 0, at: t.addedAt || 0, posts: byRgTag[i] || [], label: () => 'De #' + t.name + ' (RedGifs), que sigues como cuenta', icon: 'hash' })))
-      .sort((a, b) => b.score - a.score || b.at - a.at);
-    const out = [];
-    const ids = new Set();
-    for (const src of sources) {
-      const posts = src.posts.filter((p) => p.time >= since && !S.seenSet.has(p.id) && !ids.has(p.id)).sort((a, b) => b.time - a.time);
-      for (const post of posts) {
-        ids.add(post.id);
-        out.push({ post, label: src.label(post), icon: src.icon, color: 'var(--accent)' });
-      }
-    }
-    return out;
-  }
   // Al seguir o dejar de seguir a alguien, Inicio se vuelve a armar la próxima vez que entres.
   function invalidateHome() {
     for (const [k, f] of feeds) {
@@ -5490,7 +5588,8 @@
           onlyUsers ? Promise.resolve({ exact: [], similar: [] }) : RS.searchTags(q, closest(q, known.tags, (t) => t, 8)),
           withUsers && !link ? RS.fetchUserInfo(qUser).catch(() => null) : Promise.resolve(null),
           rgOn && !onlyUsers ? RS.rgSuggest(q).catch(() => []) : [],
-          rgOn && (withUsers || link) ? RS.rgUser(qUser) : null,
+          // El creador con ese nombre exacto, si tiene posts (hay cuentas vacías, como @susana).
+          rgOn && (withUsers || link) ? RS.rgUser(qUser).then((u) => (u && (u.gifs || u.publishedGifs) ? u : null)) : null,
           rgOn && withUsers && !link ? RS.rgCreators(qUser).catch(() => []) : []
         ]);
         if (my !== seq) return;
@@ -5500,7 +5599,8 @@
         if (user) accounts.push(userRow(user, opts.onPick, opts.onFollow, badge('jr')));
         if (rgExact) accounts.push(rgCreatorRow(rgExact, opts.onPick, badge('rg')));
         const exactAccount = accounts.length > 0;
-        accounts.push(...rgMore.filter((c) => !rgExact || rgKey(c.username) !== rgKey(rgExact.username)).slice(0, exactAccount ? 3 : 5).map((c) => rgCreatorRow(c, opts.onPick, badge('rg'))));
+        const others = rankCreators(qUser, rgOn && !link ? rgMore.concat(knownCreators()) : []).filter((c) => !rgExact || rgKey(c.username) !== rgKey(rgExact.username));
+        accounts.push(...others.slice(0, exactAccount ? 3 : 5).map((c) => rgCreatorRow(c, opts.onPick, badge('rg'))));
         // Hashtags de las dos fuentes, turnándose (cada lista ya trae primero lo que más se parece).
         const jrTags = found.exact.slice(0, 15).map((t) => resultRow(t, onFav, opts.onPick, opts.pickOnly, badge('jr')));
         const rgRows = rgTags.slice(0, 10).map((t) => rgTagResult(t, opts.onPick, badge('rg')));
@@ -5512,12 +5612,12 @@
         const rows = [];
         const putAccounts = () => accounts.length && rows.push(both ? label('Cuentas') : null, ...accounts);
         const putTags = () => tagList.length && rows.push(both ? label('Hashtags') : null, ...tagList);
-        // Primero las cuentas solo si una se llama igual que lo escrito y tiene más posts que el hashtag de
-        // ese nombre («susanna» es una cuenta; «cosplay» es sobre todo un hashtag).
+        // Primero las cuentas, salvo que haya un hashtag con ese nombre exacto y más posts que la cuenta más
+        // parecida («susana» y «susanna» son cuentas; «cosplay» es sobre todo un hashtag).
         const k = tkey(qUser);
-        const accountPosts = Math.max(user ? user.posts || 0 : 0, rgExact ? rgExact.gifs || rgExact.publishedGifs || 0 : 0);
+        const accountPosts = Math.max(user ? user.posts || 0 : 0, rgExact ? rgExact.gifs || rgExact.publishedGifs || 0 : 0, others.length ? others[0].gifs || 0 : 0);
         const tagPosts = Math.max(0, ...found.exact.filter((t) => tkey(t.name) === k).map((t) => t.count || 0), ...rgTags.filter((t) => tkey(t.text) === k).map((t) => t.gifs || 0));
-        if (exactAccount && accountPosts >= tagPosts) {
+        if (accounts.length && accountPosts >= tagPosts) {
           putAccounts();
           putTags();
         } else {
@@ -5578,6 +5678,28 @@
     const row = personRow(u.name, u.id, 'Usuario · ' + fmt(validCount(userJunkKey(u.name), u.posts)) + ' posts', () => onPick && onPick({ type: 'user', name: u.name, pic: u.id }), followPill(u.name, u.id, onFollow));
     if (badge) row.querySelector('.n').append(' ', badge);
     return row;
+  }
+  // Creadores de RedGifs para lo escrito (1.11.0): RedGifs los devuelve en un orden raro (al escribir
+  // «susana», @susanna, con 105.000 seguidores, salía quinta). Se ordenan por parecido (RS.fuzzyScore, con
+  // margen de error) y, entre parecidos, por seguidores; los que sigues van primero. Sin repetir.
+  function rankCreators(q, list) {
+    const seen = new Set();
+    return list
+      .filter((c) => c && c.username && !seen.has(rgKey(c.username)) && seen.add(rgKey(c.username)))
+      .map((c) => {
+        const d = Math.min(RS.fuzzyScore(q, c.username), c.name ? RS.fuzzyScore(q, c.name) : Infinity);
+        const pop = isRgFollowed(c.username) ? 6 : Math.log10((c.followers || 0) + 1);
+        return { c, d, r: 0.8 * d - pop };
+      })
+      .filter((x) => x.d < Infinity)
+      .sort((a, b) => a.r - b.r)
+      .map((x) => x.c);
+  }
+  // Los creadores de RedGifs que la app ya conoce: los que sigues y los de tus me gusta.
+  function knownCreators() {
+    const out = Object.values(S.rgFollowing).map((u) => ({ username: u.name, profileImageUrl: u.pic || '' }));
+    for (const x of Object.values(S.likes)) if (x.post && RS.isRg(x.post) && x.post.user) out.push({ username: x.post.user, profileImageUrl: x.post.rgAvatar || '' });
+    return out;
   }
   // La fuente de una fila del buscador: JR (JoyReactor) o RG (RedGifs).
   const srcChip = (s) => h('span', { class: 'srcb ' + s, title: s === 'rg' ? 'De RedGifs' : 'De JoyReactor', text: s.toUpperCase() });
@@ -5810,6 +5932,24 @@
     }
     return Array.from(count.values()).sort((a, b) => b.w - a.w).slice(0, 12);
   }
+  // De RedGifs, en Buscar (1.11.0): videos de creadores como los de @susanna (verticales, con sonido y de
+  // cuentas verificadas), no los GIF sueltos que salían de las etiquetas parecidas a tus hashtags. Se turnan
+  // lo popular, lo de moda y las etiquetas de lo que sigues y te gusta de RedGifs.
+  function rgExploreQueries() {
+    const score = new Map();
+    const add = (t, w) => {
+      const k = tkey(t);
+      const x = score.get(k) || { name: t, w: 0 };
+      x.w += w;
+      score.set(k, x);
+    };
+    for (const t of Object.values(S.rgTags)) add(t.name, 5);
+    for (const x of Object.values(S.likes)) if (x.post && RS.isRg(x.post)) x.post.tags.slice(0, 6).forEach((t) => add(t, 1));
+    const mine = Array.from(score.values()).sort((a, b) => b.w - a.w).slice(0, 3);
+    return [{ order: 'popular', creators: true }, { order: 'trending', verified: true, random: true, creators: true }].concat(
+      mine.map((x) => ({ tags: x.name, order: 'trending', verified: true, random: true, creators: true }))
+    );
+  }
   async function fetchExplore(f) {
     const ex = f.exp || (f.exp = { mine: exploreTags(), loaded: [] });
     const chip = f.chip;
@@ -5863,7 +6003,7 @@
         rgPlan: () =>
           chip === 'new'
             ? null
-            : { q: chip === 'all' ? (exploreTags().length ? { rotate: exploreTags().slice(0, 5).map((x) => rgTagFor(x.name)) } : { order: 'popular' }) : { tags: rgTagFor(chip), order: 'trending', random: true }, general: true },
+            : { q: chip === 'all' ? { rotate: rgExploreQueries() } : { tags: rgTagFor(chip), order: 'trending', random: true, verified: true, creators: true }, general: true },
         mode: 'grid',
         head: (f) => (f.mode === 'feed'
           ? [backBtn('/search'), h('h1', { text: 'Explorar' })]

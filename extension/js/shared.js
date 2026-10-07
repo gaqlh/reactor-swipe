@@ -1094,9 +1094,9 @@
     const n = 'count=' + RG_COUNT + '&page=' + (page || 1);
     let path;
     if (q.user) path = '/v2/users/' + encodeURIComponent(q.user) + '/search?order=' + (q.order || 'latest') + '&' + n;
-    else if (q.tags) path = '/v2/gifs/search?tags=' + [].concat(q.tags).map(encodeURIComponent).join(',') + '&order=' + (q.order || 'trending') + '&' + n;
+    else if (q.tags) path = '/v2/gifs/search?tags=' + [].concat(q.tags).map(encodeURIComponent).join(',') + '&order=' + (q.order || 'trending') + '&' + n + (q.verified ? '&verified=y' : '');
     else if (q.order === 'popular') path = '/v2/feeds/trending/popular?' + n;
-    else path = '/v2/gifs/search?order=' + (q.order || 'latest') + '&' + n;
+    else path = '/v2/gifs/search?order=' + (q.order || 'latest') + '&' + n + (q.verified ? '&verified=y' : '');
     const j = await rgGet(path);
     const users = {};
     for (const u of j.users || []) users[u.username] = u;
@@ -1109,7 +1109,13 @@
   };
   // Para unir con RedGifs: etiquetas que empiezan así (con cuántos posts) y creadores que se llaman parecido.
   RS.rgSuggest = async (q) => ((await rgGet('/v2/search/suggest?query=' + encodeURIComponent(q))) || []).filter((x) => x && x.type === 'tag').slice(0, 12);
-  RS.rgCreators = async (q) => ((await rgGet('/v2/creators/search?query=' + encodeURIComponent(q) + '&count=12')) || {}).items || [];
+  RS.rgCreators = async (q) => ((await rgGet('/v2/creators/search?query=' + encodeURIComponent(q) + '&count=20')) || {}).items || [];
+  // Un video de creador, como los de @susanna (1.11.0): vertical y con sonido. Los GIF sueltos de RedGifs
+  // (recortes de otros videos) suelen ser horizontales y mudos.
+  RS.isCreatorVideo = (p) => {
+    const m = p && p.src === 'rg' && p.media[0];
+    return !!(m && m.kind === 'video' && m.real && m.h >= m.w);
+  };
   // Un creador por su nombre exacto (el buscador de creadores no siempre lo pone primero), o null si no existe.
   RS.rgUser = async (name) => {
     if (!/^[A-Za-z0-9_.-]{2,40}$/.test(name)) return null;
