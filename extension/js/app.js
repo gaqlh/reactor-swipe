@@ -896,8 +896,8 @@
             ? h('button', { type: 'button', class: 'hero-ring' + (storyUnseen(story) ? '' : ' seen'), 'aria-label': 'Ver la historia de ' + name, onclick: () => openStory(story, drawHero, [story]) }, rgPic(name, pic, 'hero-tile'))
             : zoomable(rgPic(name, pic, 'hero-tile'), () => rgPic(name, pic, 'zoom-disc')),
           h('div', { class: 'grow' },
-            h('h2', {}, name, ' ', h('span', { class: 'srcb rg', text: 'RG' })),
-            h('span', { class: 'meta', text: info ? fmt(info.gifs || info.publishedGifs || 0) + ' posts en RedGifs' : 'Creador de RedGifs' })
+            h('h2', {}, name, verifiedStar(info), ' ', h('span', { class: 'srcb rg', text: 'RG' })),
+            h('span', { class: 'meta', text: (info && info.verified ? 'Cuenta verificada · ' : '') + (info ? fmt(info.gifs || info.publishedGifs || 0) + ' posts en RedGifs' : 'Cuenta de RedGifs') })
           )
         ),
         h('div', { class: 'hero-actions two' },
@@ -2985,14 +2985,12 @@
         s._ratio = m.w && m.h ? m.h / m.w : 0;
         if (s._ratio > window.innerHeight / Math.max(1, window.innerWidth)) s.classList.add('tall');
         s.append(h('img', { src: RS.imageUrl(m, true), alt: '', decoding: 'async' }));
-        // En una historia, un toque rápido en el centro también pausa una imagen (detiene la rayita).
-        if (viewer.story) {
-          s.append(h('span', { class: 'vw-paused', 'aria-hidden': 'true' }, icon('play', 40)));
-          storyTaps(s, () => storyPause(s));
-        } else onTaps(s, () => exitViewer());
+        // En una historia los toques pasan de post (storyTaps); no se pausa (lo pidió el usuario en la 1.11.1).
+        if (viewer.story) storyTaps(s);
+        else onTaps(s, () => exitViewer());
       } else if (m.kind === 'video') {
-        const vid = h('video', { src: RS.videoUrl(m), loop: true, playsinline: true, poster: RS.posterUrl(m), preload: 'auto' });
-        retryOnError(vid, RS.videoUrl(m));
+        const vid = h('video', { src: RS.videoUrl(m, true), loop: true, playsinline: true, poster: RS.posterUrl(m, true), preload: 'auto' });
+        retryOnError(vid, RS.videoUrl(m, true));
         vid.muted = viewer.muted;
         vid._real = !!m.real;
         watchAudio(vid, () => {
@@ -3006,7 +3004,7 @@
         // Un toque rápido en el centro pausa (o sigue); dos toques salen de la pantalla completa. Tocar
         // abajo muestra los botones de Android (ver viewerGestures) o, en horizontal, los controles.
         // Justo después de arrastrar para adelantar, no pausa.
-        if (viewer.story) storyTaps(s, () => togglePause(vid, s));
+        if (viewer.story) storyTaps(s);
         else {
           onTaps(s, () => exitViewer(), (tap) => {
             if (Date.now() - (vid._seekedAt || 0) < 700 || !pauseTap(tap)) return;
@@ -3035,18 +3033,22 @@
       media = h('div', { class: 'vw-media' }, slides[0]);
     } else {
       media = h('div', { class: 'vw-media text' }, h('p', { text: p.text || '' }));
-      if (viewer.story) storyTaps(media, () => storyPause(media));
+      if (viewer.story) storyTaps(media);
       else onTaps(media, () => exitViewer());
     }
 
     const liked = !!S.likes[p.id];
+    // En las historias (1.11.1, lo pidió el usuario) solo quedan «no me gusta» y, si tiene, el sonido.
+    const story = !!viewer.story;
     const side = h('div', { class: 'vw-side' },
-      h('button', { class: 'vw-act like' + (liked ? ' on' : ''), 'aria-label': 'Me gusta', 'aria-pressed': String(liked), onclick: () => toggleLike(p) }, icon('heart', 31)),
+      story ? null : h('button', { class: 'vw-act like' + (liked ? ' on' : ''), 'aria-label': 'Me gusta', 'aria-pressed': String(liked), onclick: () => toggleLike(p) }, icon('heart', 31)),
       h('button', { class: 'vw-act', 'aria-label': 'No me gusta: ocultar para siempre', onclick: () => dislikeInViewer(page) }, icon('down', 29)),
-      RS.isRg(p)
-        ? h('a', { class: 'vw-act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': 'Ver en RedGifs' }, icon('external', 27))
-        : h('a', { class: 'vw-act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': p.comments + ' comentarios en JoyReactor' }, icon('comment', 29), h('span', { text: fmt(p.comments) })),
-      savable(p).length ? h('button', { class: 'vw-act', 'aria-label': 'Descargar', onclick: () => downloadPost(p, page._track ? page._track._idx || 0 : 0) }, icon('download', 29)) : null,
+      story
+        ? null
+        : RS.isRg(p)
+          ? h('a', { class: 'vw-act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': 'Ver en RedGifs' }, icon('external', 27))
+          : h('a', { class: 'vw-act', href: RS.postUrl(p), target: '_blank', rel: 'noopener', 'aria-label': p.comments + ' comentarios en JoyReactor' }, icon('comment', 29), h('span', { text: fmt(p.comments) })),
+      !story && savable(p).length ? h('button', { class: 'vw-act', 'aria-label': 'Descargar', onclick: () => downloadPost(p, page._track ? page._track._idx || 0 : 0) }, icon('download', 29)) : null,
       (sndBtn = videos.length ? soundButton() : null)
     );
     // Solo los videos tienen sonido: con GIF el botón no aparece.
@@ -3304,6 +3306,15 @@
           v.story.swipedAt = Date.now();
           g = null;
           exitViewer();
+          return;
+        }
+        // Un toque (1.11.1): a la izquierda vuelve, a la derecha avanza. Se lee aquí, del dedo, en toda la
+        // pantalla: en el teléfono el «click» no llegaba cuando el toque caía sobre la columna de botones
+        // o sobre la información de abajo. Abajo del todo, en la app, el toque es para los botones de Android.
+        if (!g.moved && !g.onControl && !g.bottom && Date.now() - g.at < 450) {
+          v.story.tappedAt = Date.now();
+          g = null;
+          storyTap(v, t.clientX);
           return;
         }
       }
@@ -4726,37 +4737,32 @@
       track._idx = to;
     }, 900);
   }
-  // Toques en una historia (1.8.3, como Instagram): a la izquierda (el primer tercio) vuelve al post
-  // anterior, a la derecha (el último tercio) pasa al siguiente y en el centro pausa. Sin esperar un
-  // segundo toque: en las historias dos toques no cierran (para eso están la ✕ y «atrás»). Abajo, en la
-  // app, el toque es para los botones de Android (viewerGestures).
-  function storyTaps(el, onPause) {
+  // Toques en una historia (como Instagram): en el primer tercio de la izquierda vuelve al post anterior y
+  // en el resto pasa al siguiente. Desde la 1.11.1 no se pausa (lo pidió el usuario) y con el dedo lo
+  // resuelve viewerGestures (storyTap); este «click» queda para el mouse. Sin esperar un segundo toque: en
+  // las historias dos toques no cierran (para eso están la ✕, «atrás» y deslizar hacia abajo).
+  function storyTaps(el) {
     let downAt = 0;
     el.addEventListener('pointerdown', () => (downAt = Date.now()), { passive: true });
     el.addEventListener('click', (e) => {
       const v = viewer;
       if (!v || !v.story || !v.current || e.target.closest('button, a, input')) return;
-      const ms = Date.now() - downAt;
-      if (ms > 450 || Date.now() - (v.story.swipedAt || 0) < 500 || (RS.android && e.clientY > window.innerHeight - bottomZone())) return;
-      const x = e.clientX / Math.max(1, window.innerWidth);
-      const page = v.current;
-      const track = page._track;
-      const nSlides = track ? track.children.length : 1;
-      const si = track ? Math.min(track._idx || 0, nSlides - 1) : 0;
-      if (x > 2 / 3) {
-        v.story.moving = v.story.key; // que el temporizador no lo pase otra vez
-        storyNext(v, page, track, si, nSlides);
-      } else if (x < 1 / 3) storyPrev(v, page, track, si);
-      else if (pauseTap({ y: e.clientY, ms })) onPause();
+      const now = Date.now();
+      if (now - downAt > 450 || now - (v.story.swipedAt || 0) < 500 || now - (v.story.tappedAt || 0) < 700) return;
+      if (RS.android && e.clientY > window.innerHeight - bottomZone()) return;
+      storyTap(v, e.clientX);
     });
   }
-  // Pausar una imagen de una historia (en los GIF y videos pausa el video, y la rayita lo sigue).
-  function storyPause(slideEl) {
-    if (!viewer || !viewer.story) return;
-    viewer.story.paused = !viewer.story.paused;
-    slideEl.classList.toggle('paused', viewer.story.paused);
+  function storyTap(v, clientX) {
+    const page = v.current;
+    if (!page) return;
+    const track = page._track;
+    const nSlides = track ? track.children.length : 1;
+    const si = track ? Math.min(track._idx || 0, nSlides - 1) : 0;
+    if (clientX / Math.max(1, window.innerWidth) < 1 / 3) return storyPrev(v, page, track, si);
+    v.story.moving = v.story.key; // que el temporizador no lo pase otra vez
+    storyNext(v, page, track, si, nSlides);
   }
-
   function switchBtn(on, label, onToggle) {
     const b = h('button', { class: 'switch', role: 'switch', 'aria-checked': String(!!on), 'aria-label': label }, h('span', { class: 'track' }, h('span', { class: 'knob' })));
     b.addEventListener('click', () => {
@@ -5701,6 +5707,8 @@
     for (const x of Object.values(S.likes)) if (x.post && RS.isRg(x.post) && x.post.user) out.push({ username: x.post.user, profileImageUrl: x.post.rgAvatar || '' });
     return out;
   }
+  // Una cuenta de RedGifs verificada lleva una estrellita al lado del nombre (1.11.1, lo pidió el usuario).
+  const verifiedStar = (c) => (c && c.verified ? h('span', { class: 'verif', title: 'Cuenta verificada', 'aria-label': 'verificada' }, icon('star', 14)) : null);
   // La fuente de una fila del buscador: JR (JoyReactor) o RG (RedGifs).
   const srcChip = (s) => h('span', { class: 'srcb ' + s, title: s === 'rg' ? 'De RedGifs' : 'De JoyReactor', text: s.toUpperCase() });
   // Un creador de RedGifs en los resultados: su foto, cuántos posts tiene y Seguir.
@@ -5711,8 +5719,8 @@
       h('a', { href: '#/rguser/' + enc(name), onclick: () => onPick && onPick({ type: 'rguser', name, pic: c.profileImageUrl || '' }) },
         rgPic(name, c.profileImageUrl, 'htile'),
         h('span', { class: 'rtext' },
-          h('span', { class: 'n' }, '@' + name, badge ? ' ' : null, badge),
-          h('span', { class: 'm ellipsis', text: extra + 'Creador · ' + fmt(c.gifs || c.publishedGifs || 0) + ' posts en RedGifs' })
+          h('span', { class: 'n' }, '@' + name, verifiedStar(c), badge ? ' ' : null, badge),
+          h('span', { class: 'm ellipsis', text: extra + 'Cuenta · ' + fmt(c.gifs || c.publishedGifs || 0) + ' posts en RedGifs' })
         )
       ),
       rgFollowPill(name, c.profileImageUrl || '')
@@ -5808,7 +5816,7 @@
           pic,
           h('span', { class: 'rtext' },
             h('span', { class: 'n' }, (person ? '@' : '#') + x.name, rg ? ' ' : null, rg ? srcChip('rg') : null),
-            h('span', { class: 'm', text: (x.type === 'user' ? 'Usuario' : x.type === 'rguser' ? 'Creador de RedGifs' : x.type === 'rgtag' ? 'Hashtag de RedGifs' : 'Hashtag') + ' · ' + ago(x.at) })
+            h('span', { class: 'm', text: (x.type === 'user' ? 'Usuario' : x.type === 'rguser' ? 'Cuenta de RedGifs' : x.type === 'rgtag' ? 'Hashtag de RedGifs' : 'Hashtag') + ' · ' + ago(x.at) })
           )
         ),
         h('button', {
@@ -6392,7 +6400,7 @@
       h('div', { class: 'result' },
         h('a', { href: '#/rguser/' + enc(x.name) },
           rgPic(x.name, x.pic, 'htile'),
-          h('span', { class: 'rtext' }, h('span', { class: 'n' }, x.name, ' ', h('span', { class: 'srcb rg', text: 'RG' })), h('span', { class: 'm', text: 'Creador de RedGifs' }))
+          h('span', { class: 'rtext' }, h('span', { class: 'n' }, x.name, ' ', h('span', { class: 'srcb rg', text: 'RG' })), h('span', { class: 'm', text: 'Cuenta de RedGifs' }))
         ),
         h('button', {
           class: 'small-btn follow on',

@@ -228,8 +228,10 @@
   const RG_MEDIA = 'https://media.redgifs.com/';
   const rgFile = (name) => RG + '/media/' + encodeURIComponent(name);
   RS.imageUrl = (m, full) => (m.rg ? rgFile(full ? m.rg.hd : m.rg.t || m.rg.hd) : IMG + (full ? 'full/' : '') + 'post-' + m.id + '.' + (m.ext || 'jpeg'));
-  RS.videoUrl = (m) => (m.rg ? rgFile(m.rg.sd || m.rg.hd) : viaProxy(IMG + 'mp4/post-' + m.id + '.mp4'));
-  RS.posterUrl = (m) => (m.rg ? rgFile(m.rg.t || m.rg.p) : IMG + 'static/post-' + m.id + '.jpeg');
+  // hd: en pantalla completa, los de RedGifs en alta calidad (1080p; lo eligió el usuario en la 1.11.1).
+  // En el feed y las miniaturas, la calidad de teléfono (480p), que gasta unas 5 veces menos.
+  RS.videoUrl = (m, hd) => (m.rg ? rgFile(hd ? m.rg.hd || m.rg.sd : m.rg.sd || m.rg.hd) : viaProxy(IMG + 'mp4/post-' + m.id + '.mp4'));
+  RS.posterUrl = (m, big) => (m.rg ? rgFile(big ? m.rg.p || m.rg.t : m.rg.t || m.rg.p) : IMG + 'static/post-' + m.id + '.jpeg');
   // Para descargar: la imagen en tamaño completo o el mp4 (también el de los GIF). La app de Android la
   // pide sin el proxy; en el navegador, si hace falta, pasa por él (localUrl).
   RS.fileOf = (m) =>

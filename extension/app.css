@@ -1401,3 +1401,9 @@ button.navline:active { background: var(--surface); }
 .hero-ring { flex-shrink: 0; padding: 3px; border: 2px solid var(--accent); border-radius: 50%; background: transparent; display: block; line-height: 0; }
 .hero-ring.seen { border-color: var(--line-2); }
 .vw-who .vw-user, .vw-who .srcb, .vw-who .fol-inline { vertical-align: middle; }
+
+/* ---------- 1.11.1 ---------- */
+/* Cuenta de RedGifs verificada: una estrellita al lado del nombre (buscador y perfil) */
+.verif { display: inline-flex; align-items: center; margin-left: 4px; color: var(--accent); vertical-align: -1px; }
+.verif .i { fill: currentColor; stroke: none; }
+h2 .verif .i { width: 18px; height: 18px; }
