@@ -9193,16 +9193,17 @@
   const INTRO_MS = 1500;
   const INTRO_TILES = 15;
   const INTRO_CLIPS = 4; // 1.13.4 (lo pidió el usuario); antes 3
-  // Dónde van los que se mueven (1.13.4): separados, sin tocarse ni en diagonal, alrededor del logo (el mosaico
-  // tiene 3 columnas, va girado y el 7 queda detrás del logo). Primero los que más se ven (el 5 y el 9, unas tres
-  // cuartas partes en un teléfono de 375 × 812; el 3 y el 11, menos de la mitad): con dos, quedan en diagonal.
-  const CLIP_SLOTS = [5, 9, 3, 11];
-  // 1.13.3: un segundo (se repite), cortando también los GIF cortos de JoyReactor, que antes se querían guardar
-  // enteros y casi siempre pasaban el límite.
-  const INTRO_CLIP_S = 1;
-  const CLIP_MAX = 1500000;
+  // Dónde van los que se mueven (el mosaico tiene 3 columnas, va girado y el 7 queda detrás del logo). Desde la
+  // 1.14.1, los que eligió el usuario marcándolos en una captura: justo arriba, abajo, a la izquierda y a la
+  // derecha del logo. Primero arriba y abajo, que se ven enteros (los de los lados, algo más de la mitad).
+  const CLIP_SLOTS = [4, 10, 6, 8];
+  // Cuántos segundos se guardan de cada uno (se repiten), cortando también los GIF cortos de JoyReactor: 1 en la
+  // 1.13.3, 3 desde la 1.14.1 (lo pidió el usuario). Cada GIF guardado anota con cuántos (s): los de otra
+  // medida se tiran al abrir y se vuelven a cortar.
+  const INTRO_CLIP_S = 3;
+  const CLIP_MAX = 3000000;
   // Con qué reglas se anotó un GIF como pesado: si cambian, se prueba otra vez.
-  const CLIP_RULE = 3;
+  const CLIP_RULE = 4;
   let clipErr = ''; // el último error al guardar un GIF del intro (Herramientas de debug)
   let introEnd = null; // cierra el intro que está a la vista («atrás» de Android)
   const introThumbs = new Map(); // id del post -> URL de su miniatura guardada
@@ -9359,7 +9360,7 @@
             await RS.localDb.set('clip:' + p.id, { at: Date.now(), big: CLIP_RULE });
             continue;
           }
-          await RS.localDb.set('clip:' + p.id, { at: Date.now(), blob });
+          await RS.localDb.set('clip:' + p.id, { at: Date.now(), blob, s: INTRO_CLIP_S });
           introClips.set(p.id, URL.createObjectURL(blob));
           chosen.add(p.id);
           clipErr = '';
@@ -9402,8 +9403,9 @@
       for (const [k, v] of pics) if (v && v.blob) setSnap(k.slice(4), v.at, v.blob);
       for (const [k, v] of intro) if (v && v.blob) introThumbs.set(k.slice(6), URL.createObjectURL(v.blob));
       for (const [k, v] of clips) {
-        if (v && v.blob) introClips.set(k.slice(5), URL.createObjectURL(v.blob));
+        if (v && v.blob && v.s === INTRO_CLIP_S) introClips.set(k.slice(5), URL.createObjectURL(v.blob));
         else if (v && v.big === CLIP_RULE) clipBig.add(k.slice(5));
+        else RS.localDb.del(k); // de otra medida (o de otras reglas): se vuelve a cortar
       }
     } catch (e) {
       /* sin IndexedDB: las fotos y el intro se ven como antes */
