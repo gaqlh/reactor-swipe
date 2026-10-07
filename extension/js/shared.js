@@ -1146,7 +1146,11 @@
       } finally {
         clearTimeout(timer);
       }
-      if (!res.ok) throw new Error('RedGifs respondió con error ' + res.status);
+      if (!res.ok) {
+        // 502: Android no pudo hablar con RedGifs; el motivo viene en el cuerpo (RedGifs.kt).
+        const why = res.status === 502 ? (await res.text().catch(() => '')).slice(0, 90) : '';
+        throw new Error(why ? 'RedGifs no respondió: ' + why : 'RedGifs respondió con error ' + res.status);
+      }
       return res.json();
     })();
     rgMemo.set(path, { at: Date.now(), wait });

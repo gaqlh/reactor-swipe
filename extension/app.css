@@ -1417,3 +1417,7 @@ h2 .verif .i { width: 18px; height: 18px; }
    pasó a la cabecera). Cada una mide lo que su texto, para que quepan en el teléfono */
 .ptabs .ptab { flex: 1 1 auto; gap: 4px; padding: 0 3px; font-size: 13px; }
 .ptabs .ptab .pl { overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- 1.13.3 ---------- */
+/* Intro: mientras el teléfono lee lo guardado (miniaturas y GIF) se ve solo el logo, quieto */
+#intro.wait .in-wall, #intro.wait .in-logo { animation: none; }

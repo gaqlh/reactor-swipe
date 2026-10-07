@@ -91,7 +91,6 @@ async function proxyRgApi(req, res, url) {
   res.writeHead(up.status, { 'content-type': up.headers.get('content-type') || 'application/json', 'cache-control': 'no-store' });
   res.end(Buffer.from(await up.arrayBuffer()));
 }
-const RG_CHUNK = 2 * 1024 * 1024;
 async function proxyRgMedia(req, res, url) {
   const rest = url.pathname.slice('/__rg/media'.length);
   if (!/^\/[A-Za-z0-9_.-]+$/.test(rest)) {
@@ -99,10 +98,7 @@ async function proxyRgMedia(req, res, url) {
     return;
   }
   const headers = { 'user-agent': RG_UA };
-  // De a pedazos de 2 MB, como RedGifs.kt en Android (1.13.2): el reproductor pide lo que sigue.
-  const m = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range || '');
-  if (m) headers.range = 'bytes=' + m[1] + '-' + Math.min(m[2] ? Number(m[2]) : Infinity, Number(m[1]) + RG_CHUNK - 1);
-  else if (req.headers.range) headers.range = req.headers.range;
+  if (req.headers.range) headers.range = req.headers.range;
   const ctrl = new AbortController();
   res.on('close', () => ctrl.abort());
   const up = await fetch('https://media.redgifs.com' + rest, { headers, signal: ctrl.signal });

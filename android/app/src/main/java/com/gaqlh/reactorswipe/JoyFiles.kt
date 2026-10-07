@@ -26,12 +26,14 @@ object JoyFiles {
                 setRequestProperty("Referer", "https://joyreactor.com/")
                 setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) ReactorSwipe")
             }
-            req.requestHeaders.entries.firstOrNull { it.key.equals("Range", ignoreCase = true) }?.let { conn.setRequestProperty("Range", it.value) }
+            val range = req.requestHeaders.entries.firstOrNull { it.key.equals("Range", ignoreCase = true) }?.value
+            if (range != null) conn.setRequestProperty("Range", range)
             val code = conn.responseCode
             val out = HashMap<String, String>()
             for (h in listOf("Content-Length", "Content-Range", "Accept-Ranges", "Cache-Control")) conn.getHeaderField(h)?.let { out[h] = it }
             val type = (conn.contentType ?: "application/octet-stream").substringBefore(';').trim()
-            val stream = (if (code < 400) conn.inputStream else conn.errorStream) ?: ByteArrayInputStream(ByteArray(0))
+            // El WebView aplica el Range por su cuenta sobre lo que devolvemos (ver RangedStream).
+            val stream = if (code < 400) RangedStream.of(conn, code, range) else conn.errorStream ?: ByteArrayInputStream(ByteArray(0))
             WebResourceResponse(type, null, code, if (code == 200) "OK" else if (code == 206) "Partial Content" else "Status $code", out, stream)
         } catch (e: Exception) {
             text(502, e.message ?: "JoyReactor no respondió")

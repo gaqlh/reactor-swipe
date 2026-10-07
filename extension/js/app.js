@@ -1294,7 +1294,8 @@
   }
   // secs: cuántos segundos dejar. Devuelve el pedazo (un Blob) o null si conviene el archivo entero.
   // opts.wholeMax: un archivo corto que pesa hasta eso se devuelve entero; opts.maxBytes: si el pedazo pesa
-  // más, null sin bajarlo (los GIF del intro).
+  // más, null sin bajarlo; opts.cutShort: cortar aunque el archivo sea corto (los GIF del intro: los de
+  // JoyReactor duran pocos segundos y pesan mucho).
   async function cutMp4(url, secs, opts) {
     const wholeMax = (opts && opts.wholeMax) || 0;
     const maxBytes = (opts && opts.maxBytes) || 0;
@@ -1355,8 +1356,9 @@
     if (!moov || !mdat) return null;
     const dur = moovDuration(moov);
     const data = mdat.size - mdat.hdr;
-    const keep = Math.min(data, Math.ceil((data * (secs + margin)) / dur) + 131072);
-    if (!(dur > secs + 2) || keep > data * 0.8) {
+    const keep = Math.min(data, Math.ceil((data * (secs + margin)) / (dur || 1)) + 131072);
+    const short = opts && opts.cutShort ? !dur || keep >= data : !(dur > secs + 2) || keep > data * 0.8;
+    if (short) {
       if (!wholeMax || total > wholeMax) return null;
       await grow(total);
       return new Blob([head], { type: 'video/mp4' });
@@ -8929,10 +8931,13 @@
   const INTRO_MS = 1500;
   const INTRO_TILES = 15;
   const INTRO_CLIPS = 3;
-  const INTRO_CLIP_S = 1.5;
+  // 1.13.3: un segundo (se repite), cortando también los GIF cortos de JoyReactor, que antes se querían guardar
+  // enteros y casi siempre pasaban el límite.
+  const INTRO_CLIP_S = 1;
   const CLIP_MAX = 1500000;
-  // Con qué reglas se anotó un GIF como pesado: si cambian (1.13.1: 1,5 MB y medio segundo de margen), se prueba otra vez.
-  const CLIP_RULE = 2;
+  // Con qué reglas se anotó un GIF como pesado: si cambian, se prueba otra vez.
+  const CLIP_RULE = 3;
+  let clipErr = ''; // el último error al guardar un GIF del intro (Herramientas de debug)
   let introEnd = null; // cierra el intro que está a la vista («atrás» de Android)
   const introThumbs = new Map(); // id del post -> URL de su miniatura guardada
   const introClips = new Map(); // id del post -> URL de su GIF guardado (el principio)
@@ -8943,7 +8948,9 @@
     const n = introClips.size;
     const gifs = introPosts().filter((p) => p.media[0].kind === 'video').length;
     if (!gifs) return 'Entre tus últimos me gusta no hay GIF.';
-    return n ? (n === 1 ? 'Se mueve 1 de tus GIF.' : 'Se mueven ' + n + ' de tus GIF.') : clipBig.size >= Math.min(gifs, INTRO_CLIPS) ? 'Tus GIF pesan demasiado para moverse.' : 'Tus GIF se están guardando: se moverán la próxima vez.';
+    if (n) return n === 1 ? 'Se mueve 1 de tus GIF.' : 'Se mueven ' + n + ' de tus GIF.';
+    if (clipErr) return 'No pude guardar tus GIF: ' + clipErr;
+    return clipBig.size >= Math.min(gifs, INTRO_CLIPS) ? 'Tus GIF pesan demasiado para moverse.' : 'Tus GIF se están guardando: se moverán la próxima vez.';
   }
   const introPosts = () =>
     Object.values(S.likes)
@@ -8951,10 +8958,50 @@
       .map((x) => x.post)
       .filter((p) => p && p.media && p.media[0] && p.media[0].kind !== 'embed')
       .slice(0, INTRO_TILES);
-  function showIntro() {
+  // ready (al abrir la app): la lectura de lo guardado en el teléfono (loadLocal). Mientras tanto se ve solo el
+  // logo; el mosaico arranca cuando llegan las miniaturas y los GIF (como mucho INTRO_WAIT). En la 1.13.1 el
+  // intro salía antes de que el teléfono terminara de leerlos: sin GIF y con las imágenes bajadas de la red.
+  const INTRO_WAIT = 2500;
+  function showIntro(ready) {
     if (introEnd) introEnd(true);
     const ms = Number(S.settings.introMs) || INTRO_MS;
     const k = ms / INTRO_MS;
+    let done = false;
+    const wall = h('div', { class: 'in-wall' });
+    const el = h('div', { id: 'intro', class: ready ? 'wait' : '', 'aria-hidden': 'true', style: '--k:' + k, onclick: () => end() },
+      wall,
+      h('div', { class: 'in-logo' }, h('b', { text: 'Reactor' }), h('span', { text: 'Swipe' }))
+    );
+    const end = (now) => {
+      if (done) return;
+      done = true;
+      if (introEnd === end) introEnd = null;
+      const gone = () => {
+        document.removeEventListener('visibilitychange', replay);
+        el.querySelectorAll('video').forEach(stopVideo);
+        el.remove();
+      };
+      if (now) return gone();
+      el.classList.add('out');
+      setTimeout(gone, 350);
+    };
+    introEnd = end;
+    document.body.append(el);
+    // Chrome pausa los videos mudos mientras la página no se ve (al abrir, el WebView puede estar así un
+    // instante): cuando se ve, los GIF del mosaico siguen.
+    const replay = () => !document.hidden && wall.querySelectorAll('video').forEach((v) => v.paused && v.play().catch(() => {}));
+    document.addEventListener('visibilitychange', replay);
+    const start = () => {
+      if (done) return;
+      fill(wall, introTiles(k));
+      el.classList.remove('wait');
+      setTimeout(replay, 300);
+      setTimeout(end, ms);
+    };
+    if (ready) Promise.race([ready, new Promise((r) => setTimeout(r, INTRO_WAIT))]).then(start);
+    else start();
+  }
+  function introTiles(k) {
     const posts = introPosts();
     const tiles = [];
     for (let i = 0; i < INTRO_TILES; i++) {
@@ -8978,26 +9025,7 @@
       }
       tiles.push(h('i', { style: '--d:' + (i % 5) * 0.08 * k + 's' + (src ? ';background-image:url("' + src + '")' : '') }, vid));
     }
-    let done = false;
-    const el = h('div', { id: 'intro', 'aria-hidden': 'true', style: '--k:' + k, onclick: () => end() },
-      h('div', { class: 'in-wall' }, tiles),
-      h('div', { class: 'in-logo' }, h('b', { text: 'Reactor' }), h('span', { text: 'Swipe' }))
-    );
-    const end = (now) => {
-      if (done) return;
-      done = true;
-      if (introEnd === end) introEnd = null;
-      const gone = () => {
-        el.querySelectorAll('video').forEach(stopVideo);
-        el.remove();
-      };
-      if (now) return gone();
-      el.classList.add('out');
-      setTimeout(gone, 350);
-    };
-    introEnd = end;
-    document.body.append(el);
-    setTimeout(end, ms);
+    return tiles;
   }
 
   // Guarda en el teléfono las miniaturas de lo que sale en el intro y borra las que ya no salen.
@@ -9052,7 +9080,7 @@
           continue;
         }
         try {
-          const blob = await cutMp4(RS.videoUrl(p.media[0]), INTRO_CLIP_S, { wholeMax: CLIP_MAX, maxBytes: CLIP_MAX, margin: 0.5 });
+          const blob = await cutMp4(RS.videoUrl(p.media[0]), INTRO_CLIP_S, { wholeMax: CLIP_MAX, maxBytes: CLIP_MAX, margin: 0.3, cutShort: true });
           if (!blob) {
             clipBig.add(p.id);
             await RS.localDb.set('clip:' + p.id, { at: Date.now(), big: CLIP_RULE });
@@ -9061,8 +9089,9 @@
           await RS.localDb.set('clip:' + p.id, { at: Date.now(), blob });
           introClips.set(p.id, URL.createObjectURL(blob));
           chosen.add(p.id);
+          clipErr = '';
         } catch (e) {
-          /* ese queda quieto; se intenta la próxima vez */
+          clipErr = errText(e); // ese queda quieto; se intenta la próxima vez
         }
       }
       for (const [id, url] of Array.from(introClips)) {
@@ -9119,8 +9148,8 @@
     }
     const local = loadLocal();
     Object.assign(S, await RS.load(RS.KEYS.filter((k) => k !== 'eraCache')));
+    showIntro(local); // el logo enseguida; el mosaico, cuando el teléfono termina de leer lo guardado
     await Promise.race([local, new Promise((r) => setTimeout(r, LOCAL_WAIT))]);
-    showIntro();
     checkReinstall();
     S.seenSet = new Set(S.seen);
     startUsageClock();

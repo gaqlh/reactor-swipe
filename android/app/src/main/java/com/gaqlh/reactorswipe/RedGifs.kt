@@ -14,10 +14,9 @@ import java.net.URL
  * https://joyreactor.com/__rg/media/…, y MainActivity los atiende aquí (en la PC lo hace tools/dev-server.mjs):
  * · la API pide un token temporal, que dura 24 h y queda atado a la IP y al User-Agent. Se guarda y se pide
  *   otro solo cuando RedGifs responde 401: pedir muchos bloquea el acceso un buen rato.
- * · los archivos dan 403 con Referer de otro sitio: se piden sin Referer, pasando el Range de los videos.
- * · de a pedazos (MEDIA_CHUNK, 1.13.2): un «desde aquí hasta el final» se pide hasta 2 MB y el reproductor
- *   pide lo siguiente cuando lo necesita. Con el archivo entero en cada pedido, al adelantar un video el
- *   pedido nuevo quedaba esperando detrás de los viejos y el video se congelaba.
+ * · los archivos dan 403 con Referer de otro sitio: se piden sin Referer, pasando el Range de los videos tal
+ *   cual, y lo que vuelve va en un RangedStream (el WebView aplica el Range por su cuenta; ver ahí).
+ *   (En la 1.13.2 se pedían de a pedazos de 2 MB: con el WebView eso cortaba los videos.)
  */
 object RedGifs {
     private const val API = "https://api.redgifs.com"
@@ -26,8 +25,6 @@ object RedGifs {
     private val API_PATH = Regex("""^/v[12]/[A-Za-z0-9/_.%-]+$""")
     private val MEDIA_PATH = Regex("""^/[A-Za-z0-9_.%-]+$""")
     private const val TOKEN_MS = 20L * 3600 * 1000
-    private const val MEDIA_CHUNK = 2L * 1024 * 1024
-    private val RANGE = Regex("""^bytes=(\d+)-(\d*)$""")
 
     private var token: String? = null
     private var tokenAt = 0L
@@ -103,21 +100,13 @@ object RedGifs {
     private fun media(path: String, headers: Map<String, String>): WebResourceResponse {
         if (!MEDIA_PATH.matches(path)) return text(403, "Archivo de RedGifs no válido")
         val conn = open(MEDIA + path)
-        val range = headers.entries.firstOrNull { it.key.equals("Range", ignoreCase = true) }?.value?.trim()
-        val m = range?.let { RANGE.matchEntire(it) }
-        if (m != null) {
-            val start = m.groupValues[1].toLong()
-            val asked = m.groupValues[2].toLongOrNull()
-            val end = minOf(asked ?: Long.MAX_VALUE, start + MEDIA_CHUNK - 1)
-            conn.setRequestProperty("Range", "bytes=$start-$end")
-        } else if (range != null) {
-            conn.setRequestProperty("Range", range)
-        }
+        val range = headers.entries.firstOrNull { it.key.equals("Range", ignoreCase = true) }?.value
+        if (range != null) conn.setRequestProperty("Range", range)
         val code = conn.responseCode
         val out = HashMap<String, String>()
         for (h in listOf("Content-Length", "Content-Range", "Accept-Ranges", "Cache-Control")) conn.getHeaderField(h)?.let { out[h] = it }
         val type = (conn.contentType ?: "application/octet-stream").substringBefore(';').trim()
-        val stream = (if (code < 400) conn.inputStream else conn.errorStream) ?: ByteArrayInputStream(ByteArray(0))
+        val stream = if (code < 400) RangedStream.of(conn, code, range) else conn.errorStream ?: ByteArrayInputStream(ByteArray(0))
         return WebResourceResponse(type, null, code, reason(code), out, stream)
     }
 
