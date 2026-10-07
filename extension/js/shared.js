@@ -226,6 +226,7 @@
   // Los archivos de RedGifs (m.rg: los nombres de sus archivos en media.redgifs.com) van por /__rg/media/.
   const RG = '/__rg';
   const RG_MEDIA = 'https://media.redgifs.com/';
+  const RG_PIC = 'https://userpic.redgifs.com/';
   const rgFile = (name) => RG + '/media/' + encodeURIComponent(name);
   RS.imageUrl = (m, full) => (m.rg ? rgFile(full ? m.rg.hd : m.rg.t || m.rg.hd) : IMG + (full ? 'full/' : '') + 'post-' + m.id + '.' + (m.ext || 'jpeg'));
   // hd: en pantalla completa, los de RedGifs en alta calidad (1080p; lo eligió el usuario en la 1.11.1).
@@ -245,9 +246,11 @@
   // Un archivo de JoyReactor pedido desde el mismo origen que la app (1.12.0): así se puede copiar a un
   // <canvas> (la foto recortada y las miniaturas del intro se guardan en el teléfono). En Android lo
   // atiende MainActivity (/__jr/<servidor>/pics/…); en la PC, el proxy. Lo de RedGifs ya pasa por /__rg/.
+  // Las fotos de perfil de RedGifs (userpic.redgifs.com) no dejan copiarlas: van por /__rg/pic/ (1.13.4).
   RS.sameOrigin = (url) => {
     if (!/^https?:/.test(url)) return url;
     if (url.startsWith(RG_MEDIA)) return rgFile(url.slice(RG_MEDIA.length));
+    if (url.startsWith(RG_PIC)) return RG + '/pic/' + url.slice(RG_PIC.length);
     const m = android && direct ? /^https:\/\/(img\d*)\.joyreactor\.com\/(pics\/.*)$/.exec(url) : null;
     if (m) return '/__jr/' + m[1] + '/' + m[2];
     return direct ? url : '/proxy/media?u=' + encodeURIComponent(url);
@@ -433,8 +436,9 @@
   cacheDb.set = (k, v) => cacheSet(k, v).catch(() => {});
   RS.cacheDb = cacheDb;
   // Lo que no cabe en localStorage (1.12.0): las fotos propias ya recortadas ('pic:<user:nombre>', datos del
-  // usuario: van en el respaldo) y las miniaturas del intro ('intro:<id del post>', un caché). Base aparte
-  // de la del caché, que se tira sola.
+  // usuario: van en el respaldo) y las miniaturas del intro ('intro:<id del post>', un caché). Desde la 1.13.4,
+  // también las fotos de perfil de lo que sigues ('av:<dirección>') y la última fila de historias ('stories').
+  // Base aparte de la del caché, que se tira sola.
   RS.localDb = kvDb('reactor-swipe-local');
 
   // Páginas ya revisadas de un hashtag: { v, born, count, n, pages: { página: [posts que se guardan] } }.

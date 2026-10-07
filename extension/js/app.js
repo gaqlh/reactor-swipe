@@ -614,19 +614,87 @@
     invalidateHome();
     storyCache = null;
   }
+  // ---- Fotos de perfil guardadas en el teléfono (1.13.4, lo pidió el usuario): las de lo que sigues, que son
+  // las de la fila de historias de Inicio. Las de RedGifs llegan sin permiso para guardarse en el caché y el
+  // teléfono las volvía a bajar cada vez que abrías la app (unos 85 KB cada una). Se guarda una copia chica
+  // (AV_PX, WebP) en RS.localDb ('av:<dirección>'); loadLocal las lee al abrir y se ven enseguida. Las de lo que
+  // dejas de seguir se borran. Las fotos que les pusiste tú ya se guardaban (snaps, 1.12.0).
+  const AV_PX = 160;
+  const avatars = new Map(); // dirección -> URL de la copia
+  const avFails = new Set(); // las que no se pudieron copiar en esta sesión
+  let avBusy = false;
+  let avTimer = null;
+  // Pone la foto en el círculo: la copia, enseguida; si no hay, la pide (y, si es de lo que sigues, la guarda).
+  function avatarInto(el, url, noReferrer) {
+    const img = new Image();
+    img.alt = '';
+    const local = avatars.get(url);
+    if (local) {
+      img.src = local;
+      fill(el, img);
+      return;
+    }
+    if (noReferrer) img.referrerPolicy = 'no-referrer'; // RedGifs rechaza otro Referer
+    img.onload = () => fill(el, img);
+    img.src = url;
+    if (localReady && !avFails.has(url)) soonAvatars();
+  }
+  // Las fotos que se guardan: las de la gente, los hashtags, las cuentas y los creadores que sigues (sin foto tuya).
+  function avWanted() {
+    const out = new Set();
+    for (const u of Object.values(S.following)) if (u.userId && !picOf('user', u.name)) out.add(RS.avatarUrl({ userId: u.userId }));
+    for (const f of favList()) {
+      const pic = f.pic || picCache.get(String(f.name).toLowerCase());
+      if (pic && !picOf('tag', f.name)) out.add(RS.tagImageUrl(pic));
+    }
+    for (const t of Object.values(S.tagProfiles)) if (t.pic && !picOf('tag', t.name)) out.add(RS.tagImageUrl(t.pic));
+    for (const u of Object.values(S.rgFollowing)) if (u.pic && !picOf('rguser', u.name)) out.add(u.pic);
+    return out;
+  }
+  function soonAvatars() {
+    clearTimeout(avTimer);
+    avTimer = setTimeout(cacheAvatars, 3000);
+  }
+  async function cacheAvatars() {
+    if (avBusy || !localReady) return;
+    avBusy = true;
+    try {
+      const want = avWanted();
+      for (const [url, local] of Array.from(avatars)) {
+        if (want.has(url)) continue;
+        avatars.delete(url);
+        setTimeout(() => URL.revokeObjectURL(local), 60000);
+        RS.localDb.del('av:' + url);
+      }
+      for (const url of want) {
+        if (avatars.has(url) || avFails.has(url)) continue;
+        try {
+          const bmp = await bitmapOf(url);
+          const px = Math.min(AV_PX, bmp.width, bmp.height);
+          if (!px) throw new Error('Imagen vacía');
+          const c = document.createElement('canvas');
+          c.width = c.height = px;
+          const [sx, sy, sw, sh] = coverRect(bmp.width, bmp.height, 1);
+          c.getContext('2d').drawImage(bmp, sx, sy, sw, sh, 0, 0, px, px);
+          if (bmp.close) bmp.close();
+          const blob = await new Promise((resolve, reject) => c.toBlob((b) => (b ? resolve(b) : reject(new Error('No se pudo copiar'))), 'image/webp', 0.85));
+          await RS.localDb.set('av:' + url, { at: Date.now(), blob });
+          avatars.set(url, URL.createObjectURL(blob));
+        } catch (e) {
+          avFails.add(url); // queda como antes: se pide cada vez
+        }
+      }
+    } finally {
+      avBusy = false;
+    }
+  }
   // Foto de un creador de RedGifs: la que le pusiste, la suya (pedida sin Referer, que RedGifs rechaza) o su inicial.
   function rgPic(name, url, cls) {
     const own = picOf('rguser', name);
     if (own) return putPic(h('span', { class: cls || 'htile' }), own);
     const c = colorFor(name || '?');
     const el = h('span', { class: cls || 'htile', style: { background: c[1], color: '#0f0e0d' } }, String(name || '?').charAt(0).toUpperCase());
-    if (url) {
-      const img = new Image();
-      img.alt = '';
-      img.referrerPolicy = 'no-referrer';
-      img.onload = () => fill(el, img);
-      img.src = url;
-    }
+    if (url) avatarInto(el, url, true);
     return el;
   }
   // ¿Esta lista pide a RedGifs? Las páginas de RedGifs siempre (always); las demás, si RedGifs está en Ajustes ›
@@ -895,6 +963,7 @@
         kind: account && random ? 'random' : 'pager',
         tag: account ? jrTag : null,
         type: 'ALL',
+        dates: () => !!(rgTagOf(name) && rgTagOf(name).as === 'account'),
         rgPlan: (f) =>
           f.show === 'fav'
             ? null
@@ -905,7 +974,8 @@
         findBase: () => (jrTag ? { tag: jrTag } : null),
         favList: () => likedRg('rgtag', name),
         favName: '#' + name,
-        mode: account ? 'grid' : 'feed',
+        mode: 'grid',
+        stepBack: true,
         back: true,
         head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), account ? [findBtn(f), shuffleBtn(random, '#/rgtag/' + enc(name) + (random ? '' : '?order=random'))] : viewToggle(f)],
         extra: () => hero,
@@ -924,6 +994,7 @@
     );
     f.renderExtra = () => hero; // el feed guardado muestra la cabecera de esta vez (foto, Seguir…)
     showFeed(f);
+    gridOnArrival(f);
   }
 
   // Cambiar las fuentes rehace todos los feeds guardados (y las historias).
@@ -1006,6 +1077,8 @@
         key,
         kind: 'pager',
         user: jrUser,
+        stepBack: true,
+        dates: () => isRgFollowed(name),
         rgPlan: (f) =>
           f.show === 'fav'
             ? null
@@ -1036,6 +1109,7 @@
     );
     f.renderExtra = () => hero; // el feed guardado muestra la cabecera de esta vez (foto, Seguir…)
     showFeed(f);
+    gridOnArrival(f);
   }
 
   // ================================================================ Observadores (videos y vistos)
@@ -1139,7 +1213,7 @@
         const v = e.target;
         if (e.isIntersecting && e.intersectionRatio >= 0.6 && !viewer) {
           setSrc(v);
-          if (!v._userPaused) v.play().catch(() => {});
+          if (!v._userPaused && !v._dragging) v.play().catch(() => {});
         } else {
           v.pause();
           if (!e.isIntersecting && v._userPaused) {
@@ -1292,6 +1366,103 @@
     };
     walk(8, u8.length);
   }
+  // Un pedazo de un archivo, pedido desde el mismo origen (bytes from..to): { bytes, total }.
+  async function rangeOf(src, from, to) {
+    const r = await fetch(src, { headers: { Range: 'bytes=' + from + '-' + to } });
+    const total = Number((/\/(\d+)\s*$/.exec(r.headers.get('content-range') || '') || [])[1]) || 0;
+    if (r.status !== 206 || !total) {
+      try {
+        if (r.body) r.body.cancel();
+      } catch (e) {
+        /* ya terminó */
+      }
+      throw new Error('El servidor no da pedazos');
+    }
+    return { bytes: new Uint8Array(await r.arrayBuffer()), total };
+  }
+  // El índice (la caja moov entera) de un mp4, recorriendo las cajas de arriba con pedidos chicos.
+  async function mp4Moov(url) {
+    const src = RS.sameOrigin(url);
+    const STEP = 16384;
+    let buf = await rangeOf(src, 0, STEP - 1);
+    let at = 0;
+    const total = buf.total;
+    for (let off = 0; off + 8 <= total; ) {
+      if (off < at || Math.min(off + 16, total) > at + buf.bytes.length) {
+        buf = await rangeOf(src, off, Math.min(total, off + STEP) - 1);
+        at = off;
+      }
+      const b = boxAt(buf.bytes, off - at, total - off);
+      if (b.type === 'moov') {
+        if (off + b.size > at + buf.bytes.length) {
+          buf = await rangeOf(src, off, off + b.size - 1);
+          at = off;
+        }
+        return buf.bytes.slice(off - at, off - at + b.size);
+      }
+      off += b.size;
+    }
+    return null;
+  }
+  // Los segundos de los cuadros completos de la pista de video de un moov (stss + stts, con el corrimiento
+  // de elst); null si no hay stss (todos son completos) o si hay uno solo.
+  function moovKeys(moov) {
+    if (!moov) return null;
+    const dv = new DataView(moov.buffer, moov.byteOffset, moov.byteLength);
+    const kids = (start, end) => {
+      const out = [];
+      for (let p = start; p + 8 <= end; ) {
+        const b = boxAt(moov, p, end - p);
+        out.push({ type: b.type, body: p + b.hdr, end: p + b.size });
+        p += b.size;
+      }
+      return out;
+    };
+    const child = (box, type) => (box ? kids(box.body, box.end).find((b) => b.type === type) : null);
+    for (const trak of kids(8, moov.length).filter((b) => b.type === 'trak')) {
+      const mdia = child(trak, 'mdia');
+      const hdlr = child(mdia, 'hdlr');
+      if (!hdlr || fourcc(dv, hdlr.body + 8) !== 'vide') continue;
+      const mdhd = child(mdia, 'mdhd');
+      const scale = mdhd && dv.getUint32(mdhd.body + (dv.getUint8(mdhd.body) === 1 ? 20 : 12));
+      const stbl = child(child(mdia, 'minf'), 'stbl');
+      const stss = child(stbl, 'stss');
+      const stts = child(stbl, 'stts');
+      if (!scale || !stss || !stts) return null;
+      let shift = 0;
+      const elst = child(child(trak, 'edts'), 'elst');
+      if (elst) {
+        const v1 = dv.getUint8(elst.body) === 1;
+        for (let i = 0, n = dv.getUint32(elst.body + 4); i < n; i++) {
+          const at = elst.body + 8 + i * (v1 ? 20 : 12);
+          const mt = v1 ? Number(dv.getBigInt64(at + 8)) : dv.getInt32(at + 4);
+          if (mt >= 0) {
+            shift = mt;
+            break;
+          }
+        }
+      }
+      const n = dv.getUint32(stss.body + 4);
+      const keys = [];
+      let k = 0;
+      let next = n ? dv.getUint32(stss.body + 8) : Infinity;
+      let sample = 1;
+      let dts = 0;
+      for (let i = 0, en = dv.getUint32(stts.body + 4); i < en && k < n; i++) {
+        const count = dv.getUint32(stts.body + 8 + i * 8);
+        const delta = dv.getUint32(stts.body + 12 + i * 8);
+        while (k < n && next < sample + count) {
+          keys.push(Math.max(0, (dts + (next - sample) * delta - shift) / scale));
+          k++;
+          next = k < n ? dv.getUint32(stss.body + 8 + k * 4) : Infinity;
+        }
+        dts += count * delta;
+        sample += count;
+      }
+      return keys.length > 1 ? keys : null;
+    }
+    return null;
+  }
   // secs: cuántos segundos dejar. Devuelve el pedazo (un Blob) o null si conviene el archivo entero.
   // opts.wholeMax: un archivo corto que pesa hasta eso se devuelve entero; opts.maxBytes: si el pedazo pesa
   // más, null sin bajarlo; opts.cutShort: cortar aunque el archivo sea corto (los GIF del intro: los de
@@ -1301,19 +1472,7 @@
     const maxBytes = (opts && opts.maxBytes) || 0;
     const margin = opts && opts.margin != null ? opts.margin : 1.5; // segundos de más, por si los datos no son parejos
     const src = RS.sameOrigin(url);
-    const get = async (from, to) => {
-      const r = await fetch(src, { headers: { Range: 'bytes=' + from + '-' + to } });
-      const total = Number((/\/(\d+)\s*$/.exec(r.headers.get('content-range') || '') || [])[1]) || 0;
-      if (r.status !== 206 || !total) {
-        try {
-          if (r.body) r.body.cancel();
-        } catch (e) {
-          /* ya terminó */
-        }
-        throw new Error('El servidor no da pedazos');
-      }
-      return { bytes: new Uint8Array(await r.arrayBuffer()), total };
-    };
+    const get = (from, to) => rangeOf(src, from, to);
     const first = await get(0, PROBE - 1);
     const total = first.total;
     let head = first.bytes; // el principio del archivo, seguido
@@ -1541,8 +1700,13 @@
   // (pasan por Android; ver RedGifs.kt). Mientras arrastras se busca como mucho cada SEEK_GAP; mientras el
   // video busca, solo se anota el último lugar pedido y se va ahí al terminar. final (al soltar): sin esperar.
   // Si en 1,5 s no avisa que llegó, se pide igual.
+  // 1.13.4: mientras arrastras (seekGrab … seekRelease) el video va al cuadro completo más cercano (keyTimes):
+  // desde ahí se muestra enseguida. Ir a un segundo cualquiera obliga a decodificar todo desde el cuadro
+  // completo anterior, y los mp4 de JoyReactor traen uno cada 3 a 6 segundos (los de RedGifs, cada 2): en el
+  // teléfono la imagen se quedaba quieta mientras arrastrabas. Al soltar va al lugar exacto.
   const SEEK_GAP = 400;
   function seekVideo(v, t, final) {
+    if (v._dragging) v._aim = t;
     v._seekTo = t;
     clearTimeout(v._seekTimer);
     if (v._seekBusy && Date.now() - v._seekAt < 1500) return;
@@ -1551,8 +1715,12 @@
       v._seekTimer = setTimeout(() => v._seekTo != null && seekVideo(v, v._seekTo, true), wait);
       return;
     }
-    const to = v._seekTo;
+    let to = v._seekTo;
     v._seekTo = null;
+    if (v._dragging && v._keys && to - prevKey(v._keys, to) > CHEAP_SEEK) {
+      to = nearKey(v._keys, to);
+      if (Math.abs(v.currentTime - to) < 0.02) return; // ya está en ese cuadro
+    }
     v._seekBusy = true;
     v._seekAt = Date.now();
     v.addEventListener('seeked', () => {
@@ -1561,8 +1729,40 @@
     }, { once: true });
     v.currentTime = to;
   }
-  // Dónde está (o adónde va) el video, para dibujar la barra.
-  const seekPos = (v) => (v._seekTo != null ? v._seekTo : v.currentTime);
+  // Dónde está (o adónde va) el video, para dibujar la barra: mientras arrastras, donde está el dedo.
+  const seekPos = (v) => (v._dragging && v._aim != null ? v._aim : v._seekTo != null ? v._seekTo : v.currentTime);
+  // Empieza a arrastrar: pide (una vez por video) dónde están sus cuadros completos.
+  function seekGrab(v) {
+    v._dragging = true;
+    v._aim = null;
+    const url = (v.dataset.src || v.getAttribute('src') || '').replace(/#.*$/, '');
+    if (v._keysFor === url) return;
+    v._keysFor = url;
+    v._keys = null;
+    if (url && !url.startsWith('blob:')) keyTimes(url).then((k) => v._keysFor === url && (v._keys = k));
+  }
+  // Suelta: al lugar exacto, sin esperar.
+  function seekRelease(v) {
+    if (!v._dragging) return;
+    v._dragging = false;
+    const t = v._aim;
+    v._aim = null;
+    if (t != null && (v._seekTo != null || v._seekBusy || Math.abs(v.currentTime - t) > 0.04)) seekVideo(v, t, true);
+  }
+  // Hasta CHEAP_SEEK segundos después de un cuadro completo se va al lugar exacto (se decodifica rápido).
+  const CHEAP_SEEK = 1;
+  const nearKey = (keys, t) => keys.reduce((a, b) => (Math.abs(b - t) < Math.abs(a - t) ? b : a), keys[0]);
+  const prevKey = (keys, t) => keys.reduce((a, b) => (b <= t + 0.001 ? b : a), keys[0]);
+  // Los segundos de los cuadros completos de un mp4 (o null: todos lo son, o no se pudo leer). Se lee su índice
+  // (moov: en JoyReactor va al final del archivo, unos 2 KB; en RedGifs, al principio) con dos pedidos chicos.
+  const keyIndex = new Map(); // URL -> promesa
+  function keyTimes(url) {
+    if (!keyIndex.has(url)) {
+      keyIndex.set(url, mp4Moov(url).then(moovKeys).catch(() => null));
+      if (keyIndex.size > 40) keyIndex.delete(keyIndex.keys().next().value);
+    }
+    return keyIndex.get(url);
+  }
 
   function scrubBar(initial) {
     const bar = h('span', { class: 'scrub-fill' });
@@ -1616,6 +1816,7 @@
       }
       wasPlaying = !v.paused;
       v.pause();
+      seekGrab(v);
       seekTo(e.clientX);
     });
     el.addEventListener('pointermove', (e) => {
@@ -1625,7 +1826,7 @@
       if (!dragging) return;
       dragging = false;
       el.classList.remove('drag');
-      if (v && v._seekTo != null) seekVideo(v, v._seekTo, true);
+      if (v) seekRelease(v);
       if (v && wasPlaying) v.play().catch(() => {});
       hideSoon();
     };
@@ -3130,6 +3331,9 @@
     }, 'Seguir');
   }
 
+  // La fecha de un post se ve si la encendiste en Herramientas de debug o, desde la 1.13.4 (lo pidió el usuario),
+  // siempre en Inicio y en el perfil de una cuenta que sigues (opción dates del Feed).
+  const whenCls = (feed) => 'when' + (feed && feed.datesOn && feed.datesOn() ? ' always' : '');
   function buildCard(it, feed) {
     const p = it.post;
     const card = h('article', { class: 'card', 'data-id': p.id });
@@ -3139,9 +3343,9 @@
         p.user
           ? h('a', { class: 'who-link', href: (RS.isRg(p) ? '#/rguser/' : '#/user/') + enc(p.user), 'aria-label': 'Ver todos los posts de ' + p.user },
               avatar(p),
-              h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: p.user }), repChip(p)), h('span', { class: 'when', text: ago(p.time) }))
+              h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: p.user }), repChip(p)), h('span', { class: whenCls(feed), text: ago(p.time) }))
             )
-          : [avatar(p), h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: 'anónimo' })), h('span', { class: 'when', text: ago(p.time) }))],
+          : [avatar(p), h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: 'anónimo' })), h('span', { class: whenCls(feed), text: ago(p.time) }))],
         followInline(p),
         h('span', { class: 'grow' }),
         RS.isRg(p) ? null : h('span', { class: 'rating' + (p.rating < 0 ? ' neg' : ''), title: 'Rating en JoyReactor' }, icon('up', 14), String(p.rating).replace('.', ','))
@@ -3538,7 +3742,7 @@
         followInline(p, 'fol-inline vw-fol'),
         // Estrellas del autor y rating del post: solo si se activan en Ajustes.
         p.user ? h('span', { class: 'vw-score' }, repChip(p, 'media')) : null,
-        h('span', { class: 'when', text: ' · ' + ago(p.time) }),
+        h('span', { class: whenCls(viewer.story ? null : viewer.feed), text: ' · ' + ago(p.time) }),
         h('span', { class: 'vw-score' }, ' · ', h('span', { class: 'vw-rating' }, icon('up', 13), String(p.rating).replace('.', ',')))
       ),
       p.tags.length ? tagsRow(p, (t) => closeViewerThen(() => nav((RS.isRg(p) ? '#/rgtag/' : '#/tag/') + enc(t))), 'vw-tags') : null
@@ -3603,7 +3807,7 @@
       let shown = null;
       for (const vid of vids) {
         if (visibleSlide && vid.parentNode === visibleSlide) {
-          if (!vid._userPaused) vid.play().catch(() => {});
+          if (!vid._userPaused && !vid._dragging) vid.play().catch(() => {});
           shown = vid;
         } else vid.pause();
       }
@@ -3784,6 +3988,7 @@
     g.t0 = vid.currentTime;
     g.wasPlaying = !vid.paused;
     vid.pause();
+    seekGrab(vid);
     buzz(10);
     showSeek(vid, 0);
   }
@@ -3798,7 +4003,7 @@
   }
   function endSeek(g) {
     g.vid._seekedAt = Date.now();
-    if (g.vid._seekTo != null) seekVideo(g.vid, g.vid._seekTo, true);
+    seekRelease(g.vid);
     if (g.wasPlaying && !g.vid._userPaused) g.vid.play().catch(() => {});
     if (viewer) viewer.seekEl.classList.remove('show');
   }
@@ -4000,7 +4205,7 @@
     const slides = card.querySelectorAll('.slide');
     const sl = slides[currentIndex(card)] || slides[0];
     const v = sl && sl.querySelector('video');
-    if (!v || v._userPaused) return;
+    if (!v || v._userPaused || v._dragging) return; // mientras arrastras la barra, queda quieto (1.13.4)
     const r = v.getBoundingClientRect();
     if (r.bottom < 60 || r.top > window.innerHeight - 60) return;
     if (v.dataset.src) {
@@ -4148,6 +4353,8 @@
       this.renderExtra = o.extra;
       this.renderSub = o.sub;
       this.renderEmpty = o.empty;
+      this.stepBack = !!o.stepBack; // perfiles y hashtags: «atrás» por pasos (ver stepBack)
+      this.datesOn = o.dates || null; // () => true: sus posts llevan la fecha aunque esté apagada en Ajustes (1.13.4)
       this.doneText = o.doneText || null; // listas guardadas: qué decir al terminar
       this.onMode = o.onMode;
       this.items = [];
@@ -4752,6 +4959,22 @@
     f.setMode('grid', f.topVisibleId());
     return true;
   }
+  // Perfiles y hashtags (1.13.4, lo pidió el usuario): «atrás» va por pasos. Con un post por pantalla pasa a las
+  // miniaturas (en el mismo post); en miniaturas, si bajaste, vuelve al principio de la página; recién después
+  // sale. (La pantalla completa se cierra antes y deja la vista en la que estabas.)
+  function stepBack() {
+    const f = current && current.feed;
+    if (!f || !f.stepBack || !f.root.isConnected) return false;
+    if (f.mode === 'feed') {
+      f.setMode('grid', f.topVisibleId());
+      return true;
+    }
+    if (window.scrollY > 40) {
+      window.scrollTo(0, 0);
+      return true;
+    }
+    return false;
+  }
 
   function cached(key, make) {
     let f = feeds.get(key);
@@ -4997,13 +5220,7 @@
     if (own) return putPic(h('span', { class: cls }), own, !tagProfileOf(name));
     const c = colorFor(name);
     const el = h('span', { class: cls, style: { background: c[0], color: c[1] } }, fallback);
-    const show = (pic) => {
-      if (!pic) return;
-      const img = new Image();
-      img.alt = '';
-      img.onload = () => fill(el, img);
-      img.src = RS.tagImageUrl(pic);
-    };
+    const show = (pic) => pic && avatarInto(el, RS.tagImageUrl(pic));
     const key = String(name).toLowerCase();
     const fav = favOf(name);
     if (known !== undefined) show(known);
@@ -5030,7 +5247,25 @@
   // pasadas 24 horas la historia desaparece. Tocar una abre sus posts en pantalla completa, del más viejo
   // al más nuevo, empezando por el primero que no viste. Primero van las que tienen algo sin ver.
   const STORY_WINDOW = 24 * 3600000;
-  let storyCache = null; // las últimas armadas: al volver a Inicio se dibujan en el acto mientras se piden
+  // Las últimas armadas: al volver a Inicio se dibujan en el acto mientras se piden. Desde la 1.13.4 también se
+  // guardan en el teléfono (RS.localDb, 'stories'; loadLocal las lee): al abrir la app la fila sale enseguida,
+  // con sus fotos (avatars), en vez de esperar a que respondan JoyReactor y RedGifs.
+  let storyCache = null;
+  let storySaved = '';
+  function saveStories(list) {
+    const sig = list.map((s) => s.kind + ':' + s.name + ':' + s.posts.map((p) => p.id).join(',')).join('|');
+    if (sig === storySaved) return;
+    storySaved = sig;
+    RS.localDb.set('stories', { at: Date.now(), list }).catch(() => {});
+  }
+  // ¿Sigues todavía lo de esta historia? (la guardada puede ser de antes de dejar de seguirlo)
+  const storyFollowed = (s) =>
+    s.kind === 'user' ? isFollowed(s.name)
+      : s.kind === 'tag' ? !!favOf(s.name)
+        : s.kind === 'account' ? !!tagProfileOf(s.name)
+          : s.kind === 'rg' ? isRgFollowed(s.name) && srcMode() !== 'jr'
+            : s.kind === 'rgtag' ? !!rgTagOf(s.name) && srcMode() !== 'jr'
+              : false;
   async function loadStories() {
     const users = Object.values(S.following);
     const tags = favList()
@@ -5059,12 +5294,21 @@
   function storiesRow() {
     const row = h('section', { class: 'stories', 'aria-label': 'Historias de las últimas 24 horas' });
     const following = favList().length + Object.keys(S.following).length + Object.keys(S.tagProfiles).length + (srcMode() !== 'jr' ? Object.keys(S.rgFollowing).length + Object.keys(S.rgTags).length : 0);
-    const draw = (list) => {
+    let shown = null; // la lista dibujada
+    let sig = null;
+    // force: dibujarla aunque no haya cambiado (llegaron las fotos guardadas).
+    const draw = (list, force) => {
+      shown = list;
       const since = Date.now() - STORY_WINDOW;
       const live = (list || [])
+        .filter(storyFollowed)
         .map((s) => Object.assign({}, s, { posts: s.posts.filter((p) => p.time >= since && !S.dislikes[p.id]) }))
         .filter((s) => s.posts.length)
         .sort((a, b) => storyUnseen(b) - storyUnseen(a) || b.posts[b.posts.length - 1].time - a.posts[a.posts.length - 1].time);
+      // Si es lo mismo que ya se ve, no se rehace (las fotos no parpadean y los GIF no vuelven a empezar).
+      const now = live.map((s) => s.kind + ':' + s.name + ':' + storyUnseen(s) + ':' + s.posts.map((p) => p.id).join(',')).join('|');
+      if (now === sig && !force) return;
+      sig = now;
       fill(row,
         live.map((s) =>
           h('button', { type: 'button', class: 'story', 'aria-label': 'Historia de ' + (s.kind === 'user' || s.kind === 'rg' ? '@' : '#') + s.name + ': ' + s.posts.length + (s.posts.length === 1 ? ' post' : ' posts') + ' de las últimas 24 horas', onclick: () => openStory(s, () => draw(list), live) },
@@ -5078,10 +5322,14 @@
       row.hidden = !row.childElementCount;
     };
     draw(storyCache);
+    // Al abrir la app, si el teléfono todavía no terminó de leer lo guardado: cuando termina, con la fila y las
+    // fotos guardadas (o la nueva, si ya llegó).
+    if (!localRead && localDone) localDone.then(() => row.isConnected && draw(shown || storyCache, true));
     if (following) {
       loadStories()
         .then((list) => {
           storyCache = list;
+          saveStories(list);
           draw(list);
         })
         .catch(() => {});
@@ -5386,6 +5634,7 @@
       new Feed({
         key: 'home:following',
         kind: 'following',
+        dates: () => true,
         head: (f) => [h('h1', { text: 'Inicio' }), bellLink(), viewToggle(f)],
         // En Inicio solo queda el aviso de versión nueva; los demás esperan en la campanita (Novedades).
         extra: () => [updateBanner(), storiesRow()],
@@ -5404,6 +5653,10 @@
   // Desde la 1.13.1 (lo pidió el usuario) también las etiquetas de RedGifs que sigues como cuenta: para él
   // también son perfiles.
   const HOME_CHUNK = 12;
+  // 1.13.4 (lo pidió el usuario): una cuenta que publicó mucho seguido llenaba Inicio. Ahora no salen dos
+  // seguidos de la misma mientras otra tenga posts esperando y, con tres o más, tampoco con uno solo en medio
+  // (HOME_GAP): de las demás se toma el más nuevo. Cuando solo quedan posts de una, salen seguidos.
+  const HOME_GAP = 2;
   const homeSources = () =>
     Object.values(S.rgFollowing)
       .map((u) => ({ user: u.name, order: 'latest' }))
@@ -5431,10 +5684,16 @@
         f.done = true;
         break;
       }
-      let best = live[0];
-      for (const s of live) if (s.buf[0].time > best.buf[0].time) best = s;
+      const gap = Math.min(HOME_GAP, live.length - 1);
+      const recent = gap > 0 ? (st.picked || []).slice(-gap) : [];
+      const pool = live.filter((s) => !recent.includes(s));
+      let best = pool[0];
+      for (const s of pool) if (s.buf[0].time > best.buf[0].time) best = s;
       const post = best.buf.shift();
-      if (post.time < since) out.push({ post });
+      if (post.time < since) {
+        out.push({ post });
+        st.picked = (st.picked || []).concat(best).slice(-HOME_GAP);
+      }
     }
     return out;
   }
@@ -5684,6 +5943,7 @@
         tag: name,
         type,
         kinds,
+        dates: () => !!tagProfileOf(name),
         // RedGifs: la pestaña RedGifs muestra su etiqueta (la de mismo nombre o la que uniste), al azar o, en
         // una cuenta en orden, lo más nuevo. En Todos entra solo si es una cuenta y elegiste mezclar.
         rgPlan: (f) =>
@@ -5693,7 +5953,8 @@
         items: tab === 'fav' ? favItems() : [],
         reload: tab === 'fav' ? favItems : null,
         doneText: (n) => (n === 1 ? 'Es el único post de #' + name + ' que te gustó.' : 'Son los ' + n + ' posts de #' + name + ' que te gustaron.'),
-        mode: profile ? 'grid' : 'feed',
+        mode: 'grid',
+        stepBack: true,
         back: true,
         // Buscar dentro de la cuenta (1.13.0): sus posts con otros hashtags o un texto.
         findKey: profile ? 'tag:' + tkey(name) : null,
@@ -5730,6 +5991,7 @@
       })
     );
     showFeed(f);
+    gridOnArrival(f);
   }
 
   // Pestañas de un hashtag, como las del perfil de una cuenta (desde la 1.13.1 iguales, con su nombre: el botón
@@ -6087,7 +6349,9 @@
         kind: 'pager',
         user: name,
         mode: 'grid',
+        stepBack: true,
         back: true,
+        dates: () => isFollowed(name),
         // RedGifs: la pestaña RedGifs (el creador que uniste) y, si lo elegiste, mezclado en Todos.
         rgPlan: (f) => (f.show === 'fav' ? null : { q: rgUserFor(name) ? { user: rgUserFor(name), order: 'latest', tags: findTags(f) } : null, only: f.show === 'rg', mix: rgMixOn('user', name) }),
         findKey: 'user:' + name.toLowerCase(),
@@ -6115,6 +6379,7 @@
       return feed;
     });
     showFeed(f);
+    gridOnArrival(f);
   }
 
   // ---- Usuarios que sigues y perfiles que visitaste (los últimos 50).
@@ -6186,12 +6451,7 @@
     if (own) return putPic(h('span', { class: cls || 'htile' }), own);
     const c = colorFor(name);
     const pic = h('span', { class: cls || 'htile', style: { background: c[1], color: '#0f0e0d' } }, String(name).charAt(0).toUpperCase());
-    if (userId) {
-      const img = new Image();
-      img.alt = '';
-      img.onload = () => fill(pic, img);
-      img.src = RS.avatarUrl({ userId });
-    }
+    if (userId) avatarInto(pic, RS.avatarUrl({ userId }));
     return pic;
   }
 
@@ -7252,7 +7512,8 @@
   }
 
   // Me gusta e Historial se abren siempre en miniaturas; tocar una abre ese post en grande. Si llegas
-  // con «atrás» (p. ej. desde un hashtag), quedan como estaban.
+  // con «atrás» (p. ej. desde un hashtag), quedan como estaban. Desde la 1.13.4 (lo pidió el usuario) también
+  // los perfiles y los hashtags (de las dos fuentes, seguidos o no).
   function gridOnArrival(f) {
     if (f.mode !== 'grid' && (!lastNavWasBack || lastNavFromTab)) f.setMode('grid', f.anchorId || f.topVisibleId());
   }
@@ -8842,8 +9103,9 @@
       else location.hash = hash;
     },
     // Botón «atrás» de Android: 1) cierra el menú que sube desde abajo, 2) cierra la pantalla completa,
-    // 3) vuelve a las miniaturas si abriste un post desde ahí, 4) vuelve a la página anterior, 5) desde
-    // otra sección vuelve a Inicio, 6) desde Inicio sale de la app.
+    // 3) vuelve a las miniaturas si abriste un post desde ahí (en perfiles y hashtags siempre, y después al
+    // principio de la página: stepBack), 4) vuelve a la página anterior, 5) desde otra sección vuelve a
+    // Inicio, 6) desde Inicio sale de la app.
     handleBack() {
       if (introEnd) {
         introEnd();
@@ -8857,7 +9119,7 @@
         exitViewer();
         return 'handled';
       }
-      if (backToGrid()) return 'handled';
+      if (backToGrid() || stepBack()) return 'handled';
       if (stack.length > 1) {
         navBack();
         return 'handled';
@@ -8930,7 +9192,11 @@
   // se usa el siguiente. Lo que deja de estar entre los últimos me gusta se borra del teléfono.
   const INTRO_MS = 1500;
   const INTRO_TILES = 15;
-  const INTRO_CLIPS = 3;
+  const INTRO_CLIPS = 4; // 1.13.4 (lo pidió el usuario); antes 3
+  // Dónde van los que se mueven (1.13.4): separados, sin tocarse ni en diagonal, alrededor del logo (el mosaico
+  // tiene 3 columnas, va girado y el 7 queda detrás del logo). Primero los que más se ven (el 5 y el 9, unas tres
+  // cuartas partes en un teléfono de 375 × 812; el 3 y el 11, menos de la mitad): con dos, quedan en diagonal.
+  const CLIP_SLOTS = [5, 9, 3, 11];
   // 1.13.3: un segundo (se repite), cortando también los GIF cortos de JoyReactor, que antes se querían guardar
   // enteros y casi siempre pasaban el límite.
   const INTRO_CLIP_S = 1;
@@ -9003,13 +9269,20 @@
   }
   function introTiles(k) {
     const posts = introPosts();
+    // Los GIF guardados van en CLIP_SLOTS; los demás posts llenan el resto, en orden (y se repiten si faltan).
+    const moving = posts.filter((p) => introClips.has(p.id)).slice(0, CLIP_SLOTS.length);
+    const still = posts.filter((p) => !moving.includes(p));
+    const order = [];
+    moving.forEach((p, j) => (order[CLIP_SLOTS[j]] = p));
+    for (let i = 0, n = 0; i < INTRO_TILES; i++) if (!order[i] && posts.length) order[i] = still.length ? still[n++ % still.length] : posts[i % posts.length];
     const tiles = [];
     for (let i = 0; i < INTRO_TILES; i++) {
-      const p = posts.length ? posts[i % posts.length] : null;
+      const p = order[i] || null;
       const m = p ? p.media[0] : null;
       const src = m ? introThumbs.get(p.id) || (m.kind === 'video' ? RS.posterUrl(m) : RS.imageUrl(m)) : '';
-      // Los GIF guardados se mueven (una vez cada uno, aunque el post se repita en el mosaico).
-      const clip = p && i < posts.length && introClips.get(p.id);
+      // Se mueve solo en su lugar (si el post se repite en el mosaico, ahí queda quieto).
+      const slot = CLIP_SLOTS.indexOf(i);
+      const clip = p && slot >= 0 && moving[slot] === p && introClips.get(p.id);
       let vid = null;
       if (clip) {
         vid = document.createElement('video');
@@ -9113,9 +9386,19 @@
   // Lo guardado en RS.localDb: las fotos recortadas y las miniaturas del intro. Si la base tarda (o no
   // existe), la app abre igual: boot espera como mucho LOCAL_WAIT.
   const LOCAL_WAIT = 700;
+  let localDone = null; // la lectura (loadLocal), al abrir la app
+  let localRead = false; // ya terminó
   async function loadLocal() {
     try {
-      const [pics, intro, clips] = await Promise.all([RS.localDb.entries('pic:'), RS.localDb.entries('intro:'), RS.localDb.entries('clip:')]);
+      const [pics, intro, clips, avs, stories] = await Promise.all([
+        RS.localDb.entries('pic:'),
+        RS.localDb.entries('intro:'),
+        RS.localDb.entries('clip:'),
+        RS.localDb.entries('av:'),
+        RS.localDb.get('stories')
+      ]);
+      for (const [k, v] of avs) if (v && v.blob) avatars.set(k.slice(3), URL.createObjectURL(v.blob));
+      if (stories && Array.isArray(stories.list) && !storyCache) storyCache = stories.list;
       for (const [k, v] of pics) if (v && v.blob) setSnap(k.slice(4), v.at, v.blob);
       for (const [k, v] of intro) if (v && v.blob) introThumbs.set(k.slice(6), URL.createObjectURL(v.blob));
       for (const [k, v] of clips) {
@@ -9124,6 +9407,8 @@
       }
     } catch (e) {
       /* sin IndexedDB: las fotos y el intro se ven como antes */
+    } finally {
+      localRead = true;
     }
   }
   // Después de abrir: borra las copias de fotos que ya no existen, copia las que faltan (las de antes de la
@@ -9138,6 +9423,7 @@
     }
     for (const key of Object.keys(S.pics)) wantSnap(key);
     setTimeout(cacheIntro, 3000);
+    setTimeout(cacheAvatars, 6000);
   }
 
   async function boot() {
@@ -9146,7 +9432,7 @@
     } catch (e) {
       /* no disponible */
     }
-    const local = loadLocal();
+    const local = (localDone = loadLocal());
     Object.assign(S, await RS.load(RS.KEYS.filter((k) => k !== 'eraCache')));
     showIntro(local); // el logo enseguida; el mosaico, cuando el teléfono termina de leer lo guardado
     await Promise.race([local, new Promise((r) => setTimeout(r, LOCAL_WAIT))]);

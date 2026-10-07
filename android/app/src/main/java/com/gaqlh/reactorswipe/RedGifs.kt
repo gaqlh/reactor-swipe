@@ -17,13 +17,17 @@ import java.net.URL
  * · los archivos dan 403 con Referer de otro sitio: se piden sin Referer, pasando el Range de los videos tal
  *   cual, y lo que vuelve va en un RangedStream (el WebView aplica el Range por su cuenta; ver ahí).
  *   (En la 1.13.2 se pedían de a pedazos de 2 MB: con el WebView eso cortaba los videos.)
+ * · las fotos de perfil (userpic.redgifs.com, /__rg/pic/…, 1.13.4): no dejan copiarlas a un canvas desde otro
+ *   origen, y la app guarda en el teléfono las de los creadores que sigues.
  */
 object RedGifs {
     private const val API = "https://api.redgifs.com"
     private const val MEDIA = "https://media.redgifs.com"
+    private const val PICS = "https://userpic.redgifs.com"
     const val UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36 ReactorSwipe"
     private val API_PATH = Regex("""^/v[12]/[A-Za-z0-9/_.%-]+$""")
     private val MEDIA_PATH = Regex("""^/[A-Za-z0-9_.%-]+$""")
+    private val PIC_PATH = Regex("""^/[A-Za-z0-9/_.%-]+$""")
     private const val TOKEN_MS = 20L * 3600 * 1000
 
     private var token: String? = null
@@ -68,6 +72,7 @@ object RedGifs {
             when {
                 path.startsWith("/__rg/api/") -> api(ctx, path.removePrefix("/__rg/api"), req.url.encodedQuery)
                 path.startsWith("/__rg/media/") -> media(path.removePrefix("/__rg/media"), req.requestHeaders)
+                path.startsWith("/__rg/pic/") -> pic(path.removePrefix("/__rg/pic"))
                 else -> null
             }
         } catch (e: Exception) {
@@ -108,6 +113,19 @@ object RedGifs {
         val type = (conn.contentType ?: "application/octet-stream").substringBefore(';').trim()
         val stream = if (code < 400) RangedStream.of(conn, code, range) else conn.errorStream ?: ByteArrayInputStream(ByteArray(0))
         return WebResourceResponse(type, null, code, reason(code), out, stream)
+    }
+
+    private fun pic(path: String): WebResourceResponse {
+        if (!PIC_PATH.matches(path)) return text(403, "Foto de RedGifs no válida")
+        val conn = open(PICS + path)
+        val code = conn.responseCode
+        val type = (conn.contentType ?: "image/png").substringBefore(';').trim()
+        val body = try {
+            (if (code < 400) conn.inputStream else conn.errorStream)?.use { it.readBytes() } ?: ByteArray(0)
+        } finally {
+            conn.disconnect()
+        }
+        return WebResourceResponse(type, null, code, reason(code), mapOf("Cache-Control" to "no-store"), ByteArrayInputStream(body))
     }
 
     private fun reason(code: Int) = when (code) {

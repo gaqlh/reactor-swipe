@@ -112,6 +112,18 @@ async function proxyRgMedia(req, res, url) {
   else res.end();
 }
 
+// Fotos de perfil de RedGifs (1.13.4): userpic.redgifs.com no deja copiarlas a un canvas desde otro origen.
+async function proxyRgPic(req, res, url) {
+  const rest = url.pathname.slice('/__rg/pic'.length);
+  if (!/^\/[A-Za-z0-9/_.-]+$/.test(rest)) {
+    res.writeHead(403).end('Foto de RedGifs no válida');
+    return;
+  }
+  const up = await fetch('https://userpic.redgifs.com' + rest, { headers: { 'user-agent': RG_UA } });
+  res.writeHead(up.status, { 'content-type': up.headers.get('content-type') || 'image/png', 'cache-control': 'no-store' });
+  res.end(Buffer.from(await up.arrayBuffer()));
+}
+
 // /android.html: la misma app pero con un puente RSAndroid simulado, para probar el modo Android en la PC.
 // (Las peticiones siguen pasando por el proxy porque el navegador no tiene el origen joyreactor.com.)
 const ANDROID_STUB = `<script>
@@ -173,6 +185,7 @@ http
       if (url.pathname === '/proxy/media') return await proxyMedia(req, res, url);
       if (url.pathname.startsWith('/__rg/api/')) return await proxyRgApi(req, res, url);
       if (url.pathname.startsWith('/__rg/media/')) return await proxyRgMedia(req, res, url);
+      if (url.pathname.startsWith('/__rg/pic/')) return await proxyRgPic(req, res, url);
       if (url.pathname === '/android.html') return serveAndroidSim(res);
       if (url.pathname === '/') {
         res.writeHead(302, { location: '/app.html' }).end();
