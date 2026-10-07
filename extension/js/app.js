@@ -716,14 +716,14 @@
     );
   }
   // Pestañas de un perfil de RedGifs (1.13.0, lo pidió el usuario: las mismas que en JoyReactor): Todos, Videos
-  // y GIF, JoyReactor (lo que uniste) y Favoritos (tus me gusta); shuffle: el botón de barajar (etiquetas que
-  // sigues como cuenta). Debajo, la barra de la pestaña JoyReactor y la de buscar.
-  function rgProfileTabs(f, kind, name, shuffle) {
+  // y GIF, JoyReactor (lo que uniste) y Favoritos (tus me gusta). Debajo, la barra de la pestaña JoyReactor y
+  // la de buscar. (El botón de barajar de las etiquetas va en la cabecera.)
+  function rgProfileTabs(f, kind, name) {
     const tab = (show, ic, label) =>
       h('button', { class: 'ptab' + (f.show === show ? ' on' : ''), role: 'tab', 'aria-selected': String(f.show === show), 'aria-label': label, onclick: () => f.setShow(show) }, ic, h('span', { class: 'pl', text: label }));
     const jr = srcMode() !== 'rg' ? tab('jr', h('span', { class: 'srcb jr', text: 'JR' }), 'JoyReactor') : null;
     return [
-      h('div', { class: 'ptabs' + (shuffle && jr ? ' many' : ''), role: 'tablist', 'aria-label': 'Qué posts ver' }, tab('all', icon('grid', 20), 'Todos'), tab('anim', icon('film', 20), 'Videos y GIF'), jr, tab('fav', icon('heart', 20), 'Favoritos'), shuffle || null),
+      h('div', { class: 'ptabs', role: 'tablist', 'aria-label': 'Qué posts ver' }, tab('all', icon('grid', 20), 'Todos'), tab('anim', icon('film', 20), 'Videos y GIF'), jr, tab('fav', icon('heart', 20), 'Favoritos')),
       f.show === 'jr' ? jrLinkBar(kind, name) : null,
       findPanel(f, true, kind === 'rgtag' ? [name] : [])
     ];
@@ -907,18 +907,9 @@
         favName: '#' + name,
         mode: account ? 'grid' : 'feed',
         back: true,
-        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), account ? findBtn(f) : null, viewToggle(f)],
+        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), account ? [findBtn(f), shuffleBtn(random, '#/rgtag/' + enc(name) + (random ? '' : '?order=random'))] : viewToggle(f)],
         extra: () => hero,
-        sub: (f) =>
-          account
-            ? rgProfileTabs(f, 'rgtag', name,
-                h('button', {
-                  class: 'ptab shuf' + (random ? ' on' : ''),
-                  'aria-pressed': String(random),
-                  'aria-label': random ? 'Volver al orden normal' : 'Barajar los posts',
-                  onclick: () => navReplace('#/rgtag/' + enc(name) + (random ? '' : '?order=random'))
-                }, icon('shuffle', 20)))
-            : null,
+        sub: (f) => (account ? rgProfileTabs(f, 'rgtag', name) : null),
         empty: (f) =>
           f.show === 'jr'
             ? jrTag
@@ -1306,6 +1297,7 @@
   async function cutMp4(url, secs, opts) {
     const wholeMax = (opts && opts.wholeMax) || 0;
     const maxBytes = (opts && opts.maxBytes) || 0;
+    const margin = opts && opts.margin != null ? opts.margin : 1.5; // segundos de más, por si los datos no son parejos
     const src = RS.sameOrigin(url);
     const get = async (from, to) => {
       const r = await fetch(src, { headers: { Range: 'bytes=' + from + '-' + to } });
@@ -1362,7 +1354,7 @@
     if (!moov || !mdat) return null;
     const dur = moovDuration(moov);
     const data = mdat.size - mdat.hdr;
-    const keep = Math.min(data, Math.ceil((data * (secs + 1.5)) / dur) + 131072);
+    const keep = Math.min(data, Math.ceil((data * (secs + margin)) / dur) + 131072);
     if (!(dur > secs + 2) || keep > data * 0.8) {
       if (!wholeMax || total > wholeMax) return null;
       await grow(total);
@@ -1638,12 +1630,12 @@
   // solo ese pedazo (previewSrc). Entero, en pantalla completa (dos toques). Un GIF corto (hasta
   // PREVIEW_S + 2 s) se repite entero: pesa poco.
   const PREVIEW_S = 3;
-  function previewOnly(v, badge, ctl) {
+  // (Desde la 1.13.1 sin la leyenda «· 3 s» en la etiqueta: lo pidió el usuario.)
+  function previewOnly(v, ctl) {
     v._preview = true;
     v.addEventListener('loadedmetadata', () => {
       if (!(v.duration > PREVIEW_S + 2)) return;
       v._capped = true;
-      badge.textContent += ' · ' + PREVIEW_S + ' s';
       ctl.bind(null);
     });
     v.addEventListener('timeupdate', () => {
@@ -1668,10 +1660,10 @@
       ctl.bind(v, !!m.real);
       ctl.watch(box);
       box.append(v, h('span', { class: 'vw-paused', 'aria-hidden': 'true' }, icon('play', 40)), badge, snd, ctl.el);
-      if (feed && feed.source === 'explore') previewOnly(v, badge, ctl);
+      if (feed && feed.source === 'explore') previewOnly(v, ctl);
       watchAudio(v, () => {
         m.real = true;
-        badge.textContent = 'VIDEO' + (v._capped ? ' · ' + PREVIEW_S + ' s' : '');
+        badge.textContent = 'VIDEO';
         snd.hidden = false;
         ctl.bind(v._capped ? null : v, true);
       });
@@ -5355,8 +5347,8 @@
         empty: () =>
           srcMode() === 'jr'
             ? emptyBox('home', 'Inicio muestra tus cuentas de RedGifs', 'RedGifs está apagado en Ajustes › Fuentes. Enciéndelo para verlas.')
-            : !Object.keys(S.rgFollowing).length
-              ? emptyBox('user', 'Todavía no sigues cuentas de RedGifs', 'Búscalas con la lupa de Buscar y toca Seguir: sus posts salen aquí y, los nuevos, en las historias.', h('a', { class: 'btn', href: '#/find' }, icon('search', 18), 'Buscar cuentas'))
+            : !homeSources().length
+              ? emptyBox('user', 'Todavía no sigues cuentas de RedGifs', 'Busca cuentas o etiquetas con la lupa de Buscar y síguelas como cuenta: sus posts salen aquí y, los nuevos, en las historias.', h('a', { class: 'btn', href: '#/find' }, icon('search', 18), 'Buscar cuentas'))
               : emptyBox('clock', 'Todavía no hay posts aquí', 'Lo que publicaron en las últimas 24 horas está en las historias, arriba.')
       })
     );
@@ -5364,13 +5356,19 @@
   }
   // Los posts de los creadores que sigues, de todos juntos y del más nuevo al más viejo: de cada uno se pide
   // de a una página (20) y se toma siempre el más nuevo de los que esperan. Sin los de las últimas 24 h.
+  // Desde la 1.13.1 (lo pidió el usuario) también las etiquetas de RedGifs que sigues como cuenta: para él
+  // también son perfiles.
   const HOME_CHUNK = 12;
+  const homeSources = () =>
+    Object.values(S.rgFollowing)
+      .map((u) => ({ user: u.name, order: 'latest' }))
+      .concat(Object.values(S.rgTags).filter((t) => t.as === 'account').map((t) => ({ tags: t.name, order: 'latest' })));
   async function fetchFollowing(f) {
     if (srcMode() === 'jr') {
       f.done = true;
       return [];
     }
-    const st = f.fol || (f.fol = { srcs: Object.values(S.rgFollowing).map((u) => ({ src: RS.createRgSource({ user: u.name, order: 'latest' }), buf: [] })) });
+    const st = f.fol || (f.fol = { srcs: homeSources().map((q) => ({ src: RS.createRgSource(q), buf: [] })) });
     const since = Date.now() - STORY_WINDOW;
     const out = [];
     while (out.length < HOME_CHUNK) {
@@ -5655,7 +5653,7 @@
         // Buscar dentro de la cuenta (1.13.0): sus posts con otros hashtags o un texto.
         findKey: profile ? 'tag:' + tkey(name) : null,
         findBase: () => ({ tag: name }),
-        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), profile ? findBtn(f) : viewToggle(f)],
+        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), profile ? [findBtn(f), shuffleBtn(random, url({ random: !random }))] : viewToggle(f)],
         extra: (f) => {
           // Bloquear #gif (o #video…) esconde casi todos los GIF y videos: se avisa arriba.
           const blocked = fmtBlocked();
@@ -5689,30 +5687,34 @@
     showFeed(f);
   }
 
-  // Pestañas de un hashtag, como las del perfil; en las cuentas, a la derecha, el botón de barajar.
+  // Pestañas de un hashtag, como las del perfil de una cuenta (desde la 1.13.1 iguales, con su nombre: el botón
+  // de barajar de las cuentas pasó a la cabecera, shuffleBtn).
   function tagTabs(tab, profile, random, url) {
     const t = (id, ic, label) =>
       h('button', { class: 'ptab' + (tab === id ? ' on' : ''), role: 'tab', 'aria-selected': String(tab === id), 'aria-label': label, onclick: () => tab !== id && navReplace(url({ tab: id })) }, icon(ic, 20), h('span', { class: 'pl', text: label }));
-    const shuffleLabel = random ? 'Volver al orden normal' : 'Barajar los posts';
     const rg = srcMode() !== 'jr';
-    // Una cuenta con RedGifs tiene cinco pestañas: las que no están elegidas muestran solo el icono.
-    return h('div', { class: 'ptabs' + (rg && profile ? ' many' : ''), role: 'tablist', 'aria-label': 'Qué posts ver' },
+    return h('div', { class: 'ptabs', role: 'tablist', 'aria-label': 'Qué posts ver' },
       t('all', 'grid', 'Todos'),
       t('anim', 'film', 'Videos y GIF'),
       // RedGifs (1.10.0): los posts de su etiqueta de RedGifs (la de mismo nombre o la que uniste).
       rg ? h('button', { class: 'ptab' + (tab === 'rg' ? ' on' : ''), role: 'tab', 'aria-selected': String(tab === 'rg'), 'aria-label': 'RedGifs', onclick: () => tab !== 'rg' && navReplace(url({ tab: 'rg' })) }, h('span', { class: 'srcb rg', text: 'RG' }), h('span', { class: 'pl', text: 'RedGifs' })) : null,
-      profile ? t('fav', 'heart', 'Favoritos') : null,
-      !profile ? null : h('button', {
-        class: 'ptab shuf' + (random ? ' on' : ''),
-        'aria-pressed': String(random),
-        'aria-label': shuffleLabel,
-        title: shuffleLabel,
-        onclick: () => {
-          navReplace(url({ random: !random }));
-          toast(random ? 'Lo más reciente primero' : 'Barajado: desliza hacia abajo para barajar otra vez');
-        }
-      }, icon('shuffle', 20))
+      profile ? t('fav', 'heart', 'Favoritos') : null
     );
+  }
+  // Barajar los posts de un hashtag que sigues como cuenta (de JoyReactor o de RedGifs), en la cabecera, al
+  // lado de la lupa. href: la misma página, al revés (barajada o en orden).
+  function shuffleBtn(random, href) {
+    const label = random ? 'Volver al orden normal' : 'Barajar los posts';
+    return h('button', {
+      class: 'ib' + (random ? ' active' : ''),
+      'aria-pressed': String(random),
+      'aria-label': label,
+      title: label,
+      onclick: () => {
+        navReplace(href);
+        toast(random ? 'Lo más reciente primero' : 'Barajado: desliza hacia abajo para barajar otra vez');
+      }
+    }, icon('shuffle', 22));
   }
 
   // ---- Hashtags guardados como perfil (Seguidos › Perfiles): se ven como el perfil de un usuario, en
@@ -5917,19 +5919,49 @@
       if (fromTyped) input.value = '';
       f.setFind({ tags: st.tags.concat(t), q: fromTyped && !tagsOnly ? '' : st.q });
     };
+    // Mientras escribes, también los hashtags que existen con ese nombre (1.13.1: el usuario escribía un hashtag
+    // que no estaba entre lo cargado y no salía nada): los de JoyReactor (RS.searchTags) o los de RedGifs
+    // (RS.rgSuggest), para tocarlos.
+    let found = { q: '', names: [], busy: false };
+    let seq = 0;
+    let sugTimer = null;
+    const suggest = () => {
+      clearTimeout(sugTimer);
+      const q = clean(st.draft);
+      if (q.length < 2) {
+        found = { q: '', names: [], busy: false };
+        return;
+      }
+      found = { q, names: found.q && q.startsWith(found.q) ? found.names : [], busy: true };
+      const my = ++seq;
+      sugTimer = setTimeout(() => {
+        (tagsOnly ? RS.rgSuggest(q).then((l) => l.map((x) => x.text)) : RS.searchTags(q, []).then((r) => r.exact.map((t) => t.name)))
+          .catch(() => [])
+          .then((names) => {
+            if (my !== seq) return;
+            found = { q, names: names.slice(0, 8), busy: false };
+            drawChips();
+          });
+      }, 350);
+    };
+    // Lo escrito, con las mayúsculas del hashtag que existe (si lo hay entre los de sus posts o los encontrados).
+    const canon = (t) => (pool.get(tkey(t)) || {}).name || found.names.find((x) => tkey(x) === tkey(t)) || t;
     const drawChips = () => {
       learn();
       const typed = tkey(clean(st.draft));
       const on = new Set(st.tags.map(tkey));
-      const list = [...pool.values()].filter((x) => !on.has(tkey(x.name)) && (!typed || tkey(x.name).includes(typed))).sort((a, b) => b.n - a.n).slice(0, 24);
-      // En RedGifs, lo escrito tal cual, como etiqueta (aunque no salga en lo cargado).
+      const list = [...pool.values()].filter((x) => !on.has(tkey(x.name)) && (!typed || tkey(x.name).includes(typed))).sort((a, b) => b.n - a.n).slice(0, 24).map((x) => x.name);
+      const seen = new Set(list.map(tkey));
+      const more = typed && found.q && tkey(found.q) === typed ? found.names.filter((x) => !on.has(tkey(x)) && !seen.has(tkey(x))) : [];
+      // En RedGifs, lo escrito tal cual, como etiqueta (aunque no salga en lo cargado ni en lo encontrado).
       const raw = clean(st.draft);
-      const exact = tagsOnly && raw && !pool.has(tkey(raw)) && !on.has(tkey(raw)) ? raw : null;
+      const exact = tagsOnly && raw && !list.length && !more.length && !on.has(tkey(raw)) && !found.busy ? raw : null;
+      const none = !list.length && !more.length && !exact && !st.tags.length;
       fill(chips,
         st.tags.map((t) => h('button', { type: 'button', class: 'xchip cross', 'aria-label': 'Quitar #' + t, onclick: () => f.setFind({ tags: st.tags.filter((x) => x !== t) }) }, '#' + t, icon('x', 16))),
+        list.concat(more).map((t) => h('button', { type: 'button', class: 'pchip', onclick: () => pick(t) }, '#' + t)),
         exact ? h('button', { type: 'button', class: 'pchip', onclick: () => pick(exact) }, '#' + exact) : null,
-        list.map((x) => h('button', { type: 'button', class: 'pchip', onclick: () => pick(x.name) }, '#' + x.name)),
-        !list.length && !exact && !st.tags.length ? h('span', { class: 'pfind-none', text: typed ? 'Ningún hashtag de sus posts se llama así' : 'Sus hashtags salen aquí cuando cargan sus posts' }) : null
+        none ? h('span', { class: 'pfind-none', text: typed ? (found.busy ? 'Buscando hashtags…' : 'Ningún hashtag se llama así') : 'Sus hashtags salen aquí cuando cargan sus posts' }) : null
       );
     };
     const count = () => {
@@ -5955,6 +5987,7 @@
     };
     input.addEventListener('input', () => {
       st.draft = input.value;
+      suggest();
       drawChips();
       if (!tagsOnly) {
         clearTimeout(timer);
@@ -5967,7 +6000,7 @@
       input.blur(); // esconde el teclado
       if (!tagsOnly) return applyQ();
       const t = clean(input.value);
-      if (t) pick(t);
+      if (t) pick(canon(t));
     });
     const el = h('div', { class: 'pfind' }, h('label', { class: 'pfind-bar' }, icon('search', 18), input), chips, countEl);
     f.findUi = { el, input, update: () => (drawChips(), count()) };
@@ -8278,7 +8311,7 @@
         }),
         h('button', { type: 'button', class: 'line navline', onclick: () => showIntro() },
           h('span', { class: 'navline-ic' }, icon('play', 20)),
-          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Ver el intro' }), h('span', { class: 'smeta', text: 'Sin reiniciar la app. Un toque lo salta.' }))
+          h('div', { class: 'grow' }, h('span', { class: 'sname', text: 'Ver el intro' }), h('span', { class: 'smeta', text: 'Sin reiniciar la app. Un toque lo salta. ' + introClipText() }))
         )
       ),
       setGroup('Hashtags',
@@ -8854,11 +8887,21 @@
   const INTRO_TILES = 15;
   const INTRO_CLIPS = 3;
   const INTRO_CLIP_S = 1.5;
-  const CLIP_MAX = 1200000;
+  const CLIP_MAX = 1500000;
+  // Con qué reglas se anotó un GIF como pesado: si cambian (1.13.1: 1,5 MB y medio segundo de margen), se prueba otra vez.
+  const CLIP_RULE = 2;
   let introEnd = null; // cierra el intro que está a la vista («atrás» de Android)
   const introThumbs = new Map(); // id del post -> URL de su miniatura guardada
   const introClips = new Map(); // id del post -> URL de su GIF guardado (el principio)
   const clipBig = new Set(); // los GIF que pesan demasiado para el intro
+  // Para Herramientas de debug: cuántos de tus GIF se mueven en el intro (se guardan unos segundos después de
+  // abrir y de cambiar tus me gusta; el intro sale solo al abrir la app de cero).
+  function introClipText() {
+    const n = introClips.size;
+    const gifs = introPosts().filter((p) => p.media[0].kind === 'video').length;
+    if (!gifs) return 'Entre tus últimos me gusta no hay GIF.';
+    return n ? (n === 1 ? 'Se mueve 1 de tus GIF.' : 'Se mueven ' + n + ' de tus GIF.') : clipBig.size >= Math.min(gifs, INTRO_CLIPS) ? 'Tus GIF pesan demasiado para moverse.' : 'Tus GIF se están guardando: se moverán la próxima vez.';
+  }
   const introPosts = () =>
     Object.values(S.likes)
       .sort((a, b) => b.at - a.at)
@@ -8966,10 +9009,10 @@
           continue;
         }
         try {
-          const blob = await cutMp4(RS.videoUrl(p.media[0]), INTRO_CLIP_S, { wholeMax: CLIP_MAX, maxBytes: CLIP_MAX });
+          const blob = await cutMp4(RS.videoUrl(p.media[0]), INTRO_CLIP_S, { wholeMax: CLIP_MAX, maxBytes: CLIP_MAX, margin: 0.5 });
           if (!blob) {
             clipBig.add(p.id);
-            await RS.localDb.set('clip:' + p.id, { at: Date.now(), big: true });
+            await RS.localDb.set('clip:' + p.id, { at: Date.now(), big: CLIP_RULE });
             continue;
           }
           await RS.localDb.set('clip:' + p.id, { at: Date.now(), blob });
@@ -9005,7 +9048,7 @@
       for (const [k, v] of intro) if (v && v.blob) introThumbs.set(k.slice(6), URL.createObjectURL(v.blob));
       for (const [k, v] of clips) {
         if (v && v.blob) introClips.set(k.slice(5), URL.createObjectURL(v.blob));
-        else if (v && v.big) clipBig.add(k.slice(5));
+        else if (v && v.big === CLIP_RULE) clipBig.add(k.slice(5));
       }
     } catch (e) {
       /* sin IndexedDB: las fotos y el intro se ven como antes */
@@ -9022,7 +9065,7 @@
       RS.localDb.del('pic:' + key);
     }
     for (const key of Object.keys(S.pics)) wantSnap(key);
-    setTimeout(cacheIntro, 5000);
+    setTimeout(cacheIntro, 3000);
   }
 
   async function boot() {

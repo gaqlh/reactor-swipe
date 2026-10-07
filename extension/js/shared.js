@@ -1183,11 +1183,24 @@
   const RG_COUNT = 20;
   // q: { tags: 'a' | ['a','b'], order } | { user, order, tags? } | { order: 'popular' | 'latest' | 'top7' }.
   // Un creador con tags: solo sus posts que llevan todas esas etiquetas (buscar en su perfil, 1.13.0).
+  // La búsqueda dentro de un creador distingue mayúsculas («teen» da 0 y «Teen» 4160; la general no): una
+  // etiqueta escrita en minúsculas se cambia por la de RedGifs (la de su autocompletado que se llama igual).
+  const rgCanon = new Map();
+  async function rgCanonTag(t) {
+    if (/[A-Z]/.test(t)) return t;
+    const k = t.toLowerCase();
+    if (!rgCanon.has(k)) {
+      rgCanon.set(k, RS.rgSuggest(t).then((list) => (list.find((x) => String(x.text).toLowerCase() === k) || {}).text || t, () => t));
+    }
+    return rgCanon.get(k);
+  }
   RS.rgPage = async function (q, page) {
     const n = 'count=' + RG_COUNT + '&page=' + (page || 1);
     let path;
-    if (q.user) path = '/v2/users/' + encodeURIComponent(q.user) + '/search?order=' + (q.order || 'latest') + '&' + n + (q.tags ? '&tags=' + [].concat(q.tags).map(encodeURIComponent).join(',') : '');
-    else if (q.tags) path = '/v2/gifs/search?tags=' + [].concat(q.tags).map(encodeURIComponent).join(',') + '&order=' + (q.order || 'trending') + '&' + n + (q.verified ? '&verified=y' : '');
+    if (q.user) {
+      const tags = q.tags ? await Promise.all([].concat(q.tags).map(rgCanonTag)) : null;
+      path = '/v2/users/' + encodeURIComponent(q.user) + '/search?order=' + (q.order || 'latest') + '&' + n + (tags ? '&tags=' + tags.map(encodeURIComponent).join(',') : '');
+    } else if (q.tags) path = '/v2/gifs/search?tags=' + [].concat(q.tags).map(encodeURIComponent).join(',') + '&order=' + (q.order || 'trending') + '&' + n + (q.verified ? '&verified=y' : '');
     else if (q.order === 'popular') path = '/v2/feeds/trending/popular?' + n;
     else path = '/v2/gifs/search?order=' + (q.order || 'latest') + '&' + n + (q.verified ? '&verified=y' : '');
     const j = await rgGet(path);

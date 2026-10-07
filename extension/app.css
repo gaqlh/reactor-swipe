@@ -1038,10 +1038,6 @@ button.htag.more { padding: 0 8px; border-radius: 9px; background: var(--surface
 /* Hashtag: cuatro botones en dos filas (Seguir, Mezclar, Avisarme y Guardar como perfil) */
 .hbtn.prof { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
 
-/* Pestañas del hashtag: a la derecha, el botón de barajar (encendido = barajado) */
-.ptab.shuf { flex: 0 0 58px; border-left: 1px solid var(--line); border-bottom-color: transparent; }
-.ptab.shuf.on { color: var(--accent); background: var(--accent-soft); border-bottom-color: var(--accent); }
-
 /* Resumen de los lunes: aviso en Inicio y puntito en ⚙ */
 .notice.recap-note { background: var(--accent-soft); border-color: var(--accent-line); color: #ecdcc0; }
 .notice.recap-note strong { display: flex; align-items: center; gap: 8px; }
@@ -1377,9 +1373,6 @@ html:not(.show-scores) .card .head .rating { display: none; }
 .rgl-row .grow { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rgl-row .switch { margin-right: 8px; }
 .rgl-jump { display: flex; align-items: center; gap: 8px; min-height: 44px; margin-top: 10px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: 12px; color: var(--text); font-size: 14px; font-weight: 700; text-decoration: none; }
-.ptabs.many .ptab:not(.on):not(.shuf) { flex: 0 0 52px; }
-.ptabs.many .ptab:not(.on) .pl { display: none; }
-.ptabs.many .ptab.on { flex: 1 1 auto; }
 
 /* ---------- 1.10.1 ---------- */
 /* Herramientas de debug › Intro al abrir: «Ver el intro» es un botón con la forma de las filas que navegan */
@@ -1434,3 +1427,9 @@ h2 .verif .i { width: 18px; height: 18px; }
 /* Intro: los GIF guardados se mueven dentro de su cuadro */
 .in-wall i { position: relative; overflow: hidden; }
 .in-wall i video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+/* ---------- 1.13.1 ---------- */
+/* Pestañas de los perfiles: cuatro, con su nombre, también en los hashtags que sigues como cuenta (barajar
+   pasó a la cabecera). Cada una mide lo que su texto, para que quepan en el teléfono */
+.ptabs .ptab { flex: 1 1 auto; gap: 4px; padding: 0 3px; font-size: 13px; }
+.ptabs .ptab .pl { overflow: hidden; text-overflow: ellipsis; }
