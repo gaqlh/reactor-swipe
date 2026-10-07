@@ -701,6 +701,24 @@
     return out;
   };
 
+  // Las imágenes de varios hashtags en una sola consulta (1.14.2, para los círculos de la lupa de un perfil):
+  // { nombre en minúsculas: id de la imagen, o 0 si no tiene }. Con los sinónimos, la del principal.
+  RS.fetchTagPics = async function (names) {
+    const list = [...new Set(names)].slice(0, 40);
+    const out = {};
+    if (!list.length) return out;
+    const decl = list.map((n, i) => '$n' + i + ':String').join(',');
+    const vars = {};
+    list.forEach((n, i) => (vars['n' + i] = n));
+    const F = 'id image { id }';
+    const d = await gql(`query(${decl}){ ${list.map((n, i) => `t${i}: tag(name:$n${i}){ ${F} mainTag { ${F} } }`).join(' ')} }`, vars);
+    list.forEach((n, i) => {
+      const t = d['t' + i] && (d['t' + i].mainTag || d['t' + i]);
+      out[n.toLowerCase()] = t && t.image ? numId(t.id) : 0;
+    });
+    return out;
+  };
+
   /**
    * Lo que hay dentro de un hashtag (sus subcarpetas), de a 36 por página, de las más grandes a las
    * más chicas: { name, count, total, children: [{ name, count, inner }] }. inner = cuántas tiene dentro.

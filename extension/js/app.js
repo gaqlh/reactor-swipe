@@ -5638,12 +5638,14 @@
         head: (f) => [h('h1', { text: 'Inicio' }), bellLink(), viewToggle(f)],
         // En Inicio solo queda el aviso de versión nueva; los demás esperan en la campanita (Novedades).
         extra: () => [updateBanner(), storiesRow()],
-        empty: () =>
+        empty: (f) =>
           srcMode() === 'jr'
             ? emptyBox('home', 'Inicio muestra tus cuentas de RedGifs', 'RedGifs está apagado en Ajustes › Fuentes. Enciéndelo para verlas.')
             : !homeSources().length
               ? emptyBox('user', 'Todavía no sigues cuentas de RedGifs', 'Busca cuentas o etiquetas con la lupa de Buscar y síguelas como cuenta: sus posts salen aquí y, los nuevos, en las historias.', h('a', { class: 'btn', href: '#/find' }, icon('search', 18), 'Buscar cuentas'))
-              : emptyBox('clock', 'Todavía no hay posts aquí', 'Lo que publicaron en las últimas 24 horas está en las historias, arriba.')
+              : f.fol && f.fol.skipped
+                ? emptyBox('check', 'Ya viste todo lo de tus cuentas', 'Lo nuevo de las últimas 24 horas está en las historias, arriba. Para ver otra vez lo que ya viste, entra a su perfil.')
+                : emptyBox('clock', 'Todavía no hay posts aquí', 'Lo que publicaron en las últimas 24 horas está en las historias, arriba.')
       })
     );
     showFeed(f);
@@ -5653,6 +5655,8 @@
   // Desde la 1.13.1 (lo pidió el usuario) también las etiquetas de RedGifs que sigues como cuenta: para él
   // también son perfiles.
   const HOME_CHUNK = 12;
+  // 1.14.2 (lo pidió el usuario): lo que ya viste (S.seenSet) no vuelve a salir al abrir la app otra vez ni al
+  // recargar Inicio: siguen los posts siguientes de tus cuentas. Para verlo de nuevo, en su perfil.
   // 1.13.4 (lo pidió el usuario): una cuenta que publicó mucho seguido llenaba Inicio. Ahora no salen dos
   // seguidos de la misma mientras otra tenga posts esperando y, con tres o más, tampoco con uno solo en medio
   // (HOME_GAP): de las demás se toma el más nuevo. Cuando solo quedan posts de una, salen seguidos.
@@ -5682,6 +5686,7 @@
       if (!live.length) {
         if (!out.length && st.srcs.length && st.srcs.every((s) => s.error)) throw st.srcs[0].error;
         f.done = true;
+        if (st.skipped) f.endText = 'Ya viste todo lo de tus cuentas. Para verlo otra vez, entra a su perfil.';
         break;
       }
       const gap = Math.min(HOME_GAP, live.length - 1);
@@ -5690,10 +5695,13 @@
       let best = pool[0];
       for (const s of pool) if (s.buf[0].time > best.buf[0].time) best = s;
       const post = best.buf.shift();
-      if (post.time < since) {
-        out.push({ post });
-        st.picked = (st.picked || []).concat(best).slice(-HOME_GAP);
+      if (post.time >= since) continue; // todavía es historia
+      if (S.seenSet.has(post.id)) {
+        st.skipped = (st.skipped || 0) + 1;
+        continue;
       }
+      out.push({ post });
+      st.picked = (st.picked || []).concat(best).slice(-HOME_GAP);
     }
     return out;
   }
@@ -6195,6 +6203,7 @@
     // llegar, las fichas se vuelven a armar.
     let pool = new Map();
     const posts = new Map();
+    const samples = new Map(); // hashtag -> los primeros posts cargados que lo llevan (su miniatura, si no hay otra foto)
     let asked = false;
     const learn = () => {
       for (const it of f.items) posts.set(it.post.id, it.post);
@@ -6208,6 +6217,11 @@
           const c = counts.get(k) || { name: t, n: 0 };
           c.n++;
           counts.set(k, c);
+          if (p.media && p.media[0] && p.media[0].kind !== 'embed') {
+            const arr = samples.get(k) || [];
+            if (arr.length < 8 && !arr.includes(p)) arr.push(p);
+            samples.set(k, arr);
+          }
         }
       }
       pool = counts;
@@ -6253,6 +6267,46 @@
     };
     // Lo escrito, con las mayúsculas del hashtag que existe (si lo hay entre los de sus posts o los encontrados).
     const canon = (t) => (pool.get(tkey(t)) || {}).name || found.names.find((x) => tkey(x) === tkey(t)) || t;
+    // 1.14.2 (lo pidió el usuario): cada hashtag es un círculo con su foto y el nombre debajo, como las historias.
+    // La foto: la que le pusiste (S.pics; un hashtag se mueve), la del hashtag en JoyReactor (de todos los que
+    // faltan, en una consulta: RS.fetchTagPics) o, si no tiene, la miniatura de uno de sus posts cargados.
+    const askedPics = new Set();
+    let picsTimer = null;
+    const wantPics = (names) => {
+      if (tagsOnly) return;
+      const miss = names.filter((t) => !picOf('tag', t) && !picCache.has(tkey(t)) && !(favOf(t) && favOf(t).pic !== undefined) && !askedPics.has(tkey(t)));
+      if (!miss.length) return;
+      miss.forEach((t) => askedPics.add(tkey(t)));
+      clearTimeout(picsTimer);
+      picsTimer = setTimeout(() => {
+        RS.fetchTagPics(miss)
+          .then((got) => {
+            for (const [k, pic] of Object.entries(got)) picCache.set(k, pic);
+            if (f.findUi && f.findUi.el === el) drawChips();
+          })
+          .catch(() => {});
+      }, 150);
+    };
+    // used: los posts cuya miniatura ya se usó en esta fila (en un perfil muchos hashtags vienen del mismo post:
+    // cada círculo toma uno distinto si puede).
+    const tagImg = (t, used) => {
+      const k = tkey(t);
+      if (tagsOnly ? picOf('rgtag', t) : picOf('tag', t)) return tagsOnly ? rgTagPic(t, 'disc') : tagPic(t, 'disc', '#');
+      const known = tagsOnly ? 0 : picCache.has(k) ? picCache.get(k) : favOf(t) ? favOf(t).pic || 0 : 0;
+      if (known) return tagPic(t, 'disc', '#', known);
+      const arr = samples.get(k) || [];
+      const p = arr.find((x) => !used.has(x.id)) || arr[0];
+      if (p) used.add(p.id);
+      const m = p && p.media[0];
+      if (m) return h('span', { class: 'disc' }, h('img', { src: m.kind === 'video' ? RS.posterUrl(m) : RS.imageUrl(m), alt: '', loading: 'lazy', draggable: 'false', referrerpolicy: RS.isRg(p) ? 'no-referrer' : null }));
+      return tagsOnly ? rgTagPic(t, 'disc') : tagPic(t, 'disc', '#', 0);
+    };
+    let used = new Set();
+    const circle = (t, on, act) =>
+      h('button', { type: 'button', class: 'ptag' + (on ? ' on' : ''), 'aria-label': (on ? 'Quitar #' : 'Ver solo los posts con #') + t, onclick: act },
+        h('span', { class: 'ring' }, tagImg(t, used), on ? h('span', { class: 'x' }, icon('x', 12)) : null),
+        h('span', { class: 'label', text: t })
+      );
     const drawChips = () => {
       learn();
       const typed = tkey(clean(st.draft));
@@ -6264,12 +6318,16 @@
       const raw = clean(st.draft);
       const exact = tagsOnly && raw && !list.length && !more.length && !on.has(tkey(raw)) && !found.busy ? raw : null;
       const none = !list.length && !more.length && !exact && !st.tags.length;
+      wantPics(st.tags.concat(list, more));
+      used = new Set();
+      const x = chips.scrollLeft;
       fill(chips,
-        st.tags.map((t) => h('button', { type: 'button', class: 'xchip cross', 'aria-label': 'Quitar #' + t, onclick: () => f.setFind({ tags: st.tags.filter((x) => x !== t) }) }, '#' + t, icon('x', 16))),
-        list.concat(more).map((t) => h('button', { type: 'button', class: 'pchip', onclick: () => pick(t) }, '#' + t)),
-        exact ? h('button', { type: 'button', class: 'pchip', onclick: () => pick(exact) }, '#' + exact) : null,
+        st.tags.map((t) => circle(t, true, () => f.setFind({ tags: st.tags.filter((y) => y !== t) }))),
+        list.concat(more).map((t) => circle(t, false, () => pick(t))),
+        exact ? circle(exact, false, () => pick(exact)) : null,
         none ? h('span', { class: 'pfind-none', text: typed ? (found.busy ? 'Buscando hashtags…' : 'Ningún hashtag se llama así') : 'Sus hashtags salen aquí cuando cargan sus posts' }) : null
       );
+      chips.scrollLeft = x;
     };
     const count = () => {
       if (!f.findActive()) return fill(countEl, tagsOnly ? 'Toca un hashtag (o escríbelo) para ver solo esos posts.' : 'Escribe algo o toca un hashtag para filtrar sus posts.');
