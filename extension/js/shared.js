@@ -311,13 +311,15 @@
   };
 
   /**
-   * Cruzar hashtags (1.8.1): los posts que llevan todos los de tags, con search(tagNames). JoyReactor cuenta
+   * Cruzar hashtags (1.8.1): los posts que llevan todos los de tags, con search(tagNames). showUnsafe: sin eso
+   * la búsqueda esconde los posts «unsafe», que en la página de cada hashtag sí salen (hasta la 1.13.0 a veces
+   * no daba nada aunque hubiera posts con los dos: #Ass + #Teen daba 6 de 16). JoyReactor cuenta
    * como mucho 1000 y aquí la página 1 es la más nueva. Varias páginas en una sola consulta:
    * { count, lastPage, pages: [{ page, posts }] }.
    */
   RS.fetchCross = async function (tags, pages) {
     const parts = pages.map((pg, i) => `p${i}: posts(page:${Number(pg)}){ ${POST_FIELDS} }`).join(' ');
-    const d = await gql(`query($t:[String!]){ search(query:"", tagNames:$t, showNsfw:true){ postPager{ count ${parts} } } }`, { t: tags });
+    const d = await gql(`query($t:[String!]){ search(query:"", tagNames:$t, showNsfw:true, showUnsafe:true){ postPager{ count ${parts} } } }`, { t: tags });
     const pp = (d.search && d.search.postPager) || {};
     const count = pp.count || 0;
     return {
@@ -325,6 +327,55 @@
       lastPage: Math.max(1, Math.ceil(count / PAGE_SIZE)),
       pages: pages.map((pg, i) => ({ page: pg, posts: (pp['p' + i] || []).map(RS.normalizePost) }))
     };
+  };
+
+  /**
+   * Buscar dentro de un perfil (1.13.0): los posts de un usuario (username) o de un hashtag (el primero de
+   * tags) que llevan además los demás tags y, si hay, el texto query (JoyReactor lo busca en el texto y en
+   * los hashtags). Lo más nuevo primero. JoyReactor cuenta y entrega hasta 1000. Las variables van como
+   * String! y solo las que se usan.
+   */
+  RS.createSearchSource = function (o) {
+    const src = { posts: [], done: false, count: null, next: 1, last: 1, seen: 0 };
+    const defs = [];
+    const args = ['showNsfw:true', 'showUnsafe:true', 'sortByDate:true'];
+    const vars = {};
+    if (o.query) {
+      defs.push('$q:String!');
+      args.push('query:$q');
+      vars.q = o.query;
+    } else args.push('query:""');
+    if (o.username) {
+      defs.push('$u:String!');
+      args.push('username:$u');
+      vars.u = o.username;
+    }
+    if (o.tags && o.tags.length) {
+      defs.push('$t:[String!]');
+      args.push('tagNames:$t');
+      vars.t = o.tags;
+    }
+    src.more = async (n) => {
+      if (src.done) return [];
+      const want = [];
+      for (let i = 0; i < (n || 1) && (src.count == null || src.next <= src.last); i++) want.push(src.next++);
+      if (!want.length) {
+        src.done = true;
+        return [];
+      }
+      const parts = want.map((pg, i) => `p${i}: posts(page:${pg}){ ${POST_FIELDS} }`).join(' ');
+      const d = await gql(`query${defs.length ? '(' + defs.join(',') + ')' : ''}{ search(${args.join(', ')}){ postPager{ count ${parts} } } }`, vars);
+      const pp = (d.search && d.search.postPager) || {};
+      src.count = Math.min(pp.count || 0, 1000);
+      src.last = Math.max(1, Math.ceil(src.count / PAGE_SIZE));
+      const got = [];
+      want.forEach((pg, i) => got.push(...(pp['p' + i] || []).map(RS.normalizePost)));
+      src.posts.push(...got);
+      src.seen = src.posts.length;
+      if (src.next > src.last || !got.length) src.done = true;
+      return got;
+    };
+    return src;
   };
 
   // ---- Bases en el teléfono (IndexedDB), con claves y valores sueltos (kv).
@@ -605,7 +656,7 @@
     const F = 'name postPager(type:ALL){ count } hierarchy { name }';
     const parts = list.map((b, i) => {
       vars['b' + i] = b;
-      return `s${i}: search(query:"", tagNames:[$n,$b${i}], showNsfw:true){ postPager{ count } } t${i}: tag(name:$b${i}){ ${F} mainTag { ${F} } }`;
+      return `s${i}: search(query:"", tagNames:[$n,$b${i}], showNsfw:true, showUnsafe:true){ postPager{ count } } t${i}: tag(name:$b${i}){ ${F} mainTag { ${F} } }`;
     });
     const decl = ['$n:String!'].concat(list.map((b, i) => '$b' + i + ':String!')).join(',');
     const d = await gql(`query(${decl}){ ${parts.join(' ')} }`, vars);
@@ -1130,11 +1181,12 @@
     };
   };
   const RG_COUNT = 20;
-  // q: { tags: 'a' | ['a','b'], order } | { user, order } | { order: 'popular' | 'latest' | 'top7' }.
+  // q: { tags: 'a' | ['a','b'], order } | { user, order, tags? } | { order: 'popular' | 'latest' | 'top7' }.
+  // Un creador con tags: solo sus posts que llevan todas esas etiquetas (buscar en su perfil, 1.13.0).
   RS.rgPage = async function (q, page) {
     const n = 'count=' + RG_COUNT + '&page=' + (page || 1);
     let path;
-    if (q.user) path = '/v2/users/' + encodeURIComponent(q.user) + '/search?order=' + (q.order || 'latest') + '&' + n;
+    if (q.user) path = '/v2/users/' + encodeURIComponent(q.user) + '/search?order=' + (q.order || 'latest') + '&' + n + (q.tags ? '&tags=' + [].concat(q.tags).map(encodeURIComponent).join(',') : '');
     else if (q.tags) path = '/v2/gifs/search?tags=' + [].concat(q.tags).map(encodeURIComponent).join(',') + '&order=' + (q.order || 'trending') + '&' + n + (q.verified ? '&verified=y' : '');
     else if (q.order === 'popular') path = '/v2/feeds/trending/popular?' + n;
     else path = '/v2/gifs/search?order=' + (q.order || 'latest') + '&' + n + (q.verified ? '&verified=y' : '');
@@ -1187,6 +1239,7 @@
       src.tried.add(page);
       const r = await RS.rgPage(q, page);
       src.pages = r.pages;
+      src.total = r.total; // cuántos hay (lo cuenta la búsqueda dentro de un perfil)
       src.next = page + 1;
       if (q.random ? src.tried.size >= Math.min(r.pages, RG_RANDOM_PAGES) : src.next > r.pages || !r.posts.length) src.done = true;
       return q.random ? shuffle(r.posts) : r.posts;

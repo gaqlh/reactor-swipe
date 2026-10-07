@@ -1405,3 +1405,32 @@ button.navline:active { background: var(--surface); }
 .verif { display: inline-flex; align-items: center; margin-left: 4px; color: var(--accent); vertical-align: -1px; }
 .verif .i { fill: currentColor; stroke: none; }
 h2 .verif .i { width: 18px; height: 18px; }
+
+/* ---------- 1.13.0 ---------- */
+/* De dónde es cada post (JR o RG), arriba a la derecha del video o la imagen: en el feed y en pantalla
+   completa (antes iba al lado del nombre; abajo había que bajar la vista) */
+.srcb.msrc, .srcb.vw-srcb { position: absolute; z-index: 3; height: 22px; padding: 0 7px; border-radius: 6px; font-size: 11px; pointer-events: none; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.45); }
+.srcb.msrc { top: 12px; right: 12px; }
+.media.carousel .srcb.msrc { top: 46px; }
+.srcb.vw-srcb { top: calc(max(8px, env(safe-area-inset-top)) + 11px); right: 12px; }
+.viewer.stories-on .srcb.vw-srcb { top: calc(max(8px, env(safe-area-inset-top)) + 22px); }
+@media (orientation: landscape) and (max-height: 560px) {
+  .srcb.vw-srcb { transition: opacity 0.25s; }
+  .viewer:not(.ctl) .srcb.vw-srcb { opacity: 0; }
+}
+/* Buscar dentro de un perfil: la barra que abre la lupa, bajo las pestañas */
+.pfind { padding: 10px 16px 8px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.pfind-bar { display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 12px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line-2); color: var(--text-3); }
+.pfind-bar:focus-within { border-color: var(--accent-line); }
+.pfind-input.input { flex: 1 1 auto; min-width: 0; height: 40px; padding: 0; border: 0; background: transparent; font-size: 15px; }
+.pfind-chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px; }
+.pfind-chips::-webkit-scrollbar { display: none; }
+.pfind-chips .xchip { flex-shrink: 0; }
+.pchip { flex-shrink: 0; height: 34px; padding: 0 12px; border-radius: 17px; border: 1px solid var(--line-2); background: transparent; color: #8ec5ff; font-size: 14px; font-weight: 600; white-space: nowrap; }
+.pchip:active { background: var(--surface-2); }
+.pfind-none { font-size: 13px; color: var(--text-3); padding: 7px 0; white-space: nowrap; }
+.pfind-count { font-size: 13px; color: var(--text-2); }
+.pfind-count:empty { display: none; }
+/* Intro: los GIF guardados se mueven dentro de su cuadro */
+.in-wall i { position: relative; overflow: hidden; }
+.in-wall i video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }

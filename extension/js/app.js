@@ -693,6 +693,42 @@
     );
   }
 
+  // Arriba de la pestaña JoyReactor de un perfil de RedGifs (1.13.0): con qué está unido, «Cambiar» y «Mezclar
+  // con RedGifs en Todos» (lo mismo que la pestaña RedGifs de JoyReactor, al revés). kind: 'rguser' o 'rgtag'.
+  function jrLinkBar(kind, name) {
+    const isTag = kind === 'rgtag';
+    const linked = isTag ? jrTagFor(name) : jrUserFor(name);
+    return h('div', { class: 'rglink' },
+      h('div', { class: 'rgl-row' },
+        h('span', { class: 'srcb jr', text: 'JR' }),
+        h('span', { class: 'grow', text: linked ? (isTag ? '#' : '@') + linked : 'Todavía no está unida con JoyReactor' }),
+        h('button', { type: 'button', class: 'link-btn', onclick: () => openRgLink(kind, name) }, linked ? 'Cambiar' : 'Unir')
+      ),
+      linked
+        ? h('div', { class: 'rgl-row' },
+            h('span', { class: 'grow', text: 'Mezclar con RedGifs en Todos' }),
+            switchBtn(rgMixOn(kind, name), 'Mezclar con RedGifs en Todos', (on) => {
+              setRgMix(kind, name, on);
+              toast(on ? 'En Todos salen las dos fuentes mezcladas' : 'Todos vuelve a ser solo de RedGifs');
+            })
+          )
+        : null
+    );
+  }
+  // Pestañas de un perfil de RedGifs (1.13.0, lo pidió el usuario: las mismas que en JoyReactor): Todos, Videos
+  // y GIF, JoyReactor (lo que uniste) y Favoritos (tus me gusta); shuffle: el botón de barajar (etiquetas que
+  // sigues como cuenta). Debajo, la barra de la pestaña JoyReactor y la de buscar.
+  function rgProfileTabs(f, kind, name, shuffle) {
+    const tab = (show, ic, label) =>
+      h('button', { class: 'ptab' + (f.show === show ? ' on' : ''), role: 'tab', 'aria-selected': String(f.show === show), 'aria-label': label, onclick: () => f.setShow(show) }, ic, h('span', { class: 'pl', text: label }));
+    const jr = srcMode() !== 'rg' ? tab('jr', h('span', { class: 'srcb jr', text: 'JR' }), 'JoyReactor') : null;
+    return [
+      h('div', { class: 'ptabs' + (shuffle && jr ? ' many' : ''), role: 'tablist', 'aria-label': 'Qué posts ver' }, tab('all', icon('grid', 20), 'Todos'), tab('anim', icon('film', 20), 'Videos y GIF'), jr, tab('fav', icon('heart', 20), 'Favoritos'), shuffle || null),
+      f.show === 'jr' ? jrLinkBar(kind, name) : null,
+      findPanel(f, true, kind === 'rgtag' ? [name] : [])
+    ];
+  }
+
   // Elegir con qué se une (lado JoyReactor: una etiqueta o un creador de RedGifs; lado RedGifs: un hashtag o
   // un usuario de JoyReactor). Mientras escribes se busca en el sitio que toca.
   function openRgLink(kind, name) {
@@ -705,14 +741,15 @@
     const input = h('input', { class: 'input', type: 'search', value: linked || name, placeholder: isTag ? 'Nombre del hashtag' : 'Nombre de la cuenta', 'aria-label': title, autocomplete: 'off', enterkeyhint: 'search' });
     const results = h('div', { class: 'results' });
     const done = (other) => {
-      // En la página de un usuario la pestaña no va en la dirección: si estabas en RedGifs, sigues ahí.
-      const onRgTab = kind === 'user' && current && current.feed && current.feed.show === 'rg';
+      // En la página de un usuario o de un perfil de RedGifs la pestaña no va en la dirección: si estabas en la
+      // pestaña RedGifs (o JoyReactor), sigues ahí.
+      const tab = kind !== 'tag' && current && current.feed && current.feed.show !== 'all' ? current.feed.show : null;
       closeSheet();
       if (toRg) setRgLink(kind, name, other);
       else setRgLink(kind === 'rgtag' ? 'tag' : 'user', other, name);
       toast(other ? 'Unido: ' + (isTag ? '#' : '@') + name + ' y ' + (isTag ? '#' : '@') + other : 'Quitaste la unión');
       route();
-      if (onRgTab && current && current.feed) current.feed.setShow('rg');
+      if (tab && current && current.feed) current.feed.setShow(tab);
     };
     const row = (text, sub, pic) =>
       h('button', { type: 'button', class: 'sheet-row', onclick: () => done(text) }, pic || icon(isTag ? 'hash' : 'user', 22), h('span', { class: 'grow' }, h('span', { class: 'sr-l', text: (isTag ? '#' : '@') + text }), sub ? h('span', { class: 'sr-s', text: sub }) : null));
@@ -848,23 +885,50 @@
         drawHero();
       })
       .catch(() => {});
+    // Como cuenta (1.13.0), las pestañas de JoyReactor: Todos, Videos y GIF, JoyReactor (el hashtag que uniste;
+    // con Mezclar entra en Todos), Favoritos y barajar; y la lupa para buscar en sus posts.
+    const jrTag = jrTagFor(name);
+    const mixed = (f) => account && f.show === 'all' && !!jrTag && rgMixOn('rgtag', name);
     const f = cached(key, () =>
       new Feed({
         key,
-        kind: 'pager',
-        rgPlan: () => ({ q: { tags: name, order: random ? 'trending' : 'latest', random }, only: true, always: true }),
+        kind: account && random ? 'random' : 'pager',
+        tag: account ? jrTag : null,
+        type: 'ALL',
+        rgPlan: (f) =>
+          f.show === 'fav'
+            ? null
+            : f.show === 'jr'
+              ? jrTag ? null : { q: null, only: true }
+              : { q: { tags: [name].concat(findTags(f) || []), order: random ? 'trending' : 'latest', random }, only: !mixed(f), mix: mixed(f), always: true },
+        findKey: account ? 'rgtag:' + tkey(name) : null,
+        findBase: () => (jrTag ? { tag: jrTag } : null),
+        favList: () => likedRg('rgtag', name),
+        favName: '#' + name,
         mode: account ? 'grid' : 'feed',
         back: true,
-        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), viewToggle(f)],
+        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), account ? findBtn(f) : null, viewToggle(f)],
         extra: () => hero,
-        sub: () =>
+        sub: (f) =>
           account
-            ? h('div', { class: 'ptabs', role: 'tablist', 'aria-label': 'Orden' },
-                h('button', { class: 'ptab' + (random ? '' : ' on'), role: 'tab', 'aria-selected': String(!random), onclick: () => random && navReplace('#/rgtag/' + enc(name)) }, icon('grid', 20), 'Lo nuevo'),
-                h('button', { class: 'ptab shuf' + (random ? ' on' : ''), 'aria-pressed': String(random), 'aria-label': 'Barajar los posts', onclick: () => !random && navReplace('#/rgtag/' + enc(name) + '?order=random') }, icon('shuffle', 20))
-              )
+            ? rgProfileTabs(f, 'rgtag', name,
+                h('button', {
+                  class: 'ptab shuf' + (random ? ' on' : ''),
+                  'aria-pressed': String(random),
+                  'aria-label': random ? 'Volver al orden normal' : 'Barajar los posts',
+                  onclick: () => navReplace('#/rgtag/' + enc(name) + (random ? '' : '?order=random'))
+                }, icon('shuffle', 20)))
             : null,
-        empty: () => emptyBox('hash', 'No encontré posts', 'Puede que RedGifs no responda o que esta etiqueta no tenga posts.')
+        empty: (f) =>
+          f.show === 'jr'
+            ? jrTag
+              ? emptyBox('hash', 'Sin posts en JoyReactor', '#' + jrTag + ' no tiene posts aquí.')
+              : emptyBox('hash', 'Todavía no está unida con JoyReactor', 'Toca «Unir» arriba y elige un hashtag de JoyReactor: sus posts saldrán aquí.')
+            : f.show === 'fav'
+              ? emptyBox('heart', 'Todavía no hay favoritos', 'Aquí salen los posts de #' + name + ' que te gustaron.')
+              : f.show === 'anim'
+                ? emptyBox('film', 'Sin videos ni GIF', '#' + name + ' no tiene videos ni GIF.')
+                : emptyBox('hash', 'No encontré posts', 'Puede que RedGifs no responda o que esta etiqueta no tenga posts.')
       })
     );
     f.renderExtra = () => hero; // el feed guardado muestra la cabecera de esta vez (foto, Seguir…)
@@ -942,17 +1006,41 @@
         drawHero();
       })
       .catch(() => {});
+    // Pestañas como las de JoyReactor (1.13.0, lo pidió el usuario): Todos, Videos y GIF, JoyReactor (el usuario
+    // que uniste; con Mezclar entra en Todos) y Favoritos (tus me gusta); y la lupa para buscar en sus posts.
+    const jrUser = jrUserFor(name);
+    const mixed = (f) => f.show === 'all' && !!jrUser && rgMixOn('rguser', name);
     const f = cached(key, () =>
       new Feed({
         key,
         kind: 'pager',
-        rgPlan: () => ({ q: { user: name, order: 'latest' }, only: true, always: true }),
-        hideFresh: () => isRgFollowed(name),
+        user: jrUser,
+        rgPlan: (f) =>
+          f.show === 'fav'
+            ? null
+            : f.show === 'jr'
+              ? jrUser ? null : { q: null, only: true }
+              : { q: { user: name, order: 'latest', tags: findTags(f) }, only: !mixed(f), mix: mixed(f), always: true },
+        hideFresh: (f) => isRgFollowed(name) && f.show !== 'fav',
+        findKey: 'rguser:' + rgKey(name),
+        findBase: () => (jrUser ? { username: jrUser } : null),
+        favList: () => likedRg('rguser', name),
+        favName: name,
         mode: 'grid',
         back: true,
-        head: (f) => [backBtn('/home'), h('h1', { text: name }), viewToggle(f)],
+        head: (f) => [backBtn('/home'), h('h1', { text: name }), findBtn(f), viewToggle(f)],
         extra: () => hero,
-        empty: () => emptyBox('user', 'No encontré posts', 'Puede que RedGifs no responda o que este creador no tenga posts.')
+        sub: (f) => rgProfileTabs(f, 'rguser', name),
+        empty: (f) =>
+          f.show === 'jr'
+            ? jrUser
+              ? emptyBox('user', 'Sin posts en JoyReactor', '@' + jrUser + ' todavía no publicó nada.')
+              : emptyBox('user', 'Todavía no está unida con JoyReactor', 'Toca «Unir» arriba y elige su cuenta de JoyReactor: sus posts saldrán aquí.')
+            : f.show === 'fav'
+              ? emptyBox('heart', 'Todavía no hay favoritos', 'Aquí salen los posts de ' + name + ' que te gustaron.')
+              : f.show === 'anim'
+                ? emptyBox('film', 'Sin videos ni GIF', name + ' no publicó videos ni GIF.')
+                : emptyBox('user', 'No encontré posts', 'Puede que RedGifs no responda o que este creador no tenga posts.')
       })
     );
     f.renderExtra = () => hero; // el feed guardado muestra la cabecera de esta vez (foto, Seguir…)
@@ -1159,7 +1247,7 @@
   const previews = new Map(); // URL -> promesa de la URL del pedazo (o la misma URL, si no se cortó)
   function previewSrc(url) {
     if (!previews.has(url)) {
-      previews.set(url, cutPreview(url).then((u) => u || url, () => url));
+      previews.set(url, cutMp4(url, PREVIEW_S).then((b) => (b ? URL.createObjectURL(b) : url), () => url));
       // Quedan los últimos 8; los demás se sueltan un rato después.
       if (previews.size > 8) {
         const [old, pr] = previews.entries().next().value;
@@ -1212,7 +1300,12 @@
     };
     walk(8, u8.length);
   }
-  async function cutPreview(url) {
+  // secs: cuántos segundos dejar. Devuelve el pedazo (un Blob) o null si conviene el archivo entero.
+  // opts.wholeMax: un archivo corto que pesa hasta eso se devuelve entero; opts.maxBytes: si el pedazo pesa
+  // más, null sin bajarlo (los GIF del intro).
+  async function cutMp4(url, secs, opts) {
+    const wholeMax = (opts && opts.wholeMax) || 0;
+    const maxBytes = (opts && opts.maxBytes) || 0;
     const src = RS.sameOrigin(url);
     const get = async (from, to) => {
       const r = await fetch(src, { headers: { Range: 'bytes=' + from + '-' + to } });
@@ -1268,15 +1361,19 @@
     }
     if (!moov || !mdat) return null;
     const dur = moovDuration(moov);
-    if (!(dur > PREVIEW_S + 2)) return null;
     const data = mdat.size - mdat.hdr;
-    const keep = Math.min(data, Math.ceil((data * (PREVIEW_S + 1.5)) / dur) + 131072);
-    if (keep > data * 0.8) return null;
+    const keep = Math.min(data, Math.ceil((data * (secs + 1.5)) / dur) + 131072);
+    if (!(dur > secs + 2) || keep > data * 0.8) {
+      if (!wholeMax || total > wholeMax) return null;
+      await grow(total);
+      return new Blob([head], { type: 'video/mp4' });
+    }
     const end = mdat.at + mdat.hdr + keep;
+    if (maxBytes && end + (moovAt < mdat.at ? 0 : moov.length) > maxBytes) return null;
     await grow(end);
-    if (moovAt < mdat.at) return URL.createObjectURL(new Blob([head.subarray(0, end)], { type: 'video/mp4' }));
+    if (moovAt < mdat.at) return new Blob([head.subarray(0, end)], { type: 'video/mp4' });
     shiftChunks(moov, moov.length);
-    return URL.createObjectURL(new Blob([head.subarray(0, mdat.at), moov, head.subarray(mdat.at, end)], { type: 'video/mp4' }));
+    return new Blob([head.subarray(0, mdat.at), moov, head.subarray(mdat.at, end)], { type: 'video/mp4' });
   }
 
   function makeVideo(m, thumb) {
@@ -1610,13 +1707,14 @@
     return { track, counter, dots };
   }
 
-  // Una imagen ocupa todo el espacio; varias van en carrusel (se deslizan hacia los lados).
+  // Una imagen ocupa todo el espacio; varias van en carrusel (se deslizan hacia los lados). Arriba a la
+  // derecha, de dónde es (JR o RG; lo pidió el usuario en la 1.13.0: antes iba al lado del nombre).
   function buildMedia(p, feed) {
     const ms = p.media;
     if (!ms.length) return null;
-    if (ms.length === 1) return h('div', { class: 'media single' }, slide(ms[0], p, 0, feed));
+    if (ms.length === 1) return h('div', { class: 'media single' }, slide(ms[0], p, 0, feed), srcBadge(p, 'msrc'));
     const c = carousel(ms.map((m, i) => slide(m, p, i, feed)));
-    const el = h('div', { class: 'media carousel' }, c.track, c.counter);
+    const el = h('div', { class: 'media carousel' }, c.track, c.counter, srcBadge(p, 'msrc'));
     el._dots = c.dots;
     return el;
   }
@@ -3004,9 +3102,9 @@
         p.user
           ? h('a', { class: 'who-link', href: (RS.isRg(p) ? '#/rguser/' : '#/user/') + enc(p.user), 'aria-label': 'Ver todos los posts de ' + p.user },
               avatar(p),
-              h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: p.user }), srcBadge(p), repChip(p)), h('span', { class: 'when', text: ago(p.time) }))
+              h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: p.user }), repChip(p)), h('span', { class: 'when', text: ago(p.time) }))
             )
-          : [avatar(p), h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: 'anónimo' }), srcBadge(p)), h('span', { class: 'when', text: ago(p.time) }))],
+          : [avatar(p), h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: 'anónimo' })), h('span', { class: 'when', text: ago(p.time) }))],
         followInline(p),
         h('span', { class: 'grow' }),
         RS.isRg(p) ? null : h('span', { class: 'rating' + (p.rating < 0 ? ' neg' : ''), title: 'Rating en JoyReactor' }, icon('up', 14), String(p.rating).replace('.', ','))
@@ -3401,7 +3499,6 @@
               }
             }, RS.isRg(p) ? rgPic(p.user, p.rgAvatar, 'vw-av') : userPic(p.user, p.userId, 'vw-av'), p.user)
           : h('strong', { text: 'anónimo' }),
-        srcBadge(p),
         followInline(p, 'fol-inline vw-fol'),
         // Estrellas del autor y rating del post: solo si se activan en Ajustes.
         p.user ? h('span', { class: 'vw-score' }, repChip(p, 'media')) : null,
@@ -3411,7 +3508,8 @@
       p.tags.length ? tagsRow(p, (t) => closeViewerThen(() => nav((RS.isRg(p) ? '#/rgtag/' : '#/tag/') + enc(t))), 'vw-tags') : null
     );
 
-    fill(page, media, side, info);
+    // De dónde es, arriba a la derecha (1.13.0, lo pidió el usuario: abajo había que bajar la vista).
+    fill(page, media, side, info, srcBadge(p, 'vw-srcb'));
     page._dots = null;
     page.dataset.filled = '1';
     page._videos = videos;
@@ -4045,6 +4143,17 @@
       // hideFresh() verdadero: los posts de las últimas 24 h no salen, todavía son historia (1.11.0: Inicio y
       // el perfil de un creador de RedGifs que sigues).
       this.hideFresh = o.hideFresh || null;
+      // Buscar dentro de un perfil (1.13.0, la lupa de la cabecera; ver findPanel): find = { open, q, tags,
+      // draft }, compartido por las pestañas del mismo perfil (findKey). findBase(feed): { username } o
+      // { tag } de JoyReactor (o null); RedGifs filtra con su rgPlan (findTags). favList(): tus me gusta de
+      // este perfil (pestaña Favoritos; favName, para decirlo al final).
+      this.findKey = o.findKey || null;
+      this.find = o.findKey ? findState(o.findKey) : null;
+      this.findBase = o.findBase || null;
+      this.findSrc = null;
+      this.findUi = null;
+      this.favList = o.favList || null;
+      this.favName = o.favName || '';
       this.rgSrcs = null;
       this.rgQueue = []; // posts de RedGifs que esperan para mezclarse (ver add)
       this.rgTurn = 0;
@@ -4115,6 +4224,7 @@
         // Ya no hace falta el alto mínimo de setShow: si la pestaña está vacía, el aviso queda a la vista.
         this.list.style.minHeight = '';
         if (this.items.length) fill(s, h('span', { text: this.endText || 'No hay más posts.' }));
+        else if (this.findActive()) fill(s, emptyBox('search', 'Nada con ' + findWhat(this.find), 'Prueba con otro hashtag o quita uno tocando su ficha.'));
         else if (this.junk || (this.scan && this.scan.skipped)) fill(s, emptyBox('ban', 'No hay nada para ver aquí', 'JoyReactor retiró estos posts por derechos de autor.'));
         else fill(s, this.renderEmpty ? this.renderEmpty(this) : emptyBox('hash', 'No hay posts aquí', this.endText));
       } else fill(s);
@@ -4137,6 +4247,7 @@
       }
       this.loading = false;
       if (this.pendingAnchor && this.root.isConnected && this.scrollToPost(this.pendingAnchor)) this.pendingAnchor = null;
+      if (this.findUi) this.findUi.update();
       // La cabecera descuenta los posts retirados que se van encontrando.
       if (this.hero && this.hero._redraw && this.scan && this.scan.changed) {
         this.scan.changed = false;
@@ -4204,6 +4315,7 @@
       try {
         for (const post of await src.more()) {
           if (this.ids.has(post.id) || S.dislikes[post.id] || (this.kinds.length && !RS.matchesKinds(post, this.kinds)) || (this.show === 'anim' && !RS.isAnimated(post))) continue;
+          if (!findTextOk(this, post)) continue;
           // Buscar (1.11.0): de RedGifs solo videos de creadores, verticales y con sonido (no GIF sueltos).
           if (src.q.creators && !RS.isCreatorVideo(post)) continue;
           this.rgQueue.push({ post });
@@ -4218,6 +4330,40 @@
     }
 
     async fetchMain() {
+      if (this.show === 'fav' && this.favList) {
+        // Favoritos: los posts de este perfil que te gustaron (JoyReactor no deja ver los favoritos de otras
+        // personas), filtrados por la búsqueda si la hay.
+        const liked = this.favList().filter((x) => findMatch(this, x.post));
+        const chunk = liked.slice(this.cursor, this.cursor + 30);
+        this.cursor += chunk.length;
+        if (this.cursor >= liked.length) {
+          this.done = true;
+          this.endText = this.findActive()
+            ? (liked.length === 1 ? 'Es el único de tus me gusta con ' : 'Son los ' + liked.length + ' de tus me gusta con ') + findWhat(this.find) + '.'
+            : liked.length === 1 ? 'Es el único post de ' + this.favName + ' que te gustó.' : 'Son los ' + liked.length + ' posts de ' + this.favName + ' que te gustaron.';
+        }
+        return this.add(chunk.map((x) => ({ post: x.post })));
+      }
+      const base = this.kind !== 'static' && this.findActive() && this.findBase && this.findBase(this);
+      if (base) {
+        // Buscar dentro del perfil (1.13.0): sus posts con esos hashtags o ese texto (RS.createSearchSource).
+        if (!this.findSrc) this.findSrc = RS.createSearchSource({ username: base.username, tags: (base.tag ? [base.tag] : []).concat(this.find.tags), query: this.find.q });
+        const src = this.findSrc;
+        if (this.cursor >= src.posts.length && !src.done) await src.more(this.dry ? 4 : 2);
+        const anim = this.show === 'anim' || this.kinds.length;
+        const out = [];
+        while (this.cursor < src.posts.length && out.length < 30) {
+          const post = src.posts[this.cursor++];
+          if (!anim || RS.isAnimated(post)) out.push({ post });
+        }
+        if (src.done && this.cursor >= src.posts.length) {
+          this.done = true;
+          this.endText = src.count >= 1000 ? 'JoyReactor muestra hasta 1000 posts por búsqueda: ya los viste.' : 'No hay más posts con ' + findWhat(this.find) + '.';
+        }
+        const n = this.add(out);
+        this.dry = !n;
+        return n;
+      }
       if (this.kind === 'pager' && this.kinds.length) {
         // Videos y GIF de un hashtag: se recorren sus páginas (de a 6 por consulta) y quedan los posts
         // que traen un GIF o un video, tengan o no la etiqueta #gif o #video (ver RS.createTagSource).
@@ -4242,17 +4388,6 @@
         this.scanned = src.seen;
         if (!n && !this.done && this.sinceHit >= 1500) this.held = true;
         return n;
-      }
-      if (this.kind === 'pager' && this.user && this.show === 'fav') {
-        // Favoritos: los posts de este usuario que te gustaron (JoyReactor no deja ver los favoritos de otras personas).
-        const liked = likedFrom(this.user);
-        const chunk = liked.slice(this.cursor, this.cursor + 30);
-        this.cursor += chunk.length;
-        if (this.cursor >= liked.length) {
-          this.done = true;
-          this.endText = liked.length === 1 ? 'Es el único post de ' + this.user + ' que te gustó.' : 'Son los ' + liked.length + ' posts de ' + this.user + ' que te gustaron.';
-        }
-        return this.add(chunk.map((x) => ({ post: x.post })));
       }
       if (this.kind === 'pager' && this.user) {
         // Las pestañas filtran la misma lista de posts; si una pestaña tiene pocos, se piden varias páginas a la vez.
@@ -4358,16 +4493,18 @@
         }
         return n;
       }
+      const all = this.findActive() ? this.staticItems.filter((x) => findMatch(this, x.post)) : this.staticItems;
       let end = this.cursor + 15;
       if (this.pendingAnchor) {
-        const idx = this.staticItems.findIndex((x) => x.post.id === this.pendingAnchor);
+        const idx = all.findIndex((x) => x.post.id === this.pendingAnchor);
         if (idx >= end) end = idx + 4;
       }
-      const chunk = this.staticItems.slice(this.cursor, end);
+      const chunk = all.slice(this.cursor, end);
       this.cursor += chunk.length;
-      if (this.cursor >= this.staticItems.length) {
+      if (this.cursor >= all.length) {
         this.done = true;
-        if (this.doneText) this.endText = this.doneText(this.staticItems.length);
+        if (this.findActive()) this.endText = (all.length === 1 ? 'Es el único de tus me gusta con ' : 'Son los ' + all.length + ' de tus me gusta con ') + findWhat(this.find) + '.';
+        else if (this.doneText) this.endText = this.doneText(all.length);
       }
       return this.add(chunk);
     }
@@ -4393,7 +4530,7 @@
           continue;
         }
         if (this.kind === 'static' ? !!S.dislikes[p.id] : !pass(p)) continue;
-        if (this.hideFresh && p.time && Date.now() - p.time < STORY_WINDOW && this.hideFresh()) continue;
+        if (this.hideFresh && p.time && Date.now() - p.time < STORY_WINDOW && this.hideFresh(this)) continue;
         this.ids.add(p.id);
         this.items.push(it);
         frag.append(this.mode === 'grid' ? buildThumb(it, this) : buildCard(it, this));
@@ -4439,19 +4576,21 @@
       this.checkMore();
     }
 
-    // Cambia de pestaña en el perfil: se vuelve a filtrar lo que ya se cargó, sin pedirlo otra vez.
-    setShow(show) {
-      if (show === this.show) return;
+    // Vacía la lista para volver a llenarla (otra pestaña u otra búsqueda). Lo ya bajado de sus posts queda.
+    resetList() {
       // Si ya bajaste más allá de las pestañas, quedan arriba; si no, la página no se mueve.
       const tabsY = this.extraEl.getBoundingClientRect().bottom + window.scrollY - this.headEl.offsetHeight;
       pauseIn(this.list);
-      this.show = show;
       this.items = [];
       this.ids.clear();
       this.cursor = 0;
+      this.next = null;
       this.done = false;
       this.failed = false;
+      this.held = false;
+      this.dry = false;
       this.junk = 0;
+      this.emptyStreak = 0;
       this.backToGrid = false;
       this.rgSrcs = null;
       this.rgQueue = [];
@@ -4459,8 +4598,32 @@
       fill(this.list);
       // Alto mínimo para que, mientras carga, la página no se encoja y las pestañas sigan arriba.
       this.list.style.minHeight = '100vh';
-      fill(this.subEl, ...[].concat(this.renderSub ? this.renderSub(this) : []));
       if (window.scrollY > tabsY) window.scrollTo(0, tabsY);
+    }
+
+    // Cambia de pestaña en el perfil: se vuelve a filtrar lo que ya se cargó, sin pedirlo otra vez.
+    setShow(show) {
+      if (show === this.show) return;
+      this.show = show;
+      this.resetList();
+      fill(this.subEl, ...[].concat(this.renderSub ? this.renderSub(this) : []));
+      this.loadMore();
+    }
+
+    findActive() {
+      return !!(this.find && (this.find.q || this.find.tags.length));
+    }
+    // Otra búsqueda dentro del perfil. Las demás pestañas guardadas de este perfil se rehacen al volver a ellas.
+    setFind(patch) {
+      Object.assign(this.find, patch);
+      for (const [k, g] of feeds) {
+        if (g === this || g.findKey !== this.findKey) continue;
+        g.destroy();
+        feeds.delete(k);
+      }
+      this.findSrc = null;
+      this.resetList();
+      if (this.findUi) this.findUi.update();
       this.loadMore();
     }
 
@@ -5480,16 +5643,19 @@
         kinds,
         // RedGifs: la pestaña RedGifs muestra su etiqueta (la de mismo nombre o la que uniste), al azar o, en
         // una cuenta en orden, lo más nuevo. En Todos entra solo si es una cuenta y elegiste mezclar.
-        rgPlan: () =>
+        rgPlan: (f) =>
           tab === 'fav'
             ? null
-            : { q: { tags: rgTagFor(name), order: profile && !random ? 'latest' : 'trending', random: !profile || random }, only: tab === 'rg', mix: profile && rgMixOn('tag', name) },
+            : { q: { tags: [rgTagFor(name)].concat(findTags(f) || []), order: profile && !random ? 'latest' : 'trending', random: !profile || random }, only: tab === 'rg', mix: profile && rgMixOn('tag', name) },
         items: tab === 'fav' ? favItems() : [],
         reload: tab === 'fav' ? favItems : null,
         doneText: (n) => (n === 1 ? 'Es el único post de #' + name + ' que te gustó.' : 'Son los ' + n + ' posts de #' + name + ' que te gustaron.'),
         mode: profile ? 'grid' : 'feed',
         back: true,
-        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), profile ? null : viewToggle(f)],
+        // Buscar dentro de la cuenta (1.13.0): sus posts con otros hashtags o un texto.
+        findKey: profile ? 'tag:' + tkey(name) : null,
+        findBase: () => ({ tag: name }),
+        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), profile ? findBtn(f) : viewToggle(f)],
         extra: (f) => {
           // Bloquear #gif (o #video…) esconde casi todos los GIF y videos: se avisa arriba.
           const blocked = fmtBlocked();
@@ -5503,7 +5669,10 @@
           f.hero = tagHero(name, () => f.total);
           return [f.hero, warn];
         },
-        sub: () => [tagTabs(tab, profile, random, url), tab === 'rg' ? rgLinkBar('tag', name, profile) : null],
+        sub: (f) => {
+          const tp = tagProfileOf(name);
+          return [tagTabs(tab, profile, random, url), tab === 'rg' ? rgLinkBar('tag', name, profile) : null, profile ? findPanel(f, false, [name].concat(tp ? [tp.name].concat(tp.aliases || []) : [])) : null];
+        },
         empty: () => {
           if (tab === 'fav') return emptyBox('heart', 'Todavía no hay favoritos', 'Aquí salen los posts de #' + name + ' que te gustaron.');
           if (tab === 'rg') return emptyBox('hash', 'RedGifs no tiene posts de #' + rgTagFor(name), 'Únelo con otra etiqueta de RedGifs: toca «Cambiar» arriba.');
@@ -5668,6 +5837,144 @@
     return el;
   }
 
+  // ---- Buscar dentro de un perfil (1.13.0, lo pidió el usuario; eligió la lupa en la cabecera). La lupa abre,
+  // bajo las pestañas, una barra para escribir y fichas con los hashtags que más salen en sus posts; tocar una
+  // ficha filtra y se pueden juntar varias. En JoyReactor lo escrito se busca en el texto y en los hashtags
+  // (RS.createSearchSource, con username o con el hashtag de la cuenta); en RedGifs solo se puede por
+  // etiquetas (tags= en su búsqueda): lo escrito filtra las fichas y Enter lo usa como etiqueta. Las pestañas
+  // de un perfil comparten la búsqueda (finds, por perfil); cerrar la lupa la borra.
+  const finds = new Map();
+  const findState = (key) => finds.get(key) || finds.set(key, { open: false, q: '', tags: [], draft: '' }).get(key);
+  const findTags = (f) => (f.find && f.find.tags.length ? f.find.tags.slice() : undefined);
+  const findWhat = (st) => [st.tags.map((t) => '#' + t).join(' y '), st.q ? '«' + st.q + '»' : ''].filter(Boolean).join(' y ');
+  function findTagsOk(f, p) {
+    if (!f.find || !f.find.tags.length) return true;
+    const tags = p.tags.map(tkey);
+    return f.find.tags.every((t) => tags.includes(tkey(t)));
+  }
+  function findTextOk(f, p) {
+    const q = f.find && tkey(f.find.q || '').trim();
+    return !q || tkey(p.text || '').includes(q) || p.tags.some((t) => tkey(t).includes(q));
+  }
+  const findMatch = (f, p) => findTagsOk(f, p) && findTextOk(f, p);
+  function findBtn(f) {
+    const on = !!(f.find && f.find.open);
+    return h('button', { class: 'ib' + (on ? ' active' : ''), 'aria-label': on ? 'Cerrar la búsqueda' : 'Buscar en este perfil', title: on ? 'Cerrar la búsqueda' : 'Buscar en este perfil', 'aria-pressed': String(on), onclick: () => toggleFind(f) }, icon('search', 22));
+  }
+  function toggleFind(f) {
+    const st = f.find;
+    st.open = !st.open;
+    st.draft = '';
+    f.findUi = null;
+    if (!st.open && f.findActive()) f.setFind({ q: '', tags: [] });
+    f.refreshHead();
+    fill(f.subEl, ...[].concat(f.renderSub ? f.renderSub(f) : []));
+    if (st.open && f.findUi) f.findUi.input.focus();
+  }
+  // La barra (se arma una vez por feed y se vuelve a usar al redibujar las pestañas). tagsOnly: RedGifs.
+  // exclude: el propio hashtag de la cuenta (y sus sinónimos), que no sirve como ficha.
+  function findPanel(f, tagsOnly, exclude) {
+    if (!f.find || !f.find.open) return null;
+    if (f.findUi) return f.findUi.el;
+    const st = f.find;
+    const skip = new Set((exclude || []).map(tkey));
+    const input = h('input', { class: 'input pfind-input', type: 'search', value: st.draft || st.q || '', placeholder: tagsOnly ? 'Busca un hashtag de sus posts' : 'Buscar en sus posts', 'aria-label': tagsOnly ? 'Buscar un hashtag de sus posts' : 'Buscar en sus posts', autocomplete: 'off', enterkeyhint: 'search' });
+    const chips = h('div', { class: 'pfind-chips' });
+    const countEl = h('p', { class: 'pfind-count' });
+    // Los hashtags de sus posts, de todos los que fueron cargando: lo más específico de cada post (leafTags),
+    // sin los de formato. Para saber qué es lo más específico hace falta el árbol: se pide una vez y, al
+    // llegar, las fichas se vuelven a armar.
+    let pool = new Map();
+    const posts = new Map();
+    let asked = false;
+    const learn = () => {
+      for (const it of f.items) posts.set(it.post.id, it.post);
+      const counts = new Map();
+      const unknown = [];
+      for (const p of posts.values()) {
+        if (!RS.isRg(p)) for (const t of p.tags) if (!RS.isFormatTag(t) && !knownTree(t)) unknown.push(t);
+        for (const t of RS.isRg(p) ? p.tags : leafTags(p.tags).map((x) => x.name)) {
+          const k = tkey(t);
+          if (skip.has(k) || RS.isFormatTag(t)) continue;
+          const c = counts.get(k) || { name: t, n: 0 };
+          c.n++;
+          counts.set(k, c);
+        }
+      }
+      pool = counts;
+      if (unknown.length && !asked) {
+        asked = true;
+        needTree(unknown);
+        setTimeout(() => f.findUi && f.findUi.el === el && f.findUi.update(), 2500);
+      }
+    };
+    const clean = (t) => String(t || '').trim().replace(/^#/, '');
+    // Tocar una ficha la suma. Si lo escrito era para encontrarla, se borra.
+    const pick = (t) => {
+      const typed = clean(input.value);
+      const fromTyped = typed && tkey(t).includes(tkey(typed));
+      st.draft = '';
+      if (fromTyped) input.value = '';
+      f.setFind({ tags: st.tags.concat(t), q: fromTyped && !tagsOnly ? '' : st.q });
+    };
+    const drawChips = () => {
+      learn();
+      const typed = tkey(clean(st.draft));
+      const on = new Set(st.tags.map(tkey));
+      const list = [...pool.values()].filter((x) => !on.has(tkey(x.name)) && (!typed || tkey(x.name).includes(typed))).sort((a, b) => b.n - a.n).slice(0, 24);
+      // En RedGifs, lo escrito tal cual, como etiqueta (aunque no salga en lo cargado).
+      const raw = clean(st.draft);
+      const exact = tagsOnly && raw && !pool.has(tkey(raw)) && !on.has(tkey(raw)) ? raw : null;
+      fill(chips,
+        st.tags.map((t) => h('button', { type: 'button', class: 'xchip cross', 'aria-label': 'Quitar #' + t, onclick: () => f.setFind({ tags: st.tags.filter((x) => x !== t) }) }, '#' + t, icon('x', 16))),
+        exact ? h('button', { type: 'button', class: 'pchip', onclick: () => pick(exact) }, '#' + exact) : null,
+        list.map((x) => h('button', { type: 'button', class: 'pchip', onclick: () => pick(x.name) }, '#' + x.name)),
+        !list.length && !exact && !st.tags.length ? h('span', { class: 'pfind-none', text: typed ? 'Ningún hashtag de sus posts se llama así' : 'Sus hashtags salen aquí cuando cargan sus posts' }) : null
+      );
+    };
+    const count = () => {
+      if (!f.findActive()) return fill(countEl, tagsOnly ? 'Toca un hashtag (o escríbelo) para ver solo esos posts.' : 'Escribe algo o toca un hashtag para filtrar sus posts.');
+      const what = findWhat(st);
+      if (f.show === 'fav' || f.kind === 'static') {
+        if (!f.done) return fill(countEl, 'Buscando…');
+        const n = f.items.length;
+        return fill(countEl, (n ? (n === 1 ? '1 de tus me gusta' : n + ' de tus me gusta') : 'Ninguno de tus me gusta') + ' con ' + what);
+      }
+      const jr = f.findSrc ? f.findSrc.count : null;
+      const rg = f.rgSrcs && f.rgSrcs[0] ? f.rgSrcs[0].total : null;
+      if (jr == null && rg == null) return fill(countEl, f.loading ? 'Buscando…' : '');
+      // JoyReactor cuenta hasta 1000; RedGifs da el número exacto.
+      const n = (jr || 0) + (rg || 0);
+      fill(countEl, (jr >= 1000 ? 'Más de ' + fmt(n) + ' posts' : n === 1 ? 'Un post' : n ? fmt(n) + ' posts' : 'Ningún post') + ' con ' + what + (n && (f.show === 'anim' || f.kinds.length) ? ' (aquí, solo los videos y GIF)' : ''));
+    };
+    let timer = null;
+    const applyQ = () => {
+      clearTimeout(timer);
+      const q = clean(input.value);
+      if (!tagsOnly && q !== st.q) f.setFind({ q });
+    };
+    input.addEventListener('input', () => {
+      st.draft = input.value;
+      drawChips();
+      if (!tagsOnly) {
+        clearTimeout(timer);
+        timer = setTimeout(applyQ, 700);
+      }
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      input.blur(); // esconde el teclado
+      if (!tagsOnly) return applyQ();
+      const t = clean(input.value);
+      if (t) pick(t);
+    });
+    const el = h('div', { class: 'pfind' }, h('label', { class: 'pfind-bar' }, icon('search', 18), input), chips, countEl);
+    f.findUi = { el, input, update: () => (drawChips(), count()) };
+    f.findUi.update();
+    return el;
+  }
+
   // Pestañas del perfil, como en Instagram: todos sus posts, solo videos y GIF, y tus favoritos de él.
   function profileTabs(f) {
     const tab = (show, ic, label) =>
@@ -5679,7 +5986,8 @@
         : null;
     return [
       h('div', { class: 'ptabs', role: 'tablist', 'aria-label': 'Qué posts ver' }, tab('all', 'grid', 'Todos'), tab('anim', 'film', 'Videos y GIF'), rg, tab('fav', 'heart', 'Favoritos')),
-      f.show === 'rg' ? rgLinkBar('user', f.user, true) : null
+      f.show === 'rg' ? rgLinkBar('user', f.user, true) : null,
+      findPanel(f, false)
     ];
   }
 
@@ -5703,8 +6011,12 @@
         mode: 'grid',
         back: true,
         // RedGifs: la pestaña RedGifs (el creador que uniste) y, si lo elegiste, mezclado en Todos.
-        rgPlan: (f) => (f.show === 'fav' ? null : { q: rgUserFor(name) ? { user: rgUserFor(name), order: 'latest' } : null, only: f.show === 'rg', mix: rgMixOn('user', name) }),
-        head: () => [backBtn('/home'), h('h1', { text: '@' + name })],
+        rgPlan: (f) => (f.show === 'fav' ? null : { q: rgUserFor(name) ? { user: rgUserFor(name), order: 'latest', tags: findTags(f) } : null, only: f.show === 'rg', mix: rgMixOn('user', name) }),
+        findKey: 'user:' + name.toLowerCase(),
+        findBase: () => ({ username: name }),
+        favList: () => likedFrom(name),
+        favName: name,
+        head: (f) => [backBtn('/home'), h('h1', { text: '@' + name }), findBtn(f)],
         extra: () => {
           hero._redraw();
           return [hero];
@@ -8534,10 +8846,19 @@
   // Desde la 1.12.0 (lo pidió el usuario) las miniaturas ya están en el teléfono al abrir: cacheIntro las
   // guarda en RS.localDb ('intro:<id>', recortadas a 3:4) después de abrir y al cambiar los me gusta, y
   // loadLocal las lee antes del intro. Si falta alguna, esa se pide a JoyReactor como antes.
+  // Desde la 1.13.0 (lo pidió el usuario) hasta INTRO_CLIPS de esos me gusta, si son GIF o videos, se mueven:
+  // de cada uno se guarda solo el principio (INTRO_CLIP_S segundos, con cutMp4) en RS.localDb ('clip:<id>'),
+  // si pesa hasta CLIP_MAX; uno más pesado queda quieto (se anota { big: true } para no volver a probarlo) y
+  // se usa el siguiente. Lo que deja de estar entre los últimos me gusta se borra del teléfono.
   const INTRO_MS = 1500;
   const INTRO_TILES = 15;
+  const INTRO_CLIPS = 3;
+  const INTRO_CLIP_S = 1.5;
+  const CLIP_MAX = 1200000;
   let introEnd = null; // cierra el intro que está a la vista («atrás» de Android)
   const introThumbs = new Map(); // id del post -> URL de su miniatura guardada
+  const introClips = new Map(); // id del post -> URL de su GIF guardado (el principio)
+  const clipBig = new Set(); // los GIF que pesan demasiado para el intro
   const introPosts = () =>
     Object.values(S.likes)
       .sort((a, b) => b.at - a.at)
@@ -8554,7 +8875,22 @@
       const p = posts.length ? posts[i % posts.length] : null;
       const m = p ? p.media[0] : null;
       const src = m ? introThumbs.get(p.id) || (m.kind === 'video' ? RS.posterUrl(m) : RS.imageUrl(m)) : '';
-      tiles.push(h('i', { style: '--d:' + (i % 5) * 0.08 * k + 's' + (src ? ';background-image:url("' + src + '")' : '') }));
+      // Los GIF guardados se mueven (una vez cada uno, aunque el post se repita en el mosaico).
+      const clip = p && i < posts.length && introClips.get(p.id);
+      let vid = null;
+      if (clip) {
+        vid = document.createElement('video');
+        vid.muted = true;
+        vid.loop = true;
+        vid.playsInline = true;
+        vid.autoplay = true;
+        vid.setAttribute('muted', '');
+        vid.setAttribute('playsinline', '');
+        vid.src = clip;
+        vid.addEventListener('timeupdate', () => vid.currentTime >= INTRO_CLIP_S && (vid.currentTime = 0));
+        vid.play().catch(() => {});
+      }
+      tiles.push(h('i', { style: '--d:' + (i % 5) * 0.08 * k + 's' + (src ? ';background-image:url("' + src + '")' : '') }, vid));
     }
     let done = false;
     const el = h('div', { id: 'intro', 'aria-hidden': 'true', style: '--k:' + k, onclick: () => end() },
@@ -8565,9 +8901,13 @@
       if (done) return;
       done = true;
       if (introEnd === end) introEnd = null;
-      if (now) return el.remove();
+      const gone = () => {
+        el.querySelectorAll('video').forEach(stopVideo);
+        el.remove();
+      };
+      if (now) return gone();
       el.classList.add('out');
-      setTimeout(() => el.remove(), 350);
+      setTimeout(gone, 350);
     };
     introEnd = end;
     document.body.append(el);
@@ -8613,6 +8953,43 @@
           /* esa queda para la próxima; el intro la pide a JoyReactor */
         }
       }
+      // Los GIF que se mueven: los primeros INTRO_CLIPS que no pesan demasiado (el principio de cada uno, o
+      // entero si es corto y liviano).
+      const cands = posts.filter((p) => p.media[0].kind === 'video');
+      const inIntro = new Set(cands.map((p) => p.id));
+      const chosen = new Set();
+      for (const p of cands) {
+        if (chosen.size >= INTRO_CLIPS) break;
+        if (clipBig.has(p.id)) continue;
+        if (introClips.has(p.id)) {
+          chosen.add(p.id);
+          continue;
+        }
+        try {
+          const blob = await cutMp4(RS.videoUrl(p.media[0]), INTRO_CLIP_S, { wholeMax: CLIP_MAX, maxBytes: CLIP_MAX });
+          if (!blob) {
+            clipBig.add(p.id);
+            await RS.localDb.set('clip:' + p.id, { at: Date.now(), big: true });
+            continue;
+          }
+          await RS.localDb.set('clip:' + p.id, { at: Date.now(), blob });
+          introClips.set(p.id, URL.createObjectURL(blob));
+          chosen.add(p.id);
+        } catch (e) {
+          /* ese queda quieto; se intenta la próxima vez */
+        }
+      }
+      for (const [id, url] of Array.from(introClips)) {
+        if (chosen.has(id)) continue;
+        introClips.delete(id);
+        URL.revokeObjectURL(url);
+        RS.localDb.del('clip:' + id);
+      }
+      for (const id of Array.from(clipBig)) {
+        if (inIntro.has(id)) continue;
+        clipBig.delete(id);
+        RS.localDb.del('clip:' + id);
+      }
     } finally {
       introCaching = false;
     }
@@ -8623,9 +9000,13 @@
   const LOCAL_WAIT = 700;
   async function loadLocal() {
     try {
-      const [pics, intro] = await Promise.all([RS.localDb.entries('pic:'), RS.localDb.entries('intro:')]);
+      const [pics, intro, clips] = await Promise.all([RS.localDb.entries('pic:'), RS.localDb.entries('intro:'), RS.localDb.entries('clip:')]);
       for (const [k, v] of pics) if (v && v.blob) setSnap(k.slice(4), v.at, v.blob);
       for (const [k, v] of intro) if (v && v.blob) introThumbs.set(k.slice(6), URL.createObjectURL(v.blob));
+      for (const [k, v] of clips) {
+        if (v && v.blob) introClips.set(k.slice(5), URL.createObjectURL(v.blob));
+        else if (v && v.big) clipBig.add(k.slice(5));
+      }
     } catch (e) {
       /* sin IndexedDB: las fotos y el intro se ven como antes */
     }
