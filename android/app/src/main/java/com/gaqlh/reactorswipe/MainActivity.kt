@@ -10,6 +10,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.content.Context
+import android.provider.DocumentsContract
 import android.provider.Settings
 import android.view.ViewGroup
 import android.webkit.ValueCallback
@@ -54,7 +56,15 @@ class MainActivity : ComponentActivity() {
     private var fullscreen = false
     private var fileCallback: ValueCallback<Array<Uri>>? = null
 
-    private val pickFile = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+    // El único archivo que pide la interfaz es el respaldo: el selector se abre en Descargas/ReactorSwipe,
+    // donde lo escribe el respaldo automático (1.12.0).
+    private val pickFile = registerForActivityResult(object : ActivityResultContracts.OpenDocument() {
+        override fun createIntent(context: Context, input: Array<String>): Intent =
+            super.createIntent(context, input).putExtra(
+                DocumentsContract.EXTRA_INITIAL_URI,
+                DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:Download/ReactorSwipe")
+            )
+    }) { uri ->
         fileCallback?.onReceiveValue(if (uri != null) arrayOf(uri) else null)
         fileCallback = null
     }
@@ -112,6 +122,8 @@ class MainActivity : ComponentActivity() {
                 val url = request.url
                 // RedGifs (1.10.0): su API y sus archivos pasan por RedGifs.kt.
                 if (url.host == HOST && url.path.orEmpty().startsWith("/__rg/")) return RedGifs.intercept(applicationContext, request)
+                // Archivos de JoyReactor desde el mismo origen (1.12.0), para copiarlos a un canvas.
+                if (url.host == HOST && url.path.orEmpty().startsWith("/__jr/")) return JoyFiles.intercept(request)
                 return assets.shouldInterceptRequest(url)
             }
 
@@ -132,7 +144,7 @@ class MainActivity : ComponentActivity() {
                 fileCallback?.onReceiveValue(null)
                 fileCallback = callback
                 return try {
-                    pickFile.launch("*/*")
+                    pickFile.launch(arrayOf("*/*"))
                     true
                 } catch (e: Exception) {
                     fileCallback = null

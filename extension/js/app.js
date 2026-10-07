@@ -144,7 +144,7 @@
   }
 
   let toastTimer = null;
-  function toast(msg, actionLabel, action) {
+  function toast(msg, actionLabel, action, ms) {
     const t = document.getElementById('toast');
     fill(t,
       h('span', { text: msg }),
@@ -159,7 +159,7 @@
     );
     t.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.remove('show'), 3800);
+    toastTimer = setTimeout(() => t.classList.remove('show'), ms || 3800);
   }
 
   function buzz(ms) {
@@ -180,21 +180,24 @@
   let pass = () => true;
   const timers = {};
 
+  let restoring = false;
   function persist(key, delay) {
+    if (restoring) return;
     clearTimeout(timers[key]);
     timers[key] = setTimeout(() => {
       timers[key] = null;
       RS.save({ [key]: S[key] });
       if (key === 'favorites' || key === 'following' || key === 'tagProfiles' || key === 'settings' || key === 'mix') syncNative();
-      // Cambió algo que no se debe perder: el respaldo automático se pone al día en un rato.
-      if (BACKUP_KEYS.has(key)) {
-        clearTimeout(backupTimer);
-        backupTimer = setTimeout(() => autoBackup(false).catch(() => {}), 20000);
-      }
+      if (BACKUP_KEYS.has(key)) soonBackup();
     }, delay == null ? 250 : delay);
   }
   const BACKUP_KEYS = new Set(['likes', 'dislikes', 'favorites', 'following', 'tagProfiles', 'mix', 'pics', 'folders', 'rgFollowing', 'rgTags', 'rgLinks', 'rgMix']);
   let backupTimer = null;
+  // Cambió algo que no se debe perder: el respaldo automático se pone al día en un rato.
+  function soonBackup() {
+    clearTimeout(backupTimer);
+    backupTimer = setTimeout(() => autoBackup(false).catch(() => {}), 20000);
+  }
 
   // App de Android: los avisos los revisa Android en segundo plano, así que le paso qué vigilar
   // y cómo (hashtags y usuarios con campanita, ajustes y hashtags excluidos). Los hashtags que sigues
@@ -466,6 +469,7 @@
     if (on) S.likes[p.id] = S.likes[p.id] || { at: Date.now(), post: p };
     else delete S.likes[p.id];
     persist('likes');
+    soonIntroCache();
     // Lo que ya está en Favoritos no se repite en el Historial (y si lo estás mirando, sale en el acto).
     if (on && S.history.some((x) => x.id === p.id)) {
       S.history = S.history.filter((x) => x.id !== p.id);
@@ -967,6 +971,7 @@
   const loaded = new Set(); // en orden: el primero es el que hace más que no se ve
   function releaseVideo(v) {
     loaded.delete(v);
+    v._srcWanted = false;
     if (!v.getAttribute('src')) return;
     v.pause();
     v.removeAttribute('src');
@@ -974,7 +979,7 @@
   }
   const releaseIn = (root) => root.querySelectorAll('video').forEach(releaseVideo);
   function loadVideo(v) {
-    if (!v.getAttribute('src') && v.dataset.src) v.src = v.dataset.src;
+    setSrc(v);
     loaded.delete(v);
     loaded.add(v);
     for (const old of loaded) {
@@ -998,10 +1003,10 @@
     cards.forEach((c, i) => {
       const d = i - at;
       if (d < -VIDEO_BEHIND || d > VIDEO_AHEAD) {
-        c.querySelectorAll('video').forEach((v) => !v._thumb && releaseVideo(v));
+        c.querySelectorAll('video:not(.cpicv)').forEach((v) => !v._thumb && releaseVideo(v));
       } else if (d > 0) {
         // Del post que viene se precarga el primer video (en un carrusel, el que se ve al llegar).
-        const v = c.querySelector('video');
+        const v = c.querySelector('video:not(.cpicv)');
         if (v && !v._thumb && v.dataset.src) {
           v.preload = 'auto';
           v._near = true;
@@ -1034,10 +1039,12 @@
     { rootMargin: '900px 0px' }
   );
   // Al volver a mostrar una página guardada, sus videos se vuelven a vigilar desde cero (si no, el
-  // observador puede no avisar y el video a la vista no arranca).
+  // observador puede no avisar y el video a la vista no arranca). Las fotos propias (.cpicv) no: las
+  // maneja picIO, y una foto quieta sacada de un GIF se ponía a reproducir al entrar a un perfil (lo vio
+  // el usuario en la 1.11.1).
   function reviveVideos(root) {
     root.querySelectorAll('video').forEach((v) => {
-      if (!v.dataset.src) return;
+      if (!v.dataset.src || v.classList.contains('cpicv')) return;
       nearIO.unobserve(v);
       nearIO.observe(v);
       if (!v._thumb) {
@@ -1052,7 +1059,7 @@
       for (const e of entries) {
         const v = e.target;
         if (e.isIntersecting && e.intersectionRatio >= 0.6 && !viewer) {
-          if (!v.getAttribute('src') && v.dataset.src) v.src = v.dataset.src;
+          setSrc(v);
           if (!v._userPaused) v.play().catch(() => {});
         } else {
           v.pause();
@@ -1124,6 +1131,153 @@
     focusPost(card && card._post);
   }
   const pauseIn = (root) => root.querySelectorAll('video').forEach((v) => v.pause());
+
+  // Le pone a un video del feed su archivo (data-src). En Buscar (v._preview), solo sus primeros segundos
+  // (previewSrc): mientras se bajan no tiene nada, y si se llamó a play() arranca solo al llegar.
+  function setSrc(v) {
+    if (v.getAttribute('src') || !v.dataset.src) return;
+    v._srcWanted = true;
+    if (!v._preview) {
+      v.src = v.dataset.src;
+      return;
+    }
+    if (v._cutting) return;
+    v._cutting = true;
+    previewSrc(v.dataset.src).then((url) => {
+      v._cutting = false;
+      if (v._srcWanted && v.isConnected && !v.getAttribute('src')) v.src = url;
+    });
+  }
+
+  // ---- Vista previa de Buscar (1.12.0): de un mp4 se bajan solo el índice (moov) y el principio de los
+  // datos (mdat), lo que alcanza para unos PREVIEW_S segundos, y se reproduce desde el teléfono (blob:).
+  // Chrome lo reproduce hasta donde llega. Los de RedGifs traen el índice adelante; los de JoyReactor, al
+  // final: se pone adelante corriendo los lugares de los datos (stco, co64), como qt-faststart. Si algo no
+  // es como se espera, se usa el archivo entero (y si el pedazo no se puede reproducir, retryOnError
+  // vuelve al entero).
+  const PROBE = 65536;
+  const previews = new Map(); // URL -> promesa de la URL del pedazo (o la misma URL, si no se cortó)
+  function previewSrc(url) {
+    if (!previews.has(url)) {
+      previews.set(url, cutPreview(url).then((u) => u || url, () => url));
+      // Quedan los últimos 8; los demás se sueltan un rato después.
+      if (previews.size > 8) {
+        const [old, pr] = previews.entries().next().value;
+        previews.delete(old);
+        pr.then((u) => u.startsWith('blob:') && setTimeout(() => URL.revokeObjectURL(u), 60000));
+      }
+    }
+    return previews.get(url);
+  }
+  const fourcc = (dv, p) => String.fromCharCode(dv.getUint8(p), dv.getUint8(p + 1), dv.getUint8(p + 2), dv.getUint8(p + 3));
+  // La caja de mp4 que empieza en p (rest = lo que queda: una caja de tamaño 0 llega hasta el final).
+  function boxAt(u8, p, rest) {
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    let size = dv.getUint32(p);
+    let hdr = 8;
+    if (size === 1) {
+      size = Number(dv.getBigUint64(p + 8));
+      hdr = 16;
+    } else if (size === 0) size = rest;
+    if (size < hdr) throw new Error('mp4 desconocido');
+    return { type: fourcc(dv, p + 4), size, hdr };
+  }
+  // Duración en segundos según el mvhd de un moov (u8 = la caja entera).
+  function moovDuration(u8) {
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    for (let p = 8; p + 8 <= u8.length; ) {
+      const b = boxAt(u8, p, u8.length - p);
+      if (b.type === 'mvhd') {
+        const v1 = dv.getUint8(p + 8) === 1;
+        const scale = dv.getUint32(p + (v1 ? 28 : 20));
+        const dur = v1 ? Number(dv.getBigUint64(p + 32)) : dv.getUint32(p + 24);
+        return scale ? dur / scale : 0;
+      }
+      p += b.size;
+    }
+    return 0;
+  }
+  // Corre delta bytes los lugares de los datos de cada pista de un moov.
+  const MP4_NEST = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl']);
+  function shiftChunks(u8, delta) {
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    const walk = (start, end) => {
+      for (let p = start; p + 8 <= end; ) {
+        const b = boxAt(u8, p, end - p);
+        if (MP4_NEST.has(b.type)) walk(p + b.hdr, p + b.size);
+        else if (b.type === 'stco') for (let i = 0, n = dv.getUint32(p + 12); i < n; i++) dv.setUint32(p + 16 + i * 4, dv.getUint32(p + 16 + i * 4) + delta);
+        else if (b.type === 'co64') for (let i = 0, n = dv.getUint32(p + 12); i < n; i++) dv.setBigUint64(p + 16 + i * 8, dv.getBigUint64(p + 16 + i * 8) + BigInt(delta));
+        p += b.size;
+      }
+    };
+    walk(8, u8.length);
+  }
+  async function cutPreview(url) {
+    const src = RS.sameOrigin(url);
+    const get = async (from, to) => {
+      const r = await fetch(src, { headers: { Range: 'bytes=' + from + '-' + to } });
+      const total = Number((/\/(\d+)\s*$/.exec(r.headers.get('content-range') || '') || [])[1]) || 0;
+      if (r.status !== 206 || !total) {
+        try {
+          if (r.body) r.body.cancel();
+        } catch (e) {
+          /* ya terminó */
+        }
+        throw new Error('El servidor no da pedazos');
+      }
+      return { bytes: new Uint8Array(await r.arrayBuffer()), total };
+    };
+    const first = await get(0, PROBE - 1);
+    const total = first.total;
+    let head = first.bytes; // el principio del archivo, seguido
+    const grow = async (end) => {
+      end = Math.min(end, total);
+      if (end <= head.length) return;
+      const got = (await get(head.length, end - 1)).bytes;
+      const joined = new Uint8Array(head.length + got.length);
+      joined.set(head);
+      joined.set(got, head.length);
+      head = joined;
+    };
+    let moov = null;
+    let moovAt = -1;
+    let mdat = null;
+    for (let off = 0; off + 8 <= total && !(moov && mdat); ) {
+      if (mdat && off + 8 > head.length) {
+        // El índice va después de los datos: se pide lo que queda del archivo (es poco).
+        const tail = (await get(off, total - 1)).bytes;
+        for (let p = 0; p + 8 <= tail.length; ) {
+          const b = boxAt(tail, p, tail.length - p);
+          if (b.type === 'moov') {
+            moov = tail.slice(p, p + b.size);
+            moovAt = off + p;
+            break;
+          }
+          p += b.size;
+        }
+        break;
+      }
+      await grow(off + 16);
+      const b = boxAt(head, off, total - off);
+      if (b.type === 'moov') {
+        await grow(off + b.size);
+        moov = head.slice(off, off + b.size);
+        moovAt = off;
+      } else if (b.type === 'mdat') mdat = { at: off, size: b.size, hdr: b.hdr };
+      off += b.size;
+    }
+    if (!moov || !mdat) return null;
+    const dur = moovDuration(moov);
+    if (!(dur > PREVIEW_S + 2)) return null;
+    const data = mdat.size - mdat.hdr;
+    const keep = Math.min(data, Math.ceil((data * (PREVIEW_S + 1.5)) / dur) + 131072);
+    if (keep > data * 0.8) return null;
+    const end = mdat.at + mdat.hdr + keep;
+    await grow(end);
+    if (moovAt < mdat.at) return URL.createObjectURL(new Blob([head.subarray(0, end)], { type: 'video/mp4' }));
+    shiftChunks(moov, moov.length);
+    return URL.createObjectURL(new Blob([head.subarray(0, mdat.at), moov, head.subarray(mdat.at, end)], { type: 'video/mp4' }));
+  }
 
   function makeVideo(m, thumb) {
     const v = document.createElement('video');
@@ -1382,6 +1536,24 @@
     );
   }
 
+  // Buscar (1.12.0, lo pidió el usuario para gastar menos datos): un GIF o video largo se ve como una vista
+  // previa que repite sus primeros PREVIEW_S segundos, sin barra para adelantar, y de su archivo se baja
+  // solo ese pedazo (previewSrc). Entero, en pantalla completa (dos toques). Un GIF corto (hasta
+  // PREVIEW_S + 2 s) se repite entero: pesa poco.
+  const PREVIEW_S = 3;
+  function previewOnly(v, badge, ctl) {
+    v._preview = true;
+    v.addEventListener('loadedmetadata', () => {
+      if (!(v.duration > PREVIEW_S + 2)) return;
+      v._capped = true;
+      badge.textContent += ' · ' + PREVIEW_S + ' s';
+      ctl.bind(null);
+    });
+    v.addEventListener('timeupdate', () => {
+      if (v._capped && v.currentTime >= PREVIEW_S) v.currentTime = 0;
+    });
+  }
+
   function slide(m, p, i, feed) {
     const box = h('div', { class: 'slide' });
     if (m.kind === 'image') {
@@ -1399,11 +1571,12 @@
       ctl.bind(v, !!m.real);
       ctl.watch(box);
       box.append(v, h('span', { class: 'vw-paused', 'aria-hidden': 'true' }, icon('play', 40)), badge, snd, ctl.el);
+      if (feed && feed.source === 'explore') previewOnly(v, badge, ctl);
       watchAudio(v, () => {
         m.real = true;
-        badge.textContent = 'VIDEO';
+        badge.textContent = 'VIDEO' + (v._capped ? ' · ' + PREVIEW_S + ' s' : '');
         snd.hidden = false;
-        ctl.bind(v, true);
+        ctl.bind(v._capped ? null : v, true);
       });
       // Un toque rápido en el centro pausa (o sigue); dos toques, pantalla completa.
       onTaps(box, () => openViewer(feed, p, i), (tap) => pauseTap(tap, videoBox(v)) && togglePause(v, box));
@@ -1671,8 +1844,156 @@
       v.load();
     });
   }
+  // ---- La foto ya recortada, guardada en el teléfono (1.12.0, lo pidió el usuario). Al guardar una foto (y,
+  // la primera vez, las que ya tenías) el círculo se copia a una imagen de SNAP_PX × SNAP_PX en RS.localDb
+  // ('pic:<clave>', con el `at` de la foto), que va en el respaldo (_pics). Así una foto quieta es una
+  // imagen de verdad (no un video detenido), se ve sin pedirle nada a JoyReactor y vuelve al reinstalar.
+  // A un hashtag (un GIF que se mueve) se le guarda el cuadro donde empieza su pedazo: se ve mientras
+  // carga el video y donde no se mueve. Los archivos se piden desde el mismo origen (RS.sameOrigin): si
+  // no, el canvas queda bloqueado y no se puede copiar.
+  const SNAP_PX = 480;
+  const snaps = new Map(); // clave -> { at, blob, url }
+  const snapFails = new Set(); // las que no se pudieron copiar en esta sesión (no se reintentan)
+  const snapQueue = [];
+  let snapping = false;
+  let localReady = false; // ya se leyó lo guardado en RS.localDb (loadLocal)
+  const keyOfPic = (pic) => Object.keys(S.pics).find((k) => S.pics[k] === pic) || null;
+  const snapFresh = (key) => !!(S.pics[key] && snaps.has(key) && snaps.get(key).at === S.pics[key].at);
+  function snapOf(pic) {
+    const key = keyOfPic(pic);
+    if (!key) return null;
+    if (snapFresh(key)) return snaps.get(key);
+    wantSnap(key);
+    return null;
+  }
+  function setSnap(key, at, blob) {
+    const old = snaps.get(key);
+    // La de antes se suelta un rato después (puede estar a la vista hasta que se redibuje).
+    if (old) setTimeout(() => URL.revokeObjectURL(old.url), 60000);
+    snaps.set(key, { at, blob, url: URL.createObjectURL(blob) });
+  }
+  function wantSnap(key, first) {
+    if (!localReady || snapFails.has(key) || snapFresh(key)) return;
+    const i = snapQueue.indexOf(key);
+    if (i >= 0 && !first) return;
+    if (i >= 0) snapQueue.splice(i, 1);
+    if (first) snapQueue.unshift(key);
+    else snapQueue.push(key);
+    if (!snapping) setTimeout(runSnaps, first ? 0 : 2000);
+  }
+  async function runSnaps() {
+    if (snapping) return;
+    snapping = true;
+    try {
+      while (snapQueue.length) {
+        const key = snapQueue.shift();
+        const pic = S.pics[key];
+        if (!pic || !pic.media || snapFresh(key)) continue;
+        try {
+          const blob = await makeSnap(pic);
+          if (S.pics[key] !== pic) continue; // la cambiaste mientras tanto
+          await RS.localDb.set('pic:' + key, { at: pic.at, blob });
+          setSnap(key, pic.at, blob);
+          redrawPic(key);
+          soonBackup();
+        } catch (e) {
+          snapFails.add(key);
+        }
+      }
+    } finally {
+      snapping = false;
+    }
+  }
+  // Lo que hay que copiar de un archivo de proporción alto/ancho = r para llenarlo (como object-fit: cover).
+  function coverRect(w, h, r) {
+    if (h / w > r) return [0, (h - w * r) / 2, w, w * r];
+    return [(w - h / r) / 2, 0, h / r, h];
+  }
+  async function bitmapOf(url) {
+    const res = await fetch(RS.sameOrigin(url));
+    if (!res.ok) throw new Error('No se pudo bajar la imagen (' + res.status + ')');
+    return createImageBitmap(await res.blob());
+  }
+  // Un video detenido en el segundo t, listo para copiarlo a un canvas.
+  function videoAt(url, t) {
+    return new Promise((resolve, reject) => {
+      const v = document.createElement('video');
+      v.muted = true;
+      v.playsInline = true;
+      v.preload = 'auto';
+      const fail = () => {
+        clearTimeout(timer);
+        stopVideo(v);
+        reject(new Error('El video no cargó'));
+      };
+      const timer = setTimeout(fail, 25000);
+      const ready = () => {
+        clearTimeout(timer);
+        resolve(v);
+      };
+      v.addEventListener('error', fail, { once: true });
+      v.addEventListener('loadedmetadata', () => (v.currentTime = Math.max(0.001, Math.min(t || 0, (v.duration || 0) - 0.05))), { once: true });
+      v.addEventListener('seeked', () => (v.readyState >= 2 ? ready() : v.addEventListener('canplay', ready, { once: true })), { once: true });
+      v.src = url;
+    });
+  }
+  const canvasBlob = (c, q) => new Promise((resolve, reject) => c.toBlob((b) => (b ? resolve(b) : reject(new Error('No se pudo copiar'))), 'image/jpeg', q));
+  // Copia el círculo de la foto (cx, cy, s, r: ver picMedia) a un cuadrado de SNAP_PX y lo da como JPEG.
+  async function makeSnap(pic) {
+    const m = pic.media;
+    let el;
+    let w;
+    let hh;
+    let done;
+    if (m.kind === 'video') {
+      el = await videoAt(RS.sameOrigin(RS.videoUrl(m, true)), pic.frame != null ? pic.frame : pic.start || 0);
+      w = el.videoWidth;
+      hh = el.videoHeight;
+      done = () => stopVideo(el);
+    } else {
+      // La imagen en tamaño completo (se ve mejor en grande); si no existe, la normal.
+      el = await bitmapOf(RS.imageUrl(m, true)).catch(() => bitmapOf(RS.imageUrl(m)));
+      w = el.width;
+      hh = el.height;
+      done = () => el.close && el.close();
+    }
+    try {
+      if (!w || !hh) throw new Error('Archivo vacío');
+      const c = document.createElement('canvas');
+      c.width = c.height = SNAP_PX;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, SNAP_PX, SNAP_PX);
+      // Como en picMedia: el archivo ocupa un cuadro de SNAP_PX / s de ancho y r veces eso de alto.
+      const dw = SNAP_PX / pic.s;
+      const dh = dw * pic.r;
+      const [sx, sy, sw, sh] = coverRect(w, hh, pic.r);
+      ctx.drawImage(el, sx, sy, sw, sh, SNAP_PX / 2 - pic.cx * dw, SNAP_PX / 2 - pic.cy * dh, dw, dh);
+      return await canvasBlob(c, 0.86);
+    } finally {
+      done();
+    }
+  }
+  // Ya está la copia: las fotos de esa cuenta que están a la vista pasan a usarla.
+  function redrawPic(key) {
+    const pic = S.pics[key];
+    if (!pic) return;
+    document.querySelectorAll('.cpic[data-pic="' + CSS.escape(key) + '"]').forEach((el) => {
+      releasePics(el);
+      fill(el, picMedia(pic, el.dataset.anim === '1'));
+    });
+  }
+
   // El recorte, en porcentajes del contenedor redondo (sirve para cualquier tamaño de foto).
   function picMedia(pic, animate) {
+    const snap = snapOf(pic);
+    const moving = !!(pic.len && animate);
+    const snapImg = () => {
+      const img = h('img', { src: snap.url, alt: '', draggable: 'false' });
+      Object.assign(img.style, { position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', maxWidth: 'none', objectFit: 'cover' });
+      return img;
+    };
+    if (snap && !moving) return snapImg();
     const w = 100 / pic.s;
     const style = { position: 'absolute', width: w + '%', height: w * pic.r + '%', left: 50 - pic.cx * w + '%', top: 50 - pic.cy * w * pic.r + '%', maxWidth: 'none', objectFit: 'cover' };
     // Una foto quieta sacada de un GIF: el video detenido en ese momento (`frame`).
@@ -1702,7 +2023,8 @@
       v.setAttribute('muted', '');
       v.setAttribute('playsinline', '');
       v.preload = 'none';
-      v.poster = RS.posterUrl(pic.media);
+      // Con la copia guardada, debajo se ve el cuadro donde empieza el pedazo hasta que el video arranca.
+      if (!snap) v.poster = RS.posterUrl(pic.media);
       v.dataset.src = RS.videoUrl(pic.media);
       Object.assign(v.style, style);
       // Se repite solo el pedazo elegido.
@@ -1715,7 +2037,7 @@
         v.play().catch(() => {});
       });
       picIO.observe(v);
-      return v;
+      return snap ? [snapImg(), v] : v;
     }
     const img = h('img', { src: pic.len ? RS.posterUrl(pic.media) : RS.imageUrl(pic.media), alt: '', draggable: 'false' });
     Object.assign(img.style, style);
@@ -1724,6 +2046,11 @@
   function putPic(el, pic, animate) {
     el.classList.add('cpic');
     el.style.background = '#000';
+    const key = keyOfPic(pic);
+    if (key) {
+      el.dataset.pic = key;
+      el.dataset.anim = animate ? '1' : '';
+    }
     return fill(el, picMedia(pic, animate));
   }
   // ⋯ de cada fila de Seguidos: poner o cambiar la foto (usuario) o el GIF (hashtag), o quitarla.
@@ -2169,6 +2496,7 @@
         still ? { frame: st.start } : isVid ? { start: st.start, len: st.len } : {}
       );
       persist('pics', 0);
+      wantSnap(picKey(kind, canon), true); // se guarda en el teléfono (y en el respaldo) enseguida
       // Ya está la definitiva: las demás marcadas se descartan.
       picCandidates.delete(picKey(kind, name));
       closeCropper();
@@ -3117,7 +3445,6 @@
       (viewer.current._videos || []).forEach((x) => (x._userPaused = false));
       viewer.current.querySelectorAll('.vw-slide.paused').forEach((x) => x.classList.remove('paused'));
     }
-    if (viewer.current !== page) showInfo();
     viewer.current = page;
     fillPage(page, 0);
     markSeen(page.dataset.id, page._it && page._it.post);
@@ -3193,21 +3520,11 @@
     clearTimeout(v.ctlTimer);
     v.ctlTimer = setTimeout(() => v.el.classList.remove('ctl'), CONTROLS_MS);
   }
+  // Con el teléfono vertical, la foto, el nombre, Seguir y los hashtags se ven siempre (en toda la app, también
+  // en las historias; lo pidió el usuario en la 1.12.0: en la 1.11.0 se escondían a los 3 s). En horizontal
+  // no se ven (CSS).
   function viewerPointerDown(e) {
     if (!isLandscape() || e.clientY > window.innerHeight * (1 - LAND_CTL_ZONE)) showControls();
-    // Con el teléfono vertical, tocar la parte de abajo vuelve a mostrar el nombre, Seguir y los hashtags.
-    if (!isLandscape() && e.clientY > window.innerHeight - infoZone()) showInfo();
-  }
-  // Pantalla completa (1.11.0, lo pidió el usuario): la foto, el nombre, Seguir y los hashtags se ven al
-  // llegar a cada post y se esconden a los INFO_MS (como los botones de Android); tocar abajo los muestra.
-  const INFO_MS = 3000;
-  const infoZone = () => Math.max(140, window.innerHeight * 0.22);
-  function showInfo() {
-    const v = viewer;
-    if (!v) return;
-    v.el.classList.remove('info-off');
-    clearTimeout(v.infoTimer);
-    v.infoTimer = setTimeout(() => viewer === v && v.el.classList.add('info-off'), INFO_MS);
   }
 
   // ---- Gestos con el dedo en pantalla completa:
@@ -4455,7 +4772,7 @@
   // La campanita cuenta los posts nuevos de lo que vigilas y los avisos que esperan en Novedades: el
   // resumen de la semana sin mirar y, con la app recién instalada, restaurar el respaldo.
   const recapPending = () => recapUnseen() && S.weekly.later !== S.weekly.week;
-  const restorePending = () => !!RS.android && !hasUserData() && !S.backup.skip;
+  const restorePending = () => !!RS.android && ((!hasUserData() && !S.backup.skip) || (!!S.backup.stale && hasUserData()));
   function fillBell(a) {
     const n = (S.news.unread || 0) + (recapPending() ? 1 : 0) + (restorePending() ? 1 : 0);
     a.setAttribute('aria-label', n ? 'Novedades: ' + n + (n === 1 ? ' aviso' : ' avisos') : 'Novedades');
@@ -7143,15 +7460,58 @@
   // ================================================================ Ajustes y respaldo
 
   // Lo que va en un respaldo: todo menos lo que la app vuelve a pedir sola (árbol de hashtags, páginas
-  // con posts retirados, épocas del Aleatorio).
+  // con posts retirados, épocas del Aleatorio). Desde la 1.12.0 también las fotos ya recortadas (_pics,
+  // que viven en RS.localDb) y qué instalación lo escribió (_install).
   const NO_BACKUP = new Set(['eraCache', 'tagTree', 'junkScan']);
   async function backupData() {
     flush();
     const data = await RS.load(RS.KEYS.filter((k) => !NO_BACKUP.has(k)));
+    data._pics = {};
+    for (const [key, x] of snaps) if (snapFresh(key)) data._pics[key] = { at: x.at, data: await blobDataUrl(x.blob) };
     data._app = 'reactor-swipe';
     data._version = 1;
     data._exported = new Date().toISOString();
+    data._install = installTime();
     return data;
+  }
+  const blobDataUrl = (b) =>
+    new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+      r.readAsDataURL(b);
+    });
+  function dataUrlBlob(d) {
+    const [head, b64] = String(d).split(',');
+    const bin = atob(b64 || '');
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: (/^data:([^;,]+)/.exec(head) || [])[1] || 'image/jpeg' });
+  }
+  const dayText = (t) => new Date(t).toLocaleDateString('es', { day: 'numeric', month: 'long' });
+
+  // Cuándo se instaló la app (Android; no cambia al actualizar, sí al desinstalar y volver a instalar).
+  let installMemo = null;
+  function installTime() {
+    if (installMemo == null) {
+      try {
+        installMemo = (RS.android && typeof RS.android.installedAt === 'function' && Number(RS.android.installedAt())) || 0;
+      } catch (e) {
+        installMemo = 0;
+      }
+    }
+    return installMemo;
+  }
+  // La primera vez que estos datos se abren en esta instalación: si ya había datos y su último respaldo es
+  // de antes de instalar la app, Android los devolvió de su copia en Google al reinstalar, y esa copia
+  // puede ser de días antes (al usuario le faltó lo de RedGifs en la 1.11.1). Entonces S.backup.stale y
+  // Novedades ofrece sumar el respaldo de Descargas (restoreBanner; la campanita lo cuenta).
+  function checkReinstall() {
+    const t = installTime();
+    if (!t || S.backup.install === t) return;
+    S.backup.stale = hasUserData() && S.backup.at > 0 && S.backup.at < t;
+    S.backup.install = t;
+    persist('backup', 0);
   }
 
   // ---- Respaldo automático (app de Android). Al desinstalar, Android borra todo lo que la app guarda;
@@ -7160,10 +7520,10 @@
   // ahí (restoreBanner en Novedades, que cuenta la campanita, o Ajustes › Respaldo y versión › Restaurar).
   const BACKUP_EVERY = 24 * 3600000;
   const hasUserData = () =>
-    Object.keys(S.likes).length + Object.keys(S.favorites).length + Object.keys(S.following).length + Object.keys(S.tagProfiles).length + Object.keys(S.dislikes).length > 0;
+    ['likes', 'favorites', 'following', 'tagProfiles', 'dislikes', 'rgFollowing', 'rgTags', 'pics', 'folders'].some((k) => Object.keys(S[k] || {}).length > 0);
   function backupSig() {
     const likes = Object.values(S.likes);
-    return [likes.length, likes.reduce((m, x) => Math.max(m, x.at || 0), 0), Object.keys(S.favorites).length, Object.keys(S.following).length, Object.keys(S.tagProfiles).length, Object.keys(S.dislikes).length, S.mix.exclude.length, Object.keys(S.pics).length, Object.values(S.pics).reduce((m, x) => Math.max(m, x.at || 0), 0), Object.values(S.folders).reduce((n, f) => n + f.ids.length + 1, 0), Object.keys(S.rgFollowing).length, Object.keys(S.rgTags).length, Object.keys(S.rgLinks).length, Object.keys(S.rgMix).length].join('|');
+    return [likes.length, likes.reduce((m, x) => Math.max(m, x.at || 0), 0), Object.keys(S.favorites).length, Object.keys(S.following).length, Object.keys(S.tagProfiles).length, Object.keys(S.dislikes).length, S.mix.exclude.length, Object.keys(S.pics).length, Object.values(S.pics).reduce((m, x) => Math.max(m, x.at || 0), 0), Object.values(S.folders).reduce((n, f) => n + f.ids.length + 1, 0), Object.keys(S.rgFollowing).length, Object.keys(S.rgTags).length, Object.keys(S.rgLinks).length, Object.keys(S.rgMix).length, Object.keys(S.pics).filter(snapFresh).length].join('|');
   }
   let backingUp = null;
   function autoBackup(force) {
@@ -7192,27 +7552,46 @@
     if (document.hidden) autoBackup(false).catch(() => {});
   });
 
-  // Elegir un archivo de respaldo y restaurarlo (fresh = la app está vacía: no hace falta preguntar).
-  function pickBackup(fresh) {
+  // Elegir un archivo de respaldo y sumarlo a lo que tienes.
+  function pickBackup() {
     const input = h('input', { type: 'file', accept: 'application/json,.json', class: 'visually-hidden', 'aria-label': 'Archivo de respaldo' });
     input.addEventListener('change', () => {
       const file = input.files && input.files[0];
       input.remove();
-      if (file) importBackup(file, fresh).catch((e) => toast(errText(e)));
+      if (file) importBackup(file).catch((e) => toast(errText(e)));
     });
     document.body.append(input);
     input.click();
   }
 
-  // Novedades, con la app vacía (recién instalada o reinstalada): ofrece restaurar el respaldo (la
-  // campanita lo cuenta, así se ve desde Inicio).
+  // Novedades, con la app vacía (recién instalada o reinstalada) o con datos viejos que Android devolvió al
+  // reinstalar (S.backup.stale): ofrece restaurar el respaldo (la campanita lo cuenta, así se ve desde Inicio).
   function restoreBanner() {
-    if (!RS.android || hasUserData() || S.backup.skip) return null;
+    if (!RS.android) return null;
+    if (S.backup.stale && hasUserData()) {
+      return h('section', { class: 'notice' },
+        h('strong', { text: '¿Te falta algo después de reinstalar?' }),
+        h('span', { text: 'Volvieron tus datos del ' + dayText(S.backup.at) + '. Lo que hiciste después (como lo de RedGifs) está en el respaldo de Descargas › ReactorSwipe: elige el que se guardó antes de desinstalar y se suma a lo que tienes.' }),
+        h('div', { class: 'row-btns' },
+          h('button', { class: 'btn blue', onclick: () => pickBackup() }, icon('upload', 18), 'Restaurar'),
+          h('button', {
+            class: 'btn quiet',
+            onclick: () => {
+              S.backup.stale = false;
+              persist('backup', 0);
+              onNewsChanged();
+              if (current && current.feed) current.feed.refresh();
+            }
+          }, 'Está todo')
+        )
+      );
+    }
+    if (hasUserData() || S.backup.skip) return null;
     return h('section', { class: 'notice' },
       h('strong', { text: '¿Reinstalaste la app?' }),
       h('span', { text: 'Recupera tus me gusta, lo que sigues y tus perfiles desde el respaldo: está en Descargas › ReactorSwipe.' }),
       h('div', { class: 'row-btns' },
-        h('button', { class: 'btn blue', onclick: () => pickBackup(true) }, icon('upload', 18), 'Restaurar'),
+        h('button', { class: 'btn blue', onclick: () => pickBackup() }, icon('upload', 18), 'Restaurar'),
         h('button', {
           class: 'btn quiet',
           onclick: () => {
@@ -7248,7 +7627,60 @@
     toast('Respaldo descargado');
   }
 
-  async function importBackup(file, fresh) {
+  // Restaurar suma (1.12.0): lo del respaldo se junta con lo que ya tienes y no se pierde nada de ninguno
+  // (antes reemplazaba todo). Si algo está en los dos, gana el más nuevo (fileNewer: el respaldo); los
+  // ajustes, las estadísticas y lo demás vienen enteros del más nuevo.
+  const MERGE_MAPS = new Set(['likes', 'dislikes', 'favorites', 'following', 'tagProfiles', 'pics', 'folders', 'rgFollowing', 'rgTags', 'rgLinks', 'rgMix']);
+  const isMap = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+  function mergeBackup(cur, data, fileNewer) {
+    const out = {};
+    for (const k of RS.KEYS) {
+      if (NO_BACKUP.has(k) || !(k in data)) continue;
+      const a = cur[k];
+      const b = data[k];
+      const older = fileNewer ? a : b;
+      const newer = fileNewer ? b : a;
+      if (MERGE_MAPS.has(k) && isMap(a) && isMap(b)) {
+        out[k] = Object.assign({}, older, newer);
+        // Una carpeta que está en los dos se queda con los posts de los dos.
+        if (k === 'folders') {
+          for (const id of Object.keys(out[k])) {
+            if (a[id] && b[id]) out[k][id] = Object.assign({}, out[k][id], { ids: Array.from(new Set((older[id].ids || []).concat(newer[id].ids || []))) });
+          }
+        }
+      } else if (k === 'mix' && isMap(a) && isMap(b)) {
+        out[k] = Object.assign({}, older, newer, { exclude: Array.from(new Set((older.exclude || []).concat(newer.exclude || []))) });
+      } else if (k === 'seen' && Array.isArray(a) && Array.isArray(b)) {
+        out[k] = Array.from(new Set(older.concat(newer))).slice(-5000);
+      } else if (k === 'history' && Array.isArray(a) && Array.isArray(b)) {
+        const ids = new Set();
+        const max = Number(((fileNewer ? data.settings : cur.settings) || {}).historyMax) || 100;
+        out[k] = a.concat(b).filter((x) => x && x.id && !ids.has(x.id) && ids.add(x.id)).sort((x, y) => (y.at || 0) - (x.at || 0)).slice(0, max);
+      } else out[k] = newer;
+    }
+    return out;
+  }
+  // Lo que se cuenta al volver a abrir después de restaurar.
+  function restoredText(data, out) {
+    const likes = Object.keys(out.likes || {});
+    const rgLikes = likes.filter((id) => id.startsWith('rg:')).length;
+    const fol = ['favorites', 'following', 'tagProfiles', 'rgFollowing', 'rgTags'].reduce((n, k) => n + Object.keys(out[k] || {}).length, 0);
+    const rgFol = Object.keys(out.rgFollowing || {}).length + Object.keys(out.rgTags || {}).length;
+    const when = Date.parse(data._exported);
+    return 'Listo: sumé el respaldo' + (when ? ' del ' + dayText(when) : '') + '. Tienes ' + fmt(likes.length) + ' me gusta' + (rgLikes ? ' (' + fmt(rgLikes) + ' de RedGifs)' : '') + ' y sigues ' + fmt(fol) + ' cuentas y hashtags' + (rgFol ? ' (' + fmt(rgFol) + ' de RedGifs)' : '') + '.';
+  }
+  function restoredToast() {
+    let msg = null;
+    try {
+      msg = sessionStorage.getItem('rs:restored');
+      sessionStorage.removeItem('rs:restored');
+    } catch (e) {
+      msg = null;
+    }
+    if (msg) setTimeout(() => toast(msg, 'OK', () => {}, 9000), (Number(S.settings.introMs) || INTRO_MS) + 400);
+  }
+
+  async function importBackup(file) {
     let data = null;
     try {
       data = JSON.parse(await file.text());
@@ -7256,10 +7688,36 @@
       data = null;
     }
     if (!data || data._app !== 'reactor-swipe') throw new Error('Ese archivo no es un respaldo de Reactor Swipe. Busca reactor-swipe-respaldo en Descargas › ReactorSwipe.');
-    if (!fresh && hasUserData() && !confirm('Esto reemplaza tus me gusta, ocultos, lo que sigues, el historial y la mezcla actuales. ¿Continuar?')) return;
-    const out = {};
-    for (const k of RS.KEYS) if (!NO_BACKUP.has(k) && k in data) out[k] = data[k];
-    await RS.save(out);
+    // Después de reinstalar, el respaldo que escribió esta misma instalación no trae nada de antes.
+    if (S.backup.stale && data._install && data._install === installTime()) {
+      toast('Ese respaldo es de después de reinstalar: elige el que se guardó antes (mira la fecha).', null, null, 7000);
+      return;
+    }
+    flush();
+    restoring = true;
+    try {
+      const cur = await RS.load(RS.KEYS.filter((k) => !NO_BACKUP.has(k)));
+      const out = mergeBackup(cur, data, (Date.parse(data._exported) || 0) >= (cur.backup.at || 0));
+      // Con todo junto se escribe un respaldo nuevo enseguida (sig vacía), y esta instalación ya no pregunta.
+      out.backup = { at: 0, sig: '', skip: false, install: installTime(), stale: false };
+      for (const [key, x] of Object.entries(data._pics || {})) {
+        if (!x || !x.data || !out.pics || !out.pics[key] || out.pics[key].at !== x.at) continue;
+        try {
+          await RS.localDb.set('pic:' + key, { at: x.at, blob: dataUrlBlob(x.data) });
+        } catch (e) {
+          /* la foto se vuelve a copiar sola */
+        }
+      }
+      await RS.save(out);
+      try {
+        sessionStorage.setItem('rs:restored', restoredText(data, out));
+      } catch (e) {
+        /* sin el aviso */
+      }
+    } catch (e) {
+      restoring = false;
+      throw e;
+    }
     location.reload();
   }
 
@@ -7420,7 +7878,7 @@
       ),
       group('Respaldo y versión',
         h('div', { class: 'field' },
-          h('span', { class: 'd', style: { marginTop: '0' }, text: 'Tus datos viven solo en este teléfono: si desinstalas la app, Android los borra.' + (RS.android ? ' Hay un respaldo automático en Descargas › ReactorSwipe (' + (S.backup.at ? 'el último, ' + ago(S.backup.at) : 'todavía no hay') + '); si reinstalas, toca Restaurar y elige ese archivo.' : '') }),
+          h('span', { class: 'd', style: { marginTop: '0' }, text: 'Tus datos viven solo en este teléfono: si desinstalas la app, Android los borra.' + (RS.android ? ' Hay un respaldo automático en Descargas › ReactorSwipe (' + (S.backup.at ? 'el último, ' + ago(S.backup.at) : 'todavía no hay') + '); si reinstalas, toca Restaurar y elige el más nuevo: se suma a lo que tengas.' : '') }),
           h('div', { class: 'inline-add' },
             RS.android
               ? h('button', {
@@ -8073,20 +8531,29 @@
   // toque lo salta. No sale al volver a la app desde segundo plano: boot corre una sola vez.
   // La duración se elige en Herramientas de debug (S.settings.introMs, 1.10.1): todas las animaciones se
   // estiran con --k (duración / INTRO_MS), y ahí mismo se puede ver otra vez sin reiniciar.
+  // Desde la 1.12.0 (lo pidió el usuario) las miniaturas ya están en el teléfono al abrir: cacheIntro las
+  // guarda en RS.localDb ('intro:<id>', recortadas a 3:4) después de abrir y al cambiar los me gusta, y
+  // loadLocal las lee antes del intro. Si falta alguna, esa se pide a JoyReactor como antes.
   const INTRO_MS = 1500;
+  const INTRO_TILES = 15;
   let introEnd = null; // cierra el intro que está a la vista («atrás» de Android)
+  const introThumbs = new Map(); // id del post -> URL de su miniatura guardada
+  const introPosts = () =>
+    Object.values(S.likes)
+      .sort((a, b) => b.at - a.at)
+      .map((x) => x.post)
+      .filter((p) => p && p.media && p.media[0] && p.media[0].kind !== 'embed')
+      .slice(0, INTRO_TILES);
   function showIntro() {
     if (introEnd) introEnd(true);
     const ms = Number(S.settings.introMs) || INTRO_MS;
     const k = ms / INTRO_MS;
-    const posts = Object.values(S.likes)
-      .sort((a, b) => b.at - a.at)
-      .map((x) => x.post)
-      .filter((p) => p && p.media && p.media[0] && p.media[0].kind !== 'embed');
+    const posts = introPosts();
     const tiles = [];
-    for (let i = 0; i < 15; i++) {
-      const m = posts.length ? posts[i % posts.length].media[0] : null;
-      const src = m ? (m.kind === 'video' ? RS.posterUrl(m) : RS.imageUrl(m)) : '';
+    for (let i = 0; i < INTRO_TILES; i++) {
+      const p = posts.length ? posts[i % posts.length] : null;
+      const m = p ? p.media[0] : null;
+      const src = m ? introThumbs.get(p.id) || (m.kind === 'video' ? RS.posterUrl(m) : RS.imageUrl(m)) : '';
       tiles.push(h('i', { style: '--d:' + (i % 5) * 0.08 * k + 's' + (src ? ';background-image:url("' + src + '")' : '') }));
     }
     let done = false;
@@ -8107,14 +8574,87 @@
     setTimeout(end, ms);
   }
 
+  // Guarda en el teléfono las miniaturas de lo que sale en el intro y borra las que ya no salen.
+  const INTRO_W = 360;
+  const INTRO_H = 480;
+  let introCaching = false;
+  let introTimer = null;
+  const soonIntroCache = () => {
+    clearTimeout(introTimer);
+    introTimer = setTimeout(cacheIntro, 20000);
+  };
+  async function cacheIntro() {
+    if (introCaching || !localReady) return;
+    introCaching = true;
+    try {
+      const posts = introPosts();
+      const want = new Set(posts.map((p) => p.id));
+      for (const [id, url] of Array.from(introThumbs)) {
+        if (want.has(id)) continue;
+        introThumbs.delete(id);
+        URL.revokeObjectURL(url);
+        RS.localDb.del('intro:' + id);
+      }
+      for (const p of posts) {
+        if (introThumbs.has(p.id)) continue;
+        const m = p.media[0];
+        try {
+          const bmp = await bitmapOf(m.kind === 'video' ? RS.posterUrl(m) : RS.imageUrl(m));
+          const c = document.createElement('canvas');
+          c.width = INTRO_W;
+          c.height = INTRO_H;
+          const [sx, sy, sw, sh] = coverRect(bmp.width, bmp.height, INTRO_H / INTRO_W);
+          c.getContext('2d').drawImage(bmp, sx, sy, sw, sh, 0, 0, INTRO_W, INTRO_H);
+          if (bmp.close) bmp.close();
+          const blob = await canvasBlob(c, 0.8);
+          await RS.localDb.set('intro:' + p.id, { at: Date.now(), blob });
+          introThumbs.set(p.id, URL.createObjectURL(blob));
+        } catch (e) {
+          /* esa queda para la próxima; el intro la pide a JoyReactor */
+        }
+      }
+    } finally {
+      introCaching = false;
+    }
+  }
+
+  // Lo guardado en RS.localDb: las fotos recortadas y las miniaturas del intro. Si la base tarda (o no
+  // existe), la app abre igual: boot espera como mucho LOCAL_WAIT.
+  const LOCAL_WAIT = 700;
+  async function loadLocal() {
+    try {
+      const [pics, intro] = await Promise.all([RS.localDb.entries('pic:'), RS.localDb.entries('intro:')]);
+      for (const [k, v] of pics) if (v && v.blob) setSnap(k.slice(4), v.at, v.blob);
+      for (const [k, v] of intro) if (v && v.blob) introThumbs.set(k.slice(6), URL.createObjectURL(v.blob));
+    } catch (e) {
+      /* sin IndexedDB: las fotos y el intro se ven como antes */
+    }
+  }
+  // Después de abrir: borra las copias de fotos que ya no existen, copia las que faltan (las de antes de la
+  // 1.12.0, la primera vez) y pone al día las miniaturas del intro.
+  function afterLocal() {
+    localReady = true;
+    for (const key of Array.from(snaps.keys())) {
+      if (S.pics[key]) continue;
+      URL.revokeObjectURL(snaps.get(key).url);
+      snaps.delete(key);
+      RS.localDb.del('pic:' + key);
+    }
+    for (const key of Object.keys(S.pics)) wantSnap(key);
+    setTimeout(cacheIntro, 5000);
+  }
+
   async function boot() {
     try {
       history.scrollRestoration = 'manual';
     } catch (e) {
       /* no disponible */
     }
+    const local = loadLocal();
     Object.assign(S, await RS.load(RS.KEYS.filter((k) => k !== 'eraCache')));
+    await Promise.race([local, new Promise((r) => setTimeout(r, LOCAL_WAIT))]);
     showIntro();
+    checkReinstall();
     S.seenSet = new Set(S.seen);
     startUsageClock();
     refreshFilter();
@@ -8132,6 +8672,8 @@
     syncWeekNative();
     window.addEventListener('hashchange', route);
     route();
+    local.then(() => setTimeout(afterLocal, 1500));
+    restoredToast();
     // Si Android cerró Firefox y no se revisó en un buen rato, reviso al abrir la app.
     const stale = Date.now() - (S.news.lastCheck || 0) > (Number(S.settings.interval) || 15) * 60000;
     if (stale && watchList().length) bg({ type: 'check-now' }).catch(() => {});

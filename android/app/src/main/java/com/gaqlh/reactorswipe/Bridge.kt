@@ -32,6 +32,17 @@ class Bridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun getNews(): String = Store.news(ctx).toString()
 
+    /**
+     * Cuándo se instaló la app (no cambia al actualizar; sí al desinstalar y volver a instalar). Con eso
+     * la interfaz se da cuenta de que Android le devolvió datos viejos de su copia en Google (1.12.0).
+     */
+    @JavascriptInterface
+    fun installedAt(): String = try {
+        ctx.packageManager.getPackageInfo(ctx.packageName, 0).firstInstallTime.toString()
+    } catch (e: Exception) {
+        "0"
+    }
+
     @JavascriptInterface
     fun markNewsRead() {
         Store.markRead(ctx)

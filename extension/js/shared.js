@@ -242,6 +242,16 @@
         : { url: RS.imageUrl(m, true), ext: m.ext || 'jpeg' };
   RS.viaProxy = viaProxy;
   RS.localUrl = (url) => (url.startsWith(RG_MEDIA) ? rgFile(url.slice(RG_MEDIA.length)) : viaProxy(url));
+  // Un archivo de JoyReactor pedido desde el mismo origen que la app (1.12.0): así se puede copiar a un
+  // <canvas> (la foto recortada y las miniaturas del intro se guardan en el teléfono). En Android lo
+  // atiende MainActivity (/__jr/<servidor>/pics/…); en la PC, el proxy. Lo de RedGifs ya pasa por /__rg/.
+  RS.sameOrigin = (url) => {
+    if (!/^https?:/.test(url)) return url;
+    if (url.startsWith(RG_MEDIA)) return rgFile(url.slice(RG_MEDIA.length));
+    const m = android && direct ? /^https:\/\/(img\d*)\.joyreactor\.com\/(pics\/.*)$/.exec(url) : null;
+    if (m) return '/__jr/' + m[1] + '/' + m[2];
+    return direct ? url : '/proxy/media?u=' + encodeURIComponent(url);
+  };
   // Avatares de usuarios y hashtags: también exigen el Referer de joyreactor.com. Los de RedGifs vienen con el post.
   RS.avatarUrl = (p) => (p.src === 'rg' ? p.rgAvatar || '' : p.userId ? viaProxy('https://img10.joyreactor.com/pics/avatar/user/' + p.userId) : '');
   RS.tagImageUrl = (tagId) => viaProxy('https://img10.joyreactor.com/pics/avatar/tag/' + tagId);
@@ -317,15 +327,14 @@
     };
   };
 
-  // ---- Caché en el teléfono (IndexedDB) para lo que se puede volver a pedir, como los GIF y videos ya
-  // encontrados en cada hashtag. No son datos del usuario: si se borra, solo se vuelve a pedir.
-  const cacheDb = (() => {
+  // ---- Bases en el teléfono (IndexedDB), con claves y valores sueltos (kv).
+  const kvDb = (name) => {
     let opening = null;
     const open = () =>
       opening ||
       (opening = new Promise((resolve, reject) => {
         if (typeof indexedDB === 'undefined') return reject(new Error('Sin IndexedDB'));
-        const rq = indexedDB.open('reactor-swipe-cache', 1);
+        const rq = indexedDB.open(name, 1);
         rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
         rq.onsuccess = () => resolve(rq.result);
         rq.onerror = () => reject(rq.error);
@@ -343,11 +352,39 @@
       );
     return {
       get: (k) => run('readonly', (s) => s.get(k)).catch(() => undefined),
-      set: (k, v) => run('readwrite', (s) => s.put(v, k)).catch(() => {}),
-      del: (k) => run('readwrite', (s) => s.delete(k)).catch(() => {})
+      set: (k, v) => run('readwrite', (s) => s.put(v, k)),
+      del: (k) => run('readwrite', (s) => s.delete(k)).catch(() => {}),
+      // Todo lo que empieza con prefix: [[clave, valor], …].
+      entries: (prefix) =>
+        open().then(
+          (db) =>
+            new Promise((resolve, reject) => {
+              const out = [];
+              const tx = db.transaction('kv', 'readonly');
+              const rq = tx.objectStore('kv').openCursor(IDBKeyRange.bound(prefix, prefix + '\uffff'));
+              rq.onsuccess = () => {
+                const c = rq.result;
+                if (!c) return;
+                out.push([c.key, c.value]);
+                c.continue();
+              };
+              tx.oncomplete = () => resolve(out);
+              tx.onerror = () => reject(tx.error);
+              tx.onabort = () => reject(tx.error);
+            })
+        )
     };
-  })();
+  };
+  // Caché para lo que se puede volver a pedir, como los GIF y videos ya encontrados en cada hashtag. No son
+  // datos del usuario: si se borra, solo se vuelve a pedir.
+  const cacheDb = kvDb('reactor-swipe-cache');
+  const cacheSet = cacheDb.set;
+  cacheDb.set = (k, v) => cacheSet(k, v).catch(() => {});
   RS.cacheDb = cacheDb;
+  // Lo que no cabe en localStorage (1.12.0): las fotos propias ya recortadas ('pic:<user:nombre>', datos del
+  // usuario: van en el respaldo) y las miniaturas del intro ('intro:<id del post>', un caché). Base aparte
+  // de la del caché, que se tira sola.
+  RS.localDb = kvDb('reactor-swipe-local');
 
   // Páginas ya revisadas de un hashtag: { v, born, count, n, pages: { página: [posts que se guardan] } }.
   // Las páginas se numeran desde la más vieja, así que una página completa (todas menos la más nueva)
@@ -826,8 +863,10 @@
     // Tus carpetas de Me gusta (desde la 1.7.0): id -> { id, name, ids: [ids de posts], at }. Un post puede estar en varias.
     folders: {},
     // Respaldo automático en Descargas (app de Android): cuándo se escribió el último, una firma de lo
-    // importante para saber si cambió, y skip = en una app vacía dijiste «Empezar de cero».
-    backup: { at: 0, sig: '', skip: false },
+    // importante para saber si cambió, y skip = en una app vacía dijiste «Empezar de cero». Desde la 1.12.0:
+    // install = la instalación de Android que abrió estos datos por última vez (su fecha) y stale = al
+    // reinstalar, Android devolvió datos más viejos que el último respaldo (ver checkReinstall en app.js).
+    backup: { at: 0, sig: '', skip: false, install: 0, stale: false },
     // Creadores de RedGifs que sigues (desde la 1.10.0): nombre en minúsculas -> { name, pic, addedAt }.
     rgFollowing: {},
     // Etiquetas de RedGifs que sigues (1.10.0): nombre en minúsculas -> { name, as: 'tag' | 'account', addedAt }.

@@ -118,6 +118,7 @@ const ANDROID_STUB = `<script>
 window.RSAndroid = {
   getVersion: () => '0.0.0-sim',
   getNews: () => '{}',
+  installedAt: () => String(window.__simInstall || localStorage.getItem('sim:install') || 1),
   markNewsRead() {},
   syncConfig() {},
   syncWeek(json) { window.__simWeek = JSON.parse(json); },
