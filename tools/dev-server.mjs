@@ -132,6 +132,8 @@ window.RSAndroid = {
   getNews: () => '{}',
   installedAt: () => String(window.__simInstall || localStorage.getItem('sim:install') || 1),
   onWifi: () => localStorage.getItem('sim:wifi') !== '0',
+  // Lo que bajó la página (aproximado: los tamaños que da el navegador), como el TrafficStats de Android.
+  netBytes: () => String(performance.getEntriesByType('resource').reduce((a, e) => a + (e.transferSize || e.encodedBodySize || 0), 0)),
   setPrivacy(recents, lock) { window.__simPrivacy = { recents, lock }; },
   markNewsRead() {},
   syncConfig() {},
@@ -145,10 +147,12 @@ window.RSAndroid = {
   checkNow(cb) { setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ total: 0, per: {} })), 50); },
   saveFile(n, c, cb) { setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ ok: true, message: 'Simulado: ' + n })), 50); },
   autoBackup(c, cb) { window.__simBackup = c; setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ ok: true })), 50); },
+  diskUse(cb) { setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ cache: 187000000, data: 42000000 })), 80); },
   installUpdate(u, cb) { setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ ok: true })), 50); },
   saveMedia(u, n, cb) { (window.__simSaved = window.__simSaved || []).push({ url: u, name: n }); setTimeout(() => __rsNative.resolve(cb, JSON.stringify({ ok: true, name: n })), 300); }
 };
 window.__RS_DEV_PROXY = true;
+performance.setResourceTimingBufferSize(20000);
 </script>`;
 
 function serveAndroidSim(res) {

@@ -1452,3 +1452,82 @@ h2 .verif .i { width: 18px; height: 18px; }
 /* Pantalla completa: la bocina sin el círculo amarillo, como los demás botones (lo pidió el usuario) */
 .vw-sound .snd, .vw-sound.on .snd { background: transparent; color: #fff; box-shadow: none; }
 .vw-sound .snd .i { filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.75)); stroke-width: 2; }
+
+/* ---------- 1.17.0 ---------- */
+/* Explorar en movimiento (lo pidió el usuario): el video va encima de la miniatura y se ve cuando ya se mueve */
+.thumb-open video.tlive { position: absolute; inset: 0; opacity: 0; transition: opacity 0.25s; }
+.thumb.live .thumb-open video.tlive { opacity: 1; }
+/* Aviso de versión nueva (lo eligió el usuario, opción C): una línea fina justo encima de la barra de abajo */
+#updline { position: fixed; left: 50%; bottom: calc(var(--tabs-h) + env(safe-area-inset-bottom)); z-index: 31; width: 100%; max-width: var(--maxw); transform: translate(-50%, 100%); opacity: 0; transition: transform 0.25s ease, opacity 0.25s; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 4px 0 14px; background: var(--surface); border-top: 1px solid var(--line-2); font-size: 13.5px; font-weight: 600; color: var(--text); }
+#updline.show { transform: translate(-50%, 0); opacity: 1; }
+#updline > .i { color: var(--accent); flex-shrink: 0; }
+#updline .grow { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#updline .go { height: 28px; padding: 0 11px; border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-ink); font-size: 12.5px; font-weight: 800; flex-shrink: 0; }
+#updline .x { width: 34px; height: 34px; border: 0; background: transparent; color: var(--text-2); display: grid; place-items: center; padding: 0; flex-shrink: 0; }
+/* Posts de tus cuentas (lo eligió el usuario: «colaboración»): la cuenta arriba, con dos fotos encimadas si son
+   dos, y quien lo subió en chiquito al lado de la fecha */
+.who-link.acc { cursor: pointer; }
+.accpics { position: relative; flex-shrink: 0; display: inline-block; }
+.accpics.avatar-pair { width: 40px; height: 34px; }
+.accpics.avatar-pair > .avatar { position: absolute; width: 26px; height: 26px; border-radius: 13px; font-size: 12px; box-shadow: 0 0 0 2px var(--bg); }
+.accpics.avatar-pair > .avatar:first-child { left: 0; top: 0; }
+.accpics.avatar-pair > .avatar:last-child { right: 0; bottom: 0; }
+.acc-sub { font-size: 12.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acc-sub .when { display: inline; }
+html:not(.show-dates) .acc-sub .when:not(.always) { display: none; }
+.acc-by { color: var(--text-2); }
+.accpics.vw-av-pair { display: inline-flex; align-items: center; }
+.accpics.vw-av-pair > .vw-av { width: 22px; height: 22px; font-size: 10px; }
+.accpics.vw-av-pair > .vw-av + .vw-av { margin-left: -8px; }
+.vw-by a { color: inherit; text-decoration: none; }
+.sheet-row .sh-acc { width: 32px; height: 32px; border-radius: 16px; overflow: hidden; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 800; position: relative; }
+/* Tú: el quinto número (el tiempo de hoy) abre Estadísticas */
+.mestats.five { padding-left: 10px; padding-right: 10px; }
+.mestats.five .mestat { min-width: 0; flex: 1 1 0; }
+.mestats.five .mestat b { font-size: 18px; white-space: nowrap; }
+.mestats.five .mestat span { font-size: 12px; white-space: nowrap; }
+/* Estadísticas (lo pidió el usuario: todas las de la propuesta, E1 a E40) */
+.stat-jump { position: sticky; top: var(--top-h); z-index: 20; background: var(--bg); padding-top: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.stat-jump .chip { height: 32px; padding: 0 12px; font-size: 13px; }
+.stat-group { display: flex; flex-direction: column; gap: 12px; scroll-margin-top: calc(var(--top-h) + 56px); }
+.stat-group + .stat-group { margin-top: 14px; }
+.stat-group-title { margin: 6px 2px 0; font-size: 20px; font-weight: 800; letter-spacing: -0.01em; }
+.stat-tile.up .tile-sub { color: var(--green); }
+.stat-tile.down .tile-sub { color: var(--danger-text); }
+.stat-note { margin: 0; font-size: 12px; color: var(--text-3); }
+.stat-line { margin: 0; font-size: 14px; color: var(--text-2); }
+.stat-line b { font-size: 20px; color: var(--text); }
+.stat-seg { display: flex; gap: 3px; padding: 3px; border-radius: 11px; background: var(--surface-2); align-self: flex-start; }
+.stat-seg button { height: 30px; padding: 0 12px; border: 0; border-radius: 8px; background: transparent; color: var(--text-2); font-size: 13px; font-weight: 700; }
+.stat-seg button.on { background: var(--line-2); color: var(--text); }
+.stat-card.bare { padding: 0; border: 0; background: transparent; }
+.stat-card.bare > .stat-title { display: none; }
+.rank-top .srcb { flex-shrink: 0; }
+.stat-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.stat-chip { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 11px; border-radius: 16px; background: var(--surface-2); color: #8ec5ff; font-size: 13.5px; font-weight: 700; }
+.stat-chip small { color: var(--text-3); font-weight: 600; }
+.stat-chips.big .stat-chip { height: 40px; padding: 0 14px 0 4px; border-radius: 20px; font-size: 15px; }
+.stat-chip .chip-pic { width: 32px; height: 32px; border-radius: 16px; overflow: hidden; display: inline-flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 800; position: relative; flex-shrink: 0; }
+.moves { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.moves li { display: flex; align-items: center; gap: 8px; }
+.daynight { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.daynight > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.daynight b { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+.daynight b i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.daynight .dn-sub { font-size: 12px; color: var(--text-2); }
+.daynight ol { margin: 2px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; font-size: 13.5px; }
+.daynight ol a { color: #8ec5ff; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat-posts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.stat-posts:empty { display: none; }
+.stat-post { display: flex; gap: 10px; align-items: center; padding: 8px; border: 1px solid #2b2723; border-radius: 14px; background: var(--surface); color: var(--text); text-align: left; min-width: 0; }
+.stat-post .sp-pic { width: 52px; height: 52px; border-radius: 10px; flex-shrink: 0; background: var(--surface-2) center / cover no-repeat; }
+.stat-post .sp-t { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.stat-post .sp-t b { font-size: 13px; }
+.stat-post .tile-label { font-size: 10.5px; }
+.recap-card .row-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.facts .rank-name { flex: 1 1 auto; }
+.rc-thumbs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; max-width: 320px; }
+.rc-thumbs i { aspect-ratio: 3 / 4; border-radius: 8px; background: var(--surface-2) center / cover no-repeat; }
+.vw-who.acc { white-space: normal; }
+.vw-who.acc .vw-by { font-size: 12.5px; opacity: 0.85; }
+.facts.small { font-size: 13px; color: var(--text-2); gap: 4px; }

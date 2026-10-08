@@ -71,6 +71,20 @@ class Bridge(private val activity: MainActivity) {
         Weekly.onSeen(ctx)
     }
 
+    /**
+     * Bytes que la app bajó y subió desde que se prendió el teléfono (TrafficStats de su usuario: el WebView y lo
+     * que piden RedGifs.kt y JoyFiles.kt). Estadísticas › Datos (1.17.0) suma las diferencias mientras está abierta.
+     */
+    @JavascriptInterface
+    fun netBytes(): String = try {
+        val uid = android.os.Process.myUid()
+        val rx = android.net.TrafficStats.getUidRxBytes(uid)
+        val tx = android.net.TrafficStats.getUidTxBytes(uid)
+        if (rx < 0 || tx < 0) "-1" else (rx + tx).toString()
+    } catch (e: Exception) {
+        "-1"
+    }
+
     /** ¿Hay Wi-Fi (o cable)? En Buscar, con Wi-Fi la vista previa de cada video dura más (1.13.2). */
     @JavascriptInterface
     fun onWifi(): Boolean = try {
@@ -135,6 +149,34 @@ class Bridge(private val activity: MainActivity) {
     /** Descargar un post: la imagen o el mp4 va a la galería, en Imágenes/ReactorSwipe. */
     @JavascriptInterface
     fun saveMedia(url: String, name: String, cb: String) = async(cb) { saveToGallery(url, name) }
+
+    /**
+     * Estadísticas › Espacio (1.17.0): cuánto ocupa la app en el teléfono. cache = la carpeta de caché (ahí el
+     * WebView guarda los archivos ya vistos), data = lo demás (la base de la interfaz, sus fotos y el intro).
+     */
+    @JavascriptInterface
+    fun diskUse(cb: String) = async(cb) {
+        val data = java.io.File(ctx.applicationInfo.dataDir)
+        val cache = dirSize(ctx.cacheDir)
+        JSONObject().put("cache", cache).put("data", (dirSize(data) - cache).coerceAtLeast(0L))
+    }
+
+    private fun dirSize(f: java.io.File?, root: Boolean = true): Long {
+        if (f == null || !f.exists()) return 0L
+        // Los enlaces (como «lib», que apunta a la app instalada) no se siguen.
+        if (!root && isLink(f)) return 0L
+        if (f.isFile) return f.length()
+        var n = 0L
+        f.listFiles()?.forEach { n += dirSize(it, false) }
+        return n
+    }
+
+    private fun isLink(f: java.io.File): Boolean = try {
+        val inReal = java.io.File(f.parentFile?.canonicalFile ?: return false, f.name)
+        inReal.canonicalPath != inReal.absolutePath
+    } catch (e: Exception) {
+        true
+    }
 
     private fun async(cb: String, work: () -> JSONObject) {
         io.execute {

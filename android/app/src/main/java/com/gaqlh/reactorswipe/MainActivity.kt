@@ -2,6 +2,7 @@ package com.gaqlh.reactorswipe
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.Intent
 import android.content.IntentFilter
@@ -53,6 +54,8 @@ class MainActivity : ComponentActivity() {
         private val BG = Color.parseColor("#0F0E0D")
         /** Cuánto quedan a la vista los botones de Android en pantalla completa. */
         private const val BARS_MS = 3000L
+        /** Volver adelante hasta este tiempo después de prender la pantalla o desbloquear = lo hizo el desbloqueo. */
+        private const val UNLOCK_MS = 1500L
     }
 
     lateinit var web: WebView
@@ -67,13 +70,34 @@ class MainActivity : ComponentActivity() {
     //   funcionando). En Android 13+ además setRecentsScreenshotEnabled(false).
     // · Esconder al bloquear: al apagarse la pantalla con la app abierta, la app pasa a segundo plano; al desbloquear
     //   se ve el escritorio.
+    // 1.17.0 (lo pidió el usuario: a veces, al desbloquear, la app se veía un segundo): al apagarse la pantalla la app
+    // queda negra en el acto (la capa y FLAG_SECURE, también sin «Tapar en recientes») y sigue negra al desbloquear:
+    // si Android la deja adelante, la vuelve a mandar atrás. Se destapa cuando la vuelves a abrir (o con un toque,
+    // por si algún teléfono no la manda atrás).
     private var cover: View? = null
-    private val screenOff = object : BroadcastReceiver() {
+    /** La pantalla se apagó con la app abierta: negra hasta que la vuelvas a abrir. */
+    private var lockCover = false
+    /** Cuándo se prendió la pantalla o se desbloqueó (reloj de uptime). */
+    private var screenOnAt = 0L
+    private var resumed = false
+    private val screenEvents = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (Intent.ACTION_SCREEN_OFF == intent.action && Store.prefs(this@MainActivity).getBoolean("privLock", true)) moveTaskToBack(true)
+            when (intent.action) {
+                Intent.ACTION_SCREEN_OFF -> if (hideOnLock()) {
+                    lockCover = true
+                    coverUp(true)
+                    moveTaskToBack(true)
+                }
+                Intent.ACTION_SCREEN_ON -> screenOnAt = SystemClock.uptimeMillis()
+                Intent.ACTION_USER_PRESENT -> {
+                    screenOnAt = SystemClock.uptimeMillis()
+                    if (lockCover && resumed && hideOnLock()) moveTaskToBack(true)
+                }
+            }
         }
     }
     private fun hideRecents() = Store.prefs(this).getBoolean("privRecents", true)
+    private fun hideOnLock() = Store.prefs(this).getBoolean("privLock", true)
 
     /** Lo llama Bridge.setPrivacy cuando cambian los ajustes. */
     fun applyPrivacy() {
@@ -81,10 +105,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun coverUp(on: Boolean) {
-        if (on && hideRecents()) {
+        if (on && (hideRecents() || lockCover)) {
             window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
             if (cover == null) {
-                cover = View(this).apply { setBackgroundColor(BG) }
+                cover = View(this).apply {
+                    setBackgroundColor(BG)
+                    // Si queda a la vista (un teléfono que no manda la app atrás), un toque la destapa.
+                    setOnClickListener {
+                        lockCover = false
+                        coverUp(false)
+                    }
+                }
                 root.addView(cover, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             }
         } else {
@@ -216,12 +247,16 @@ class MainActivity : ComponentActivity() {
         Scheduler.ensure(this)
         maybeAskNotifications(false)
         applyPrivacy()
-        ContextCompat.registerReceiver(this, screenOff, IntentFilter(Intent.ACTION_SCREEN_OFF), ContextCompat.RECEIVER_NOT_EXPORTED)
+        val screen = IntentFilter(Intent.ACTION_SCREEN_OFF).apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        ContextCompat.registerReceiver(this, screenEvents, screen, ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
     override fun onDestroy() {
         try {
-            unregisterReceiver(screenOff)
+            unregisterReceiver(screenEvents)
         } catch (e: Exception) {
             // ya no estaba
         }
@@ -237,7 +272,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        coverUp(false)
+        resumed = true
+        val locked = getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true
+        if (lockCover && (locked || SystemClock.uptimeMillis() - screenOnAt < UNLOCK_MS)) {
+            // Volvió adelante con el desbloqueo, no porque la abriste: sigue negra y se va atrás (si todavía está
+            // la pantalla de bloqueo, al desbloquear: ACTION_USER_PRESENT).
+            if (!locked && hideOnLock()) root.post { moveTaskToBack(true) }
+        } else {
+            lockCover = false
+            coverUp(false)
+        }
         web.onResume()
         web.evaluateJavascript("window.RSApp && RSApp.onResume && RSApp.onResume()", null)
     }
@@ -250,6 +294,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        resumed = false
         coverUp(true)
         web.onPause()
         super.onPause()

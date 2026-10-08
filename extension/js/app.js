@@ -571,7 +571,9 @@
         done++;
       }
       toast((done === 1 ? 'Guardado' : done + ' archivos guardados') + (RS.android ? ' en la galería, en ReactorSwipe' : ''));
+      noteDownload(done);
     } catch (e) {
+      if (done) noteDownload(done);
       toast((done ? 'Se guardaron ' + done + ' de ' + ms.length + '. ' : 'No se pudo descargar. ') + errText(e));
     }
     saving.delete(p.id);
@@ -1250,6 +1252,7 @@
     if (dwell) {
       clearTimeout(dwell.timer);
       creditTime(dwell.post, Date.now() - dwell.start);
+      noteVideo(dwell.post, Date.now() - dwell.start);
     }
     dwell = null;
   }
@@ -1313,9 +1316,17 @@
   function previewSrc(url, secs) {
     const key = secs + '|' + url;
     if (!previews.has(key)) {
-      previews.set(key, cutMp4(url, secs).then((b) => (b ? URL.createObjectURL(b) : url), () => url));
-      // Quedan los últimos 8; los demás se sueltan un rato después.
-      if (previews.size > 8) {
+      previews.set(
+        key,
+        cutMp4(url, secs).then((b) => {
+          if (!b) return url;
+          noteSaved(b._total - b.size); // Estadísticas › Ahorrado en Explorar (1.17.0)
+          return URL.createObjectURL(b);
+        }, () => url)
+      );
+      // Quedan los últimos 16 (desde la 1.17.0 los usan también las miniaturas de Explorar que se mueven); los
+      // demás se sueltan un rato después.
+      if (previews.size > 16) {
         const [old, pr] = previews.entries().next().value;
         previews.delete(old);
         pr.then((u) => u.startsWith('blob:') && setTimeout(() => URL.revokeObjectURL(u), 60000));
@@ -1525,9 +1536,14 @@
     const end = mdat.at + mdat.hdr + keep;
     if (maxBytes && end + (moovAt < mdat.at ? 0 : moov.length) > maxBytes) return null;
     await grow(end);
-    if (moovAt < mdat.at) return new Blob([head.subarray(0, end)], { type: 'video/mp4' });
-    shiftChunks(moov, moov.length);
-    return new Blob([head.subarray(0, mdat.at), moov, head.subarray(mdat.at, end)], { type: 'video/mp4' });
+    let out;
+    if (moovAt < mdat.at) out = new Blob([head.subarray(0, end)], { type: 'video/mp4' });
+    else {
+      shiftChunks(moov, moov.length);
+      out = new Blob([head.subarray(0, mdat.at), moov, head.subarray(mdat.at, end)], { type: 'video/mp4' });
+    }
+    out._total = total; // lo que pesa el archivo entero (Estadísticas: datos ahorrados)
+    return out;
   }
 
   function makeVideo(m, thumb) {
@@ -2035,8 +2051,11 @@
       // Las etiquetas de RedGifs no están en el árbol de JoyReactor: se muestran tal cual.
       const rg = RS.isRg(p);
       const complete = rg || !p.tags.some((t) => !RS.isFormatTag(t) && !knownTree(t));
-      const shown = all ? p.tags.map((t) => ({ name: t, parent: null })) : rg ? p.tags.slice(0, TAGS_SHOWN).map((t) => ({ name: t, parent: null })) : leafTags(p.tags).slice(0, TAGS_SHOWN);
-      const rest = p.tags.length - shown.length;
+      // El hashtag de una cuenta que sigues no sale aquí: va arriba, como nombre (1.17.0, ver postAccounts).
+      const mine = (t) => !accountOfTag(p, t);
+      const tags = p.tags.filter(mine);
+      const shown = all ? tags.map((t) => ({ name: t, parent: null })) : rg ? tags.slice(0, TAGS_SHOWN).map((t) => ({ name: t, parent: null })) : leafTags(p.tags).filter((x) => mine(x.name)).slice(0, TAGS_SHOWN).map((x) => (x.parent && !mine(x.parent) ? { name: x.name, parent: null } : x));
+      const rest = tags.length - shown.length;
       fill(row,
         // Una etiqueta de RedGifs abre su página de RedGifs (sin el menú de JoyReactor al mantenerla).
         shown.map((x) =>
@@ -2048,7 +2067,7 @@
           ? h('button', {
               type: 'button',
               class: 'htag more',
-              'aria-label': 'Ver los ' + p.tags.length + ' hashtags',
+              'aria-label': 'Ver los ' + tags.length + ' hashtags',
               onclick: (e) => {
                 e.stopPropagation();
                 all = true;
@@ -2890,12 +2909,16 @@
             }
           : null
       }, h('b', { text: fmt(n) }), h('span', { text: n === 1 ? one : many }));
+    // Quinto número (1.17.0, lo eligió el usuario: «Estadísticas, al lado del Historial»): el tiempo de hoy en la
+    // app; abre Estadísticas.
+    tickTime();
     return h('section', { class: 'mehead' },
-      h('div', { class: 'mestats' },
+      h('div', { class: 'mestats five' },
         stat(nProf, 'cuenta', 'cuentas', '#/following?tab=users'),
         stat(nTags, 'hashtag', 'hashtags', '#/following'),
         stat(nLikes, 'me gusta', 'me gusta', '#/likes', 'likes'),
-        stat(nHist, 'historial', 'historial', '#/history', 'history')
+        stat(nHist, 'historial', 'historial', '#/history', 'history'),
+        h('a', { class: 'mestat', href: '#/stats', 'aria-label': 'Estadísticas: ' + fmtDur(today().ms) + ' hoy' }, h('b', { text: shortDur(today().ms) }), h('span', { text: 'hoy' }))
       )
     );
   }
@@ -3336,6 +3359,54 @@
     }, 'Seguir');
   }
 
+  // ---- Posts de tus cuentas (1.17.0, lo eligió el usuario: «colaboración», como en Instagram). Si un post lleva el
+  // hashtag de una cuenta que sigues (un hashtag seguido como cuenta: S.tagProfiles en JoyReactor, S.rgTags con
+  // as 'account' en RedGifs), arriba sale la cuenta en vez de quien lo subió; con varias, juntas («A y B», las
+  // fotos encimadas) y tocar el nombre deja elegir a cuál ir. Quien lo subió queda en chiquito, al lado de la
+  // fecha, y el hashtag de la cuenta ya no sale entre los hashtags del post (lo pidió el usuario: su lugar es el
+  // nombre de arriba). Vale para el feed, la pantalla completa y las historias.
+  function accountOfTag(p, t) {
+    if (RS.isRg(p)) {
+      const x = rgTagOf(t);
+      return x && x.as === 'account' ? { kind: 'rgtag', name: x.name } : null;
+    }
+    const x = tagProfileOf(t);
+    return x ? { kind: 'tag', name: x.name } : null;
+  }
+  function postAccounts(p) {
+    const out = [];
+    const seen = new Set();
+    for (const t of p.tags || []) {
+      const a = accountOfTag(p, t);
+      if (!a || seen.has(tkey(a.name))) continue;
+      seen.add(tkey(a.name));
+      out.push(a);
+    }
+    return out;
+  }
+  const accHref = (a) => (a.kind === 'rgtag' ? '#/rgtag/' : '#/tag/') + enc(a.name);
+  const accPic = (a, cls) => (a.kind === 'rgtag' ? rgTagPic(a.name, cls) : tagPic(a.name, cls, '#'));
+  const accNames = (accs) => (accs.length === 1 ? accs[0].name : accs.length === 2 ? accs[0].name + ' y ' + accs[1].name : accs[0].name + ' y ' + (accs.length - 1) + ' más');
+  // Una foto, o hasta dos encimadas.
+  function accPics(accs, cls) {
+    if (accs.length === 1) return accPic(accs[0], cls);
+    return h('span', { class: 'accpics ' + cls + '-pair' }, accPic(accs[0], cls), accPic(accs[1], cls));
+  }
+  // Tocar el nombre: con una cuenta, a su perfil; con varias, un menú para elegir (y quien lo subió, al final).
+  function openAccounts(p, accs, go) {
+    if (accs.length === 1) return go(accHref(accs[0]));
+    const up = p.user ? (RS.isRg(p) ? '#/rguser/' : '#/user/') + enc(p.user) : null;
+    openSheet('Cuentas del post', h('div', { class: 'sheet-title', text: 'Ir a…' }),
+      ...accs.map((a) =>
+        h('button', { type: 'button', class: 'sheet-row', onclick: () => (closeSheet(), go(accHref(a))) },
+          accPic(a, 'sh-acc'),
+          h('span', { class: 'grow' }, h('span', { class: 'sr-l', text: a.name }), h('span', { class: 'sr-s', text: a.kind === 'rgtag' ? 'Cuenta · RedGifs' : 'Cuenta' }))
+        )
+      ),
+      up ? sheetRow('user', 'Subido por ' + p.user, null, () => (closeSheet(), go(up))) : null
+    );
+  }
+
   // La fecha de un post se ve si la encendiste en Herramientas de debug o, desde la 1.13.4 (lo pidió el usuario),
   // siempre en Inicio y en el perfil de una cuenta que sigues (opción dates del Feed).
   const whenCls = (feed) => 'when' + (feed && feed.datesOn && feed.datesOn() ? ' always' : '');
@@ -3343,15 +3414,32 @@
     const p = it.post;
     const card = h('article', { class: 'card', 'data-id': p.id });
     if (it.label) card.append(h('div', { class: 'source', style: it.color ? { color: it.color } : null }, icon(it.icon || 'shuffle', 14), h('span', { text: it.label })));
+    const accs = postAccounts(p);
     card.append(
       h('div', { class: 'head' },
-        p.user
-          ? h('a', { class: 'who-link', href: (RS.isRg(p) ? '#/rguser/' : '#/user/') + enc(p.user), 'aria-label': 'Ver todos los posts de ' + p.user },
-              avatar(p),
-              h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: p.user }), repChip(p)), h('span', { class: whenCls(feed), text: ago(p.time) }))
+        accs.length
+          ? h('div', {
+              class: 'who-link acc',
+              role: 'button',
+              'aria-label': 'Ver ' + accNames(accs),
+              onclick: (e) => !e.target.closest('.acc-by') && openAccounts(p, accs, nav)
+            },
+              accPics(accs, 'avatar'),
+              h('div', { class: 'who' },
+                h('span', { class: 'user-line' }, h('span', { class: 'user', text: accNames(accs) })),
+                h('span', { class: 'acc-sub' },
+                  h('span', { class: whenCls(feed), text: ago(p.time) + (p.user ? ' · ' : '') }),
+                  p.user ? h('a', { class: 'acc-by', href: (RS.isRg(p) ? '#/rguser/' : '#/user/') + enc(p.user) }, 'subido por ' + p.user) : null
+                )
+              )
             )
-          : [avatar(p), h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: 'anónimo' })), h('span', { class: whenCls(feed), text: ago(p.time) }))],
-        followInline(p),
+          : p.user
+            ? h('a', { class: 'who-link', href: (RS.isRg(p) ? '#/rguser/' : '#/user/') + enc(p.user), 'aria-label': 'Ver todos los posts de ' + p.user },
+                avatar(p),
+                h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: p.user }), repChip(p)), h('span', { class: whenCls(feed), text: ago(p.time) }))
+              )
+            : [avatar(p), h('div', { class: 'who' }, h('span', { class: 'user-line' }, h('span', { class: 'user', text: 'anónimo' })), h('span', { class: whenCls(feed), text: ago(p.time) }))],
+        accs.length ? null : followInline(p),
         h('span', { class: 'grow' }),
         RS.isRg(p) ? null : h('span', { class: 'rating' + (p.rating < 0 ? ' neg' : ''), title: 'Rating en JoyReactor' }, icon('up', 14), String(p.rating).replace('.', ','))
       )
@@ -3431,8 +3519,12 @@
     if (sb) cell.append(sb);
 
     // Explorar, como Instagram: sin botones; los GIF y videos en un cuadro alto y lo de Descubrir con su marca.
+    // Algunos se mueven (liveScan): los GIF y videos mp4 pueden; los GIF «clásicos» (imágenes .gif) ya se mueven.
     if (explore) {
       if (m && (m.kind === 'video' || m.ext === 'gif')) cell.classList.add('tall');
+      if (m && m.kind === 'video') cell._liveM = m;
+      else if (m && m.ext === 'gif') cell._gif = true;
+      liveIO.observe(cell);
       if (it.discover) cell.append(h('span', { class: 'tnew', text: '✦ Nuevo' }));
       return cell;
     }
@@ -3449,6 +3541,103 @@
       )
     );
     return cell;
+  }
+
+  // ---- Explorar en movimiento (1.17.0, lo pidió el usuario: solo se movían los GIF «clásicos»). De las miniaturas
+  // que se ven (más de la mitad a la vista), entre el 30 y el 40 % se mueve, a veces más y a veces menos. Los GIF
+  // clásicos (imágenes .gif) se mueven solos y cuentan; el resto lo ponen GIF y videos mp4 (de JoyReactor y de
+  // RedGifs) elegidos al azar entre los que se ven. Cada uno repite sus primeros segundos, del mismo pedazo que la
+  // vista previa (previewSrc: PREVIEW_S, o PREVIEW_WIFI_S con Wi-Fi), así gasta pocos datos. Siguen mientras se
+  // vean; al salir se sueltan (como mucho LIVE_CAP a la vez) y, al terminar de desplazarte, entran otros. Con la
+  // pantalla completa abierta se sueltan todos y vuelven al cerrarla.
+  const LIVE_LO = 0.3;
+  const LIVE_HI = 0.4;
+  const LIVE_CAP = 6;
+  const liveOn = new Set(); // miniaturas con su video andando
+  let liveTimer = null;
+  const liveSoon = (ms) => {
+    clearTimeout(liveTimer);
+    liveTimer = setTimeout(liveScan, ms == null ? 350 : ms);
+  };
+  const liveIO = new IntersectionObserver(() => liveSoon(), { threshold: [0, 0.5] });
+  window.addEventListener('scroll', () => current && current.feed && current.feed.source === 'explore' && liveSoon(), { passive: true });
+  document.addEventListener('visibilitychange', () => liveSoon(document.hidden ? 0 : 200));
+  setInterval(liveScan, 2500); // por si los observadores no avisan (Android al volver a la app)
+  function liveScan() {
+    const f = current && current.feed;
+    if (!f || f.source !== 'explore' || f.mode !== 'grid' || !f.root.isConnected || viewer || document.hidden) {
+      Array.from(liveOn).forEach(liveStop);
+      return;
+    }
+    const vh = window.innerHeight;
+    const vis = [];
+    for (const c of f.list.children) {
+      const r = c.getBoundingClientRect();
+      if (r.top > vh + 600) break;
+      if (!r.height || r.bottom <= 0 || r.top >= vh) continue;
+      if (Math.min(r.bottom, vh) - Math.max(r.top, 0) >= r.height / 2) vis.push(c);
+    }
+    const shown = new Set(vis);
+    for (const c of Array.from(liveOn)) if (!shown.has(c) || !c.isConnected) liveStop(c);
+    const lo = Math.round(vis.length * LIVE_LO);
+    const hi = Math.max(lo, Math.round(vis.length * LIVE_HI));
+    let moving = vis.filter((c) => c._gif).length + liveOn.size;
+    if (moving > hi) {
+      for (const c of Array.from(liveOn)) {
+        if (moving <= hi) break;
+        liveStop(c);
+        moving--;
+      }
+    } else if (moving < lo) {
+      const want = lo + Math.floor(Math.random() * (hi - lo + 1));
+      const cands = vis.filter((c) => c._liveM && !liveOn.has(c) && !c._liveBad);
+      while (moving < want && cands.length && liveOn.size < LIVE_CAP) {
+        liveStart(cands.splice(Math.floor(Math.random() * cands.length), 1)[0]);
+        moving++;
+      }
+    }
+    // Chrome pausa los videos mudos con la página escondida: al volver, siguen.
+    liveOn.forEach((c) => c._live && c._live.getAttribute('src') && c._live.paused && c._live.play().catch(() => {}));
+  }
+  function liveStart(c) {
+    const v = document.createElement('video');
+    v.muted = true;
+    v.defaultMuted = true;
+    v.loop = true;
+    v.playsInline = true;
+    v.setAttribute('muted', '');
+    v.setAttribute('playsinline', '');
+    v.className = 'tlive';
+    v.poster = BLANK_POSTER; // hasta que se mueve se ve la miniatura de abajo (sin el ícono de «play» de Android)
+    v.preload = 'auto';
+    const secs = onWifi() ? PREVIEW_WIFI_S : PREVIEW_S;
+    v.addEventListener('playing', () => c._live === v && c.classList.add('live'));
+    // El pedazo guarda la duración del archivo entero: se vuelve al principio al terminar sus segundos.
+    v.addEventListener('timeupdate', () => v.duration > secs + 2 && v.currentTime >= secs && (v.currentTime = 0));
+    v.addEventListener('error', () => {
+      if (c._live !== v) return;
+      c._liveBad = true; // ese queda quieto; entra otro
+      liveStop(c);
+      liveSoon();
+    });
+    c._live = v;
+    liveOn.add(c);
+    c.querySelector('.thumb-open').append(v);
+    previewSrc(RS.videoUrl(c._liveM), secs).then((url) => {
+      if (c._live !== v) return;
+      v.src = url;
+      v.play().catch(() => {});
+    });
+  }
+  function liveStop(c) {
+    liveOn.delete(c);
+    const v = c._live;
+    c._live = null;
+    c.classList.remove('live');
+    if (v) {
+      stopVideo(v);
+      v.remove();
+    }
   }
 
   // ---- Seleccionar varios en Me gusta e Historial: mantener presionada una miniatura (medio segundo; se
@@ -3574,6 +3763,7 @@
     // el sonido; entonces sigue como lo dejaste la última vez).
     const v = { feed, scroller, current: null, muted: !(S.settings.fsKeepSound && fsSoundOn), onAdd: null, openedAt: Date.now(), story: story ? {} : null };
     viewer = v;
+    liveScan(); // las miniaturas de Explorar que se movían se sueltan (la pantalla completa necesita los reproductores)
     stats().fsOpens++;
     saveStats();
     v.el = h('div', { class: 'viewer', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Pantalla completa' },
@@ -3732,25 +3922,48 @@
     const scrub = videos.length && !viewer.story ? scrubBar(null) : null;
     if (scrub) scrub.watch(media);
     page._scrub = scrub;
+    // Con el hashtag de una cuenta que sigues, arriba va la cuenta (o las cuentas) y quien lo subió en chiquito
+    // (1.17.0, ver postAccounts).
+    const accs = postAccounts(p);
+    const go = (href) => closeViewerThen(() => nav(href));
+    const upHref = p.user ? (RS.isRg(p) ? '#/rguser/' : '#/user/') + enc(p.user) : '';
     const info = h('div', { class: 'vw-info' },
       scrub ? scrub.el : null,
       page._dots || null,
       it.label ? h('span', { class: 'vw-src', text: it.label }) : null,
-      h('div', { class: 'vw-who' },
-        p.user
+      h('div', { class: 'vw-who' + (accs.length ? ' acc' : '') },
+        accs.length
           ? h('a', {
               class: 'vw-user',
-              href: (RS.isRg(p) ? '#/rguser/' : '#/user/') + enc(p.user),
+              href: accHref(accs[0]),
               onclick: (e) => {
                 e.preventDefault();
-                closeViewerThen(() => nav((RS.isRg(p) ? '#/rguser/' : '#/user/') + enc(p.user)));
+                openAccounts(p, accs, go);
               }
-            }, RS.isRg(p) ? rgPic(p.user, p.rgAvatar, 'vw-av') : userPic(p.user, p.userId, 'vw-av'), p.user)
-          : h('strong', { text: 'anónimo' }),
-        followInline(p, 'fol-inline vw-fol'),
+            }, accPics(accs, 'vw-av'), accNames(accs))
+          : p.user
+            ? h('a', {
+                class: 'vw-user',
+                href: upHref,
+                onclick: (e) => {
+                  e.preventDefault();
+                  go(upHref);
+                }
+              }, RS.isRg(p) ? rgPic(p.user, p.rgAvatar, 'vw-av') : userPic(p.user, p.userId, 'vw-av'), p.user)
+            : h('strong', { text: 'anónimo' }),
+        accs.length ? null : followInline(p, 'fol-inline vw-fol'),
         // Estrellas del autor y rating del post: solo si se activan en Ajustes.
-        p.user ? h('span', { class: 'vw-score' }, repChip(p, 'media')) : null,
+        p.user && !accs.length ? h('span', { class: 'vw-score' }, repChip(p, 'media')) : null,
         h('span', { class: whenCls(viewer.story ? null : viewer.feed), text: ' · ' + ago(p.time) }),
+        accs.length && p.user
+          ? h('span', { class: 'vw-by' }, ' · ', h('a', {
+              href: upHref,
+              onclick: (e) => {
+                e.preventDefault();
+                go(upHref);
+              }
+            }, 'subido por ' + p.user))
+          : null,
         h('span', { class: 'vw-score' }, ' · ', h('span', { class: 'vw-rating' }, icon('up', 13), String(p.rating).replace('.', ',')))
       ),
       p.tags.length ? tagsRow(p, (t) => closeViewerThen(() => nav((RS.isRg(p) ? '#/rgtag/' : '#/tag/') + enc(t))), 'vw-tags') : null
@@ -3794,6 +4007,7 @@
     viewer.current = page;
     fillPage(page, 0);
     markSeen(page.dataset.id, page._it && page._it.post);
+    noteStory(page._it);
     focusPost(page._it && page._it.post);
     syncViewerPlayback();
     const pages = viewer.scroller.children;
@@ -4127,6 +4341,7 @@
     v.el.remove();
     document.body.classList.remove('noscroll');
     setFullscreen(false);
+    liveSoon(400); // las miniaturas de Explorar vuelven a moverse
 
     // Al salir, el feed de abajo queda en el post que estabas viendo (también si después
     // entras a un hashtag y vuelves con «atrás»).
@@ -5128,7 +5343,8 @@
     search: 'search', find: 'search', visited: 'search', cross: 'search',
     random: 'random', mix: 'random',
     me: 'me', following: 'me', favorites: 'me', likes: 'me', history: 'me',
-    settings: 'settings', hidden: 'settings', blocked: 'settings', debug: 'settings', stats: 'settings', week: 'settings', recap: 'settings', topusers: 'settings', tree: 'settings'
+    stats: 'me', monthrecap: 'me',
+    settings: 'settings', hidden: 'settings', blocked: 'settings', debug: 'settings', week: 'settings', recap: 'settings', topusers: 'settings', tree: 'settings'
   };
   let lastNavWasBack = false;
   let lastNavFromTab = false; // se llegó tocando una pestaña de abajo
@@ -5179,6 +5395,7 @@
     if (name === 'history') return routeHistory();
     if (name === 'visited') return routeVisited();
     if (name === 'stats') return routeStats();
+    if (name === 'monthrecap') return routeMonthRecap(q);
     if (name === 'week' || name === 'topusers') return routeWeek();
     if (name === 'recap') return routeRecap();
     if (name === 'tree') return routeTree(parts[1] || '');
@@ -5205,7 +5422,7 @@
   const recapPending = () => recapUnseen() && S.weekly.later !== S.weekly.week;
   const restorePending = () => !!RS.android && ((!hasUserData() && !S.backup.skip) || (!!S.backup.stale && hasUserData()));
   function fillBell(a) {
-    const n = (S.news.unread || 0) + (recapPending() ? 1 : 0) + (restorePending() ? 1 : 0);
+    const n = (S.news.unread || 0) + (recapPending() ? 1 : 0) + (restorePending() ? 1 : 0) + (monthPending() ? 1 : 0);
     a.setAttribute('aria-label', n ? 'Novedades: ' + n + (n === 1 ? ' aviso' : ' avisos') : 'Novedades');
     fill(a, icon('bell', 22), n ? h('span', { class: 'badge-count', text: n > 99 ? '99+' : String(n) }) : null);
   }
@@ -5290,6 +5507,12 @@
     ]);
     const since = Date.now() - STORY_WINDOW;
     const fresh = (list) => (list || []).filter((p) => p.time >= since && !RS.isJunk(p) && pass(p) && !S.dislikes[p.id]).sort((a, b) => a.time - b.time);
+    // Estadísticas › Cuentas que más publican (1.17.0): cuántos de sus últimos posts son de los últimos 7 días.
+    users.forEach((u) => notePub('user', u.name, byUser[u.name]));
+    tags.forEach((t) => notePub(t.kind, t.name, byTag[t.name]));
+    rgUsers.forEach((u, i) => notePub('rg', u.name, byRg[i]));
+    rgTagList.forEach((t, i) => notePub('rgtag', t.name, byRgTag[i]));
+    saveStats();
     return users
       .map((u) => ({ kind: 'user', name: u.name, userId: u.userId, posts: fresh(byUser[u.name]) }))
       .concat(tags.map((t) => ({ kind: t.kind, name: t.name, pic: t.pic, posts: fresh(byTag[t.name]) })))
@@ -5357,7 +5580,7 @@
       for (const post of st.posts) {
         if (ids.has(post.id)) continue; // un post puede estar en dos historias: sale en la primera
         ids.add(post.id);
-        items.push({ post, story: g, label: (st.kind === 'user' || st.kind === 'rg' ? 'Historia de @' : 'Historia de #') + st.name + (st.kind === 'rg' || st.kind === 'rgtag' ? ' (RedGifs)' : '') + ' · ' + ago(post.time), icon: 'clock' });
+        items.push({ post, story: g, storyKey: st.kind + ':' + st.name, label: (st.kind === 'user' || st.kind === 'rg' ? 'Historia de @' : 'Historia de #') + st.name + (st.kind === 'rg' || st.kind === 'rgtag' ? ' (RedGifs)' : '') + ' · ' + ago(post.time), icon: 'clock' });
       }
     });
     const first = s.posts.find((p) => !S.seenSet.has(p.id)) || s.posts[0];
@@ -5591,32 +5814,50 @@
   }
 
   // Versión nueva: se busca al abrir la app, al volver a ella (como mucho cada 10 minutos) y cada media
-  // hora mientras está abierta; el aviso sale en Inicio sin reiniciar. «Luego» lo esconde hasta que la
-  // app se vuelva a abrir.
+  // hora mientras está abierta. Desde la 1.17.0 (lo eligió el usuario, opción C) el aviso es una línea fina encima
+  // de la barra de abajo («Versión X lista · Actualizar ✕») que se va sola a los UPDLINE_MS y vuelve la próxima
+  // vez que abras la app (de cero, o después de media hora en segundo plano: appSession). Antes era una tarjeta
+  // grande arriba de Inicio. Para actualizar sin el aviso: Ajustes › Respaldo y versión.
   const UPDATE_EVERY = 10 * 60000;
+  const UPDLINE_MS = 8000;
   let lastUpdateCheck = 0;
-  let updateLater = '';
-  function updateBanner() {
-    if (!S.update || S.update.version === updateLater) return null;
-    return h('div', { class: 'notice green' },
-      h('strong', { text: 'Versión nueva disponible: ' + S.update.version }),
-      h('span', { text: 'Toca Actualizar y después Instalar. Tus favoritos y lo que sigues se conservan.' }),
-      h('div', { class: 'row-btns' },
-        h('button', { class: 'btn', onclick: (e) => installUpdate(e.currentTarget) }, icon('download', 18), 'Actualizar'),
-        h('button', {
-          class: 'btn quiet',
-          onclick: () => {
-            updateLater = S.update.version;
-            if (current && current.feed) current.feed.refresh();
-          }
-        }, 'Luego')
-      )
+  let appSession = 1; // sube al volver a la app después de media hora (startUsageClock)
+  let updLineSession = 0; // en qué apertura se mostró la línea
+  let updLine = null;
+  function hideUpdLine() {
+    if (!updLine) return;
+    const el = updLine;
+    updLine = null;
+    clearTimeout(el._timer);
+    el.classList.remove('show');
+    setTimeout(() => el.remove(), 300);
+  }
+  function maybeUpdLine() {
+    if (!S.update || updLineSession === appSession || updLine) return;
+    updLineSession = appSession;
+    const v = String(S.update.version).replace(/\.0$/, '');
+    const el = h('div', { id: 'updline', role: 'status' },
+      icon('download', 16),
+      h('span', { class: 'grow', text: 'Versión ' + v + ' lista' }),
+      h('button', {
+        type: 'button',
+        class: 'go',
+        onclick: () => {
+          hideUpdLine();
+          installUpdate(null);
+        }
+      }, 'Actualizar'),
+      h('button', { type: 'button', class: 'x', 'aria-label': 'Cerrar el aviso', onclick: hideUpdLine }, icon('x', 16))
     );
+    updLine = el;
+    document.body.append(el);
+    requestAnimationFrame(() => el.classList.add('show'));
+    setTimeout(() => el.classList.add('show'), 60); // por si requestAnimationFrame no corre (página sin ver)
+    el._timer = setTimeout(hideUpdLine, UPDLINE_MS);
   }
 
   // manual = se tocó el botón de Ajustes: si hay una versión nueva, se descarga e instala en el acto.
   async function lookForUpdate(manual, btn) {
-    const before = S.update ? S.update.version : '';
     lastUpdateCheck = Date.now();
     try {
       S.update = await RS.checkForUpdate();
@@ -5626,7 +5867,7 @@
     }
     if (manual && S.update && RS.android) return installUpdate(btn);
     if (manual) toast(S.update ? 'Hay una versión nueva: ' + S.update.version : 'Ya tienes la última versión (' + RS.version() + ')');
-    if (S.update && S.update.version !== before && current && current.feed && /^home:/.test(current.feed.key)) current.feed.refresh();
+    else maybeUpdLine();
   }
   setInterval(() => {
     if (!document.hidden && Date.now() - lastUpdateCheck > 30 * 60000) lookForUpdate(false);
@@ -5645,8 +5886,9 @@
         dates: () => true,
         // Inicio es siempre un post por pantalla (1.16.0, lo pidió el usuario: sin miniaturas).
         head: () => [h('h1', { text: 'Inicio' }), bellLink()],
-        // En Inicio solo queda el aviso de versión nueva; los demás esperan en la campanita (Novedades).
-        extra: () => [updateBanner(), storiesRow()],
+        // Los avisos esperan en la campanita (Novedades); el de versión nueva es una línea encima de la barra de
+        // abajo (maybeUpdLine, 1.17.0).
+        extra: () => [storiesRow()],
         empty: (f) =>
           srcMode() === 'jr'
             ? emptyBox('home', 'Inicio muestra tus cuentas de RedGifs', 'RedGifs está apagado en Ajustes › Fuentes. Enciéndelo para verlas.')
@@ -5775,6 +6017,7 @@
             const post = x.buf.shift();
             if (!ok(post)) continue;
             sg.queue.push({ post, label: 'Te puede gustar' + (x.q.tags ? ' · #' + x.q.tags : ''), icon: 'search' });
+            sugIds.add(post.id); // Estadísticas › Tus cuentas y «Te puede gustar»
             moved = true;
             break;
           }
@@ -6910,6 +7153,7 @@
       .slice(0, 30);
     persist('searches');
     stats().searches++;
+    noteQuery(entry);
     saveStats();
   }
 
@@ -7688,6 +7932,8 @@
       if (st.time.key && Object.keys(st.time.users).length + Object.keys(st.time.tags).length) {
         S.weekly.pending = st.time;
         persist('weekly', 0);
+        // Para «Subieron y bajaron» de Estadísticas (1.17.0): la semana que terminó, entera.
+        st.lastWeek = { key: st.time.key, tags: Object.fromEntries(topOf(st.time.tags, 60)), users: Object.fromEntries(topOf(st.time.users, 30)) };
       }
       st.time = { key, users: {}, tags: {}, ids: {} };
       saveStats();
@@ -7699,6 +7945,7 @@
     if (!p || !(ms >= TIME_MIN)) return;
     const t = weekTime();
     ms = Math.min(ms, TIME_MAX);
+    creditMore(p, ms); // Estadísticas (1.17.0): por fuente, promedio por post, mes y siempre
     if (p.user && !RS.isRg(p)) {
       t.users[p.user] = (t.users[p.user] || 0) + ms;
       if (p.userId) t.ids[p.user] = p.userId;
@@ -7919,14 +8166,18 @@
   }
 
   function playStories(page, sum) {
-    const slides = storySlides(sum);
+    playSlides(page, storySlides(sum), () => navReplace('#/week'), '#/home');
+  }
+  // Historias de tarjetas (el resumen de la semana y, desde la 1.17.0, el del mes): se pasan tocando o solas cada
+  // STORY_MS; al terminar (o con «Ver la lista»), finish. La ✕ vuelve atrás (o a closeTo).
+  function playSlides(page, slides, finish, closeTo, footLabel) {
     let i = 0;
     let timer = null;
     const bars = h('div', { class: 'rc-bars' }, slides.map(() => h('span', {}, h('i'))));
     const body = h('div', { class: 'rc-body' });
     const done = () => {
       clearTimeout(timer);
-      if (page.isConnected) navReplace('#/week');
+      if (page.isConnected) finish();
     };
     const show = () => {
       clearTimeout(timer);
@@ -7954,11 +8205,11 @@
         'aria-label': 'Cerrar el resumen',
         onclick: () => {
           clearTimeout(timer);
-          goBack('#/home');
+          goBack(closeTo);
         }
       }, icon('x', 24)),
       body,
-      h('div', { class: 'rc-foot' }, h('span', { text: 'Toca para seguir' }), h('button', { class: 'link-btn', onclick: done }, 'Ver la lista'))
+      h('div', { class: 'rc-foot' }, h('span', { text: 'Toca para seguir' }), h('button', { class: 'link-btn', onclick: done }, footLabel || 'Ver la lista'))
     );
     show();
   }
@@ -8238,7 +8489,7 @@
       // Lo que se vigila se vuelve a leer cada vez (pudiste tocar una campanita desde la última visita).
       extra: () => {
         const list = watchList();
-        return [restoreBanner(), recapBanner()].concat(list.length
+        return [restoreBanner(), recapBanner(), monthBanner()].concat(list.length
           ? h('p', { class: 'countline', style: { paddingTop: '12px' } },
               'Vigilando ' + list.join(', ') + '. Última revisión: ' + (S.news.lastCheck ? ago(S.news.lastCheck) : 'todavía no') + '. ',
               h('a', { href: '#/settings', text: S.settings.notify ? 'Avisos cada ' + S.settings.interval + ' min' : 'Avisos desactivados' })
@@ -8606,7 +8857,6 @@
         recapUnseen()
           ? navLine('trophy', 'Resumen de la semana', 'Ya está el de la semana pasada: toca para verlo.', '#/recap', true)
           : navLine('trophy', 'Resumen de la semana', 'Los 10 usuarios y hashtags que más tiempo miraste.', '#/week'),
-        navLine('chart', 'Estadísticas', 'Cuánto y cómo usas la app (solo en este teléfono).', '#/stats'),
         segField('Historial: guardar hasta', 'Los posts que miras más de 10 segundos. Al llenarse se borran los más viejos.', [[50, '50'], [100, '100'], [200, '200'], [500, '500']], Number(st.historyMax) || 100, (v) => {
           st.historyMax = v;
           S.history = (S.history || []).slice(0, v);
@@ -8792,11 +9042,33 @@
   }
 
   // ================================================================ Estadísticas de uso (solo en este teléfono)
+  //
+  // Todo se mide en el teléfono y vive en S.stats (entra en el respaldo). Desde la 1.17.0 (lo pidió el usuario:
+  // «deja todas, ya después iré descartando») la página cuelga de Tú (el número «hoy» de su cabecera) y muestra
+  // la lista entera de la propuesta, E1 a E40, en ocho grupos. Lo que se empezó a medir en la 1.17.0:
+  //   src, srcMs        posts vistos y tiempo por fuente (JoyReactor, RedGifs)
+  //   dwell             tiempo mirando posts y cuántas veces (segundos promedio por post)
+  //   vids              videos con sonido mirados hasta el 90 % (done) o dejados antes (skip)
+  //   stories           posts de historias vistos, por cuenta
+  //   timeAll, timeMonth, lastWeek   tiempo por hashtag y por cuenta: siempre, este mes y la semana pasada
+  //   tagFirst          el día en que viste cada hashtag por primera vez ('0' = antes de la 1.17.0)
+  //   dayTags, nightTags   hashtags vistos de día (de 7 a 20 h) y de noche
+  //   pub               cuántos posts publicó en 7 días cada cosa que sigues (se anota al armar las historias)
+  //   mine              tiempo en lo que sigues, en «Te puede gustar» y en lo demás
+  //   queries           lo que abriste desde el buscador
+  //   downloads         posts y archivos descargados
+  //   viewsTotal        posts vistos desde siempre (los días se guardan 400)
+  //   longest           tu sesión más larga; days[d].ses, .net, .saved: veces que abriste la app, datos usados
+  //                     (Android: TrafficStats) y datos ahorrados por la vista previa de Explorar
+  //   months            el resumen de cada mes terminado («Tu mes en historias»)
+  // En st.users (vistas) y en el tiempo, los creadores de RedGifs van como 'rg:<nombre>' desde la 1.17.0.
 
   function dayKey(t) {
     const d = new Date(t);
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   }
+  const monthKey = (t) => dayKey(t).slice(0, 7);
+  const dayAt = (k) => new Date(k + 'T12:00:00').getTime(); // el mediodía de un día 'AAAA-MM-DD'
 
   function stats() {
     const st = S.stats || (S.stats = {});
@@ -8809,14 +9081,35 @@
     st.sections = st.sections || {};
     st.time = st.time || { key: '', users: {}, tags: {}, ids: {} }; // tiempo por usuario y hashtag de esta semana
     delete st.week; // vistas por hashtag de la 1.1.0, reemplazadas por st.time
-    for (const k of ['sessions', 'fsOpens', 'fsMs', 'searches']) st[k] = st[k] || 0;
+    for (const k of ['sessions', 'fsOpens', 'fsMs', 'searches', 'saved']) st[k] = st[k] || 0;
+    // 1.17.0 (ver arriba). Lo que ya se medía siembra lo nuevo, para que no empiece de cero.
+    st.src = st.src || { jr: 0, rg: 0 };
+    st.srcMs = st.srcMs || { jr: 0, rg: 0 };
+    st.dwell = st.dwell || { ms: 0, n: 0 };
+    st.vids = st.vids || { done: 0, skip: 0 };
+    st.stories = st.stories || { n: 0, by: {} };
+    if (!st.timeAll) st.timeAll = { since: Date.now(), tags: Object.assign({}, st.time.tags), users: Object.assign({}, st.time.users) };
+    if (!st.timeMonth) st.timeMonth = { key: monthKey(Date.now()), tags: Object.assign({}, st.time.tags), users: Object.assign({}, st.time.users), longest: 0 };
+    if (!st.tagFirst) {
+      st.tagFirst = {};
+      for (const k of Object.keys(st.tags)) st.tagFirst[tkey(k)] = '0';
+    }
+    st.dayTags = st.dayTags || {};
+    st.nightTags = st.nightTags || {};
+    st.pub = st.pub || {};
+    st.mine = st.mine || { fol: 0, sug: 0, other: 0 };
+    st.queries = st.queries || {};
+    st.downloads = st.downloads || { posts: 0, files: 0 };
+    st.longest = st.longest || { ms: 0, at: 0 };
+    st.months = st.months || {};
+    if (st.viewsTotal == null) st.viewsTotal = Object.values(st.days).reduce((a, d) => a + (d.posts || 0), 0);
     return st;
   }
 
   function today() {
     const st = stats();
     const k = dayKey(Date.now());
-    return st.days[k] || (st.days[k] = { ms: 0, posts: 0, likes: 0, dislikes: 0 });
+    return st.days[k] || (st.days[k] = { ms: 0, posts: 0, likes: 0, dislikes: 0, ses: 0, net: 0, saved: 0 });
   }
 
   function saveStats() {
@@ -8832,52 +9125,254 @@
       .slice(Math.floor(max * 0.7))
       .forEach((k) => delete obj[k]);
   }
+  // tagFirst: quedan los más recientes.
+  function pruneFirst(obj, max) {
+    const keys = Object.keys(obj);
+    if (keys.length <= max) return;
+    keys
+      .sort((a, b) => (obj[a] < obj[b] ? -1 : obj[a] > obj[b] ? 1 : 0))
+      .slice(0, keys.length - Math.floor(max * 0.8))
+      .forEach((k) => delete obj[k]);
+  }
+
+  // De día: de las 7 a las 20 h.
+  const isNight = (hr) => hr >= 20 || hr < 7;
+  const userStatKey = (p) => (p.user ? (RS.isRg(p) ? 'rg:' + p.user : p.user) : '');
 
   function recordView(p) {
     const st = stats();
     today().posts++;
+    st.viewsTotal++;
     const section = parseHash().parts[0] || 'home';
     st.sections[section] = (st.sections[section] || 0) + 1;
-    for (const x of leafTags(p.tags)) st.tags[x.name] = (st.tags[x.name] || 0) + 1;
-    if (p.user) st.users[p.user] = (st.users[p.user] || 0) + 1;
+    const k = dayKey(Date.now());
+    const bag = isNight(new Date().getHours()) ? st.nightTags : st.dayTags;
+    for (const x of leafTags(p.tags)) {
+      st.tags[x.name] = (st.tags[x.name] || 0) + 1;
+      bag[x.name] = (bag[x.name] || 0) + 1;
+      if (!st.tagFirst[tkey(x.name)]) st.tagFirst[tkey(x.name)] = k;
+    }
+    const uk = userStatKey(p);
+    if (uk) st.users[uk] = (st.users[uk] || 0) + 1;
     st.kinds[RS.isRealVideo(p) ? 'video' : RS.isGifPost(p) ? 'gif' : 'image']++;
+    st.src[RS.isRg(p) ? 'rg' : 'jr']++;
     pruneCounts(st.tags, 600);
     pruneCounts(st.users, 300);
+    pruneCounts(st.dayTags, 300);
+    pruneCounts(st.nightTags, 300);
+    pruneFirst(st.tagFirst, 3000);
     saveStats();
   }
 
-  // Tiempo con la app abierta y a la vista: se suma cada 15 s (por día y por hora).
+  // ---- Lo que se suma mientras miras un post (lo llama creditTime, junto con el tiempo de la semana).
+  const sugIds = new Set(); // posts de «Te puede gustar» (Inicio) cargados en esta sesión
+  function fromFollowed(p) {
+    if (RS.isRg(p)) return (p.user && isRgFollowed(p.user)) || p.tags.some((t) => !!rgTagOf(t));
+    return (p.user && isFollowed(p.user)) || p.tags.some(isFollowedTag);
+  }
+  function creditMore(p, ms) {
+    const st = stats();
+    st.dwell.ms += ms;
+    st.dwell.n++;
+    st.srcMs[RS.isRg(p) ? 'rg' : 'jr'] += ms;
+    st.mine[sugIds.has(p.id) ? 'sug' : fromFollowed(p) ? 'fol' : 'other'] += ms;
+    const uk = userStatKey(p);
+    for (const bag of [st.timeAll, monthTime()]) {
+      if (uk) bag.users[uk] = (bag.users[uk] || 0) + ms;
+      for (const x of leafTags(p.tags)) bag.tags[x.name] = (bag.tags[x.name] || 0) + ms;
+      pruneCounts(bag.tags, 800);
+      pruneCounts(bag.users, 400);
+    }
+  }
+
+  // ---- Videos mirados hasta el final (E12): un video con sonido que llegó al 90 % cuenta como visto entero; si
+  // lo dejaste antes (más de un segundo y medio a la vista), como pasado. Una vez por post y por sesión.
+  const vidDone = new Set();
+  const vidCounted = new Set();
+  document.addEventListener(
+    'timeupdate',
+    (e) => {
+      const v = e.target;
+      if (!(v instanceof HTMLVideoElement) || v.classList.contains('tlive') || v.classList.contains('cpicv') || v._capped) return;
+      if (!(v.duration > 0) || v.currentTime < v.duration * 0.9) return;
+      const holder = v.closest('[data-id]');
+      if (holder) vidDone.add(holder.dataset.id);
+    },
+    true
+  );
+  function noteVideo(p, ms) {
+    if (!p || ms < TIME_MIN || vidCounted.has(p.id) || !RS.isRealVideo(p)) return;
+    vidCounted.add(p.id);
+    stats().vids[vidDone.has(p.id) ? 'done' : 'skip']++;
+  }
+
+  // ---- Historias vistas (E15), una vez por post cada vez que las abres.
+  function noteStory(it) {
+    if (!viewer || !viewer.story || !it || !it.storyKey) return;
+    const seen = viewer.storyCounted || (viewer.storyCounted = new Set());
+    if (seen.has(it.post.id)) return;
+    seen.add(it.post.id);
+    const st = stats();
+    st.stories.n++;
+    st.stories.by[it.storyKey] = (st.stories.by[it.storyKey] || 0) + 1;
+    pruneCounts(st.stories.by, 200);
+    saveStats();
+  }
+  // ---- Cuánto publica lo que sigues (E32): al armar las historias llegan sus últimos posts; se anota cuántos
+  // son de los últimos 7 días (full: todos los que llegaron lo son, así que pueden ser más).
+  function notePub(kind, name, list) {
+    if (!list || !list.length) return;
+    const since = Date.now() - 7 * 86400000;
+    const n = list.filter((p) => p.time >= since).length;
+    stats().pub[kind + ':' + tkey(name)] = { kind, name, n, full: n >= list.length && list.length >= 10, at: Date.now() };
+  }
+  // ---- Búsquedas (E34) y descargas (E35).
+  function noteQuery(entry) {
+    const st = stats();
+    const k = entry.type + ':' + entry.name;
+    st.queries[k] = (st.queries[k] || 0) + 1;
+    pruneCounts(st.queries, 200);
+  }
+  function noteDownload(files) {
+    const st = stats();
+    st.downloads.posts++;
+    st.downloads.files += files;
+    saveStats();
+  }
+  // ---- Datos ahorrados por la vista previa de Explorar (E37): lo que pesa el archivo menos lo que se bajó.
+  function noteSaved(bytes) {
+    if (!(bytes > 0)) return;
+    stats().saved += bytes;
+    today().saved = (today().saved || 0) + bytes;
+    saveStats();
+  }
+
+  // ---- El mes: tiempo por hashtag y cuenta, y la sesión más larga. Al empezar otro, el anterior queda resumido
+  // en st.months (para «Tu mes en historias»).
+  function monthTime() {
+    const st = stats();
+    const key = monthKey(Date.now());
+    if (st.timeMonth.key !== key) {
+      if (st.timeMonth.key) {
+        st.months[st.timeMonth.key] = monthSummary(st.timeMonth.key, st.timeMonth);
+        const keys = Object.keys(st.months).sort();
+        keys.slice(0, Math.max(0, keys.length - 24)).forEach((k) => delete st.months[k]);
+      }
+      st.timeMonth = { key, tags: {}, users: {}, longest: 0 };
+    }
+    return st.timeMonth;
+  }
+  function daysOf(prefix) {
+    return Object.entries(stats().days).filter(([k]) => k.startsWith(prefix));
+  }
+  // La racha más larga (días seguidos con al menos un minuto) entre esos días.
+  function bestRun(keys) {
+    let best = 0;
+    let run = 0;
+    let prev = 0;
+    for (const k of keys.slice().sort()) {
+      const t = dayAt(k);
+      run = prev && Math.round((t - prev) / 86400000) === 1 ? run + 1 : 1;
+      prev = t;
+      best = Math.max(best, run);
+    }
+    return best;
+  }
+  const activeDay = (d) => d && d.ms >= 60000;
+  function monthSummary(key, tm) {
+    const days = daysOf(key);
+    const ms = days.reduce((a, [, d]) => a + d.ms, 0);
+    const posts = days.reduce((a, [, d]) => a + d.posts, 0);
+    const best = days.reduce((b, [k, d]) => (d.ms > (b ? b.ms : 0) ? { k, ms: d.ms } : b), null);
+    const likes = Object.values(S.likes).filter((x) => monthKey(x.at) === key).sort((a, b) => b.at - a.at);
+    const tags = specificTags(topOf(tm.tags, 30), (b) => (knownTree(b) || {}).p).slice(0, 5);
+    return {
+      key,
+      ms,
+      posts,
+      active: days.filter(([, d]) => activeDay(d)).length,
+      best,
+      streak: bestRun(days.filter(([, d]) => activeDay(d)).map(([k]) => k)),
+      longest: tm.longest || 0,
+      longestAt: tm.longestAt || 0,
+      likes: likes.length,
+      likeIds: likes.slice(0, 6).map((x) => x.post.id),
+      tags,
+      users: topOf(tm.users, 5),
+      at: Date.now()
+    };
+  }
+
+  // ---- Tiempo con la app abierta y a la vista: se suma cada 15 s (por día y por hora). También la sesión (la
+  // más larga) y, en Android, los datos usados (la diferencia de TrafficStats mientras la app está a la vista).
   let activeFrom = null;
   let hiddenAt = 0;
+  let sessionMs = 0;
+  let netLast = null;
+  function sampleNet() {
+    let n = -1;
+    try {
+      if (RS.android && typeof RS.android.netBytes === 'function') n = Number(RS.android.netBytes());
+    } catch (e) {
+      n = -1;
+    }
+    if (!(n >= 0)) return;
+    if (netLast != null && n >= netLast) {
+      const d = today();
+      d.net = (d.net || 0) + (n - netLast);
+    }
+    netLast = n;
+  }
   function tickTime() {
     if (activeFrom == null) return;
     const now = Date.now();
     const ms = now - activeFrom;
     activeFrom = now;
+    sampleNet();
     if (ms <= 0 || ms > 60000) return; // el teléfono estuvo dormido: no cuenta
     const st = stats();
     today().ms += ms;
     st.hours[new Date(now).getHours()] += ms;
+    sessionMs += ms;
+    if (sessionMs > st.longest.ms) st.longest = { ms: sessionMs, at: now };
+    const mo = monthTime();
+    if (sessionMs > (mo.longest || 0)) {
+      mo.longest = sessionMs;
+      mo.longestAt = now;
+    }
     saveStats();
+  }
+  function newSession() {
+    stats().sessions++;
+    const d = today();
+    d.ses = (d.ses || 0) + 1;
+    sessionMs = 0;
   }
 
   function startUsageClock() {
     const st = stats();
-    // Guarda solo los últimos 120 días.
-    const cutoff = dayKey(Date.now() - 120 * 86400000);
+    // Guarda los últimos 400 días (hasta la 1.16.0, 120).
+    const cutoff = dayKey(Date.now() - 400 * 86400000);
     for (const k of Object.keys(st.days)) if (k < cutoff) delete st.days[k];
-    st.sessions++;
+    newSession();
+    monthTime();
     activeFrom = document.hidden ? null : Date.now();
+    if (activeFrom) sampleNet();
     setInterval(tickTime, 15000);
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         tickTime();
         activeFrom = null;
+        netLast = null; // lo que baje en segundo plano no cuenta
         hiddenAt = Date.now();
         blurPost();
       } else {
-        if (hiddenAt && Date.now() - hiddenAt > 30 * 60000) stats().sessions++;
+        if (hiddenAt && Date.now() - hiddenAt > 30 * 60000) {
+          newSession();
+          appSession++;
+        }
         activeFrom = Date.now();
+        sampleNet();
         refocusVisible();
       }
     });
@@ -8892,14 +9387,46 @@
     const rest = min % 60;
     return hrs + ' h' + (rest ? ' ' + rest + ' min' : '');
   }
+  // Para la cabecera de Tú: «38 min», «1 h 20», «3 h».
+  function shortDur(ms) {
+    const min = Math.floor(ms / 60000);
+    if (min < 60) return min + ' min';
+    const rest = min % 60;
+    return Math.floor(min / 60) + ' h' + (rest ? ' ' + rest : '');
+  }
+  function fmtBytes(n) {
+    if (!(n > 0)) return '0 MB';
+    if (n < 1e6) return Math.max(1, Math.round(n / 1e3)) + ' KB';
+    if (n < 1e9) return (n / 1e6).toLocaleString('es', { maximumFractionDigits: n < 1e7 ? 1 : 0 }) + ' MB';
+    return (n / 1e9).toLocaleString('es', { maximumFractionDigits: 2 }) + ' GB';
+  }
+  const fmtPct = (n) => n.toLocaleString('es', { maximumFractionDigits: n < 10 ? 1 : 0 }) + ' %';
 
-  const SECTION_NAMES = { home: 'Inicio', tag: 'Hashtags', random: 'Aleatorio', user: 'Perfiles', likes: 'Favoritos', history: 'Historial', news: 'Novedades', search: 'Buscar' };
+  const SECTION_NAMES = {
+    home: 'Inicio',
+    search: 'Explorar',
+    tag: 'Hashtags',
+    rgtag: 'Etiquetas de RedGifs',
+    user: 'Perfiles',
+    rguser: 'Cuentas de RedGifs',
+    random: 'Aleatorio',
+    likes: 'Me gusta',
+    favorites: 'Me gusta',
+    history: 'Historial',
+    news: 'Novedades',
+    cross: 'Cruzar hashtags',
+    recap: 'Resumen de la semana'
+  };
   // Colores por tipo de contenido (paleta validada para fondo oscuro: azul, naranja, aguamarina).
   const KIND_COLORS = { image: '#3987e5', gif: '#d95926', video: '#199e70' };
   const KIND_NAMES = { image: 'Imágenes', gif: 'GIF', video: 'Videos' };
+  // Las fuentes, con los colores de sus logos.
+  const SRC_COLORS = { jr: '#f68b1f', rg: '#e8121a' };
+  // Para «de día / de noche» y «tus cuentas / Te puede gustar / lo demás».
+  const PAIR_COLORS = ['#f5a524', '#5ab0f0', '#8c847a'];
 
   // Barras verticales de una sola serie. Tocar una barra muestra su valor arriba.
-  function columnChart(title, points, fmtValue, emptyText) {
+  function columnChart(title, points, fmtValue, emptyText, extra) {
     const max = Math.max(1, ...points.map((pt) => pt.value));
     const total = points.reduce((a, pt) => a + pt.value, 0);
     const readout = h('p', { class: 'chart-readout', text: total ? 'Toca una barra para ver el detalle' : emptyText });
@@ -8919,119 +9446,490 @@
       })
     );
     const axis = h('div', { class: 'cols-axis' }, points.map((pt) => h('span', { text: pt.short || '' })));
-    return h('section', { class: 'stat-card' }, h('h2', { class: 'stat-title', text: title }), readout, bars, axis);
+    return h('section', { class: 'stat-card' }, h('h2', { class: 'stat-title', text: title }), extra || null, readout, bars, axis);
   }
 
-  // Lista de barras horizontales (ranking): nombre, valor y barra proporcional.
-  function rankList(title, rows, fmtValue, emptyText, hrefOf) {
+  // Lista de barras horizontales (ranking): nombre, valor y barra proporcional. Una fila puede traer su
+  // propio href y una marca (r.badge, p. ej. el logo de RedGifs).
+  function rankRows(rows, fmtValue, hrefOf) {
     const max = Math.max(1, ...rows.map((r) => r.value));
+    return h('ol', { class: 'rank' },
+      rows.map((r) => {
+        const href = r.href || (hrefOf ? hrefOf(r) : null);
+        const label = href ? h('a', { class: 'rank-name', href, text: r.label }) : h('span', { class: 'rank-name', text: r.label });
+        return h('li', {},
+          h('div', { class: 'rank-top' }, label, r.badge || null, h('span', { class: 'rank-val', text: r.text || fmtValue(r.value) })),
+          h('span', { class: 'rank-bar' }, h('span', { style: { width: (r.value / max) * 100 + '%' } }))
+        );
+      })
+    );
+  }
+  function rankList(title, rows, fmtValue, emptyText, hrefOf, note) {
     return h('section', { class: 'stat-card' },
       h('h2', { class: 'stat-title', text: title }),
-      rows.length
-        ? h('ol', { class: 'rank' },
-            rows.map((r) => {
-              const label = hrefOf ? h('a', { class: 'rank-name', href: hrefOf(r), text: r.label }) : h('span', { class: 'rank-name', text: r.label });
-              return h('li', {},
-                h('div', { class: 'rank-top' }, label, h('span', { class: 'rank-val', text: fmtValue(r.value) })),
-                h('span', { class: 'rank-bar' }, h('span', { style: { width: (r.value / max) * 100 + '%' } }))
-              );
-            })
-          )
-        : h('p', { class: 'chart-readout', text: emptyText })
+      rows.length ? rankRows(rows, fmtValue, hrefOf) : h('p', { class: 'chart-readout', text: emptyText }),
+      note ? h('p', { class: 'stat-note', text: note }) : null
     );
+  }
+  // Una tarjeta con botones de período (semana, mes, siempre…) que cambian lo de abajo.
+  function periodCard(title, periods, draw) {
+    const body = h('div');
+    const seg = h('div', { class: 'stat-seg', role: 'tablist' });
+    const pick = (i) => {
+      Array.from(seg.children).forEach((b, j) => {
+        b.classList.toggle('on', i === j);
+        b.setAttribute('aria-selected', String(i === j));
+      });
+      fill(body, draw(periods[i].key));
+    };
+    periods.forEach((pd, i) => seg.append(h('button', { type: 'button', role: 'tab', onclick: () => pick(i) }, pd.label)));
+    pick(0);
+    return h('section', { class: 'stat-card' }, h('h2', { class: 'stat-title', text: title }), seg, body);
+  }
+  // Barra apilada con su leyenda: parts = [{ label, value, color, text? }].
+  function stackCard(title, parts, fmtValue, emptyText, note) {
+    const total = parts.reduce((a, x) => a + x.value, 0);
+    const pct = (v) => (total ? Math.round((v / total) * 100) : 0);
+    return h('section', { class: 'stat-card' },
+      h('h2', { class: 'stat-title', text: title }),
+      total
+        ? [
+            h('div', { class: 'stack', role: 'img', 'aria-label': parts.map((x) => x.label + ' ' + pct(x.value) + ' %').join(', ') },
+              parts.filter((x) => x.value).map((x) => h('span', { style: { width: (x.value / total) * 100 + '%', background: x.color } }))
+            ),
+            h('ul', { class: 'legend2' },
+              parts.map((x) => h('li', {}, h('i', { style: { background: x.color } }), x.label, h('span', { class: 'rank-val', text: pct(x.value) + ' % · ' + (x.text || fmtValue(x.value)) })))
+            )
+          ]
+        : h('p', { class: 'chart-readout', text: emptyText }),
+      note ? h('p', { class: 'stat-note', text: note }) : null
+    );
+  }
+  const tile = (label, value, sub, cls) =>
+    h('div', { class: 'stat-tile' + (cls ? ' ' + cls : '') }, h('span', { class: 'tile-label', text: label }), h('strong', { class: 'tile-value', text: value }), sub ? h('span', { class: 'tile-sub', text: sub }) : null);
+  const statGroup = (id, title, ...kids) => h('div', { class: 'stat-group', id: 'st-' + id }, h('h2', { class: 'stat-group-title', text: title }), ...kids);
+  const isAccountTag = (t) => !!tagProfileOf(t) || !!(rgTagOf(t) && rgTagOf(t).as === 'account');
+
+  // Una cuenta (clave de st.users o del tiempo) para mostrarla: nombre, enlace y marca de RedGifs.
+  function whoRow(key, value, text) {
+    const rg = key.startsWith('rg:');
+    const name = rg ? key.slice(3) : key;
+    return { label: (rg ? '' : '@') + name, value, text, href: (rg ? '#/rguser/' : '#/user/') + enc(name), badge: rg ? h('span', { class: 'srcb rg', text: 'RG' }) : null };
+  }
+  // Un hashtag del tiempo: si lo sigues como cuenta, es una cuenta (va con su nombre, sin #).
+  function tagRow(name, value, text) {
+    const rgAcc = rgTagOf(name) && rgTagOf(name).as === 'account';
+    const acc = !!tagProfileOf(name) || rgAcc;
+    return { label: (acc ? '' : '#') + name, value, text, href: (rgAcc ? '#/rgtag/' : '#/tag/') + enc(name) };
   }
 
   function routeStats() {
     tickTime();
+    monthTime();
     const st = stats();
-    const todayStats = today();
-    const dayList = [];
-    for (let i = 13; i >= 0; i--) {
-      const t = Date.now() - i * 86400000;
-      const d = st.days[dayKey(t)] || { ms: 0, posts: 0, likes: 0, dislikes: 0 };
-      const date = new Date(t);
-      dayList.push({
-        ms: d.ms,
-        posts: d.posts,
-        long: date.toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'short' }),
-        short: i === 0 ? 'hoy' : i === 13 || i === 7 ? date.toLocaleDateString('es', { day: 'numeric', month: 'short' }) : ''
-      });
-    }
-    const last7 = dayList.slice(-7);
-    const ms7 = last7.reduce((a, d) => a + d.ms, 0);
-    const allDays = Object.values(st.days);
-    const totalMs = allDays.reduce((a, d) => a + d.ms, 0);
-    const totalPosts = allDays.reduce((a, d) => a + d.posts, 0);
-    const totalLikes = allDays.reduce((a, d) => a + d.likes, 0);
-    const totalDis = allDays.reduce((a, d) => a + d.dislikes, 0);
-    const likeRate = totalPosts ? Math.min(100, (totalLikes / totalPosts) * 100).toLocaleString('es', { maximumFractionDigits: 1 }) + ' %' : '—';
+    const now = Date.now();
+    const DAY = 86400000;
+    const day = (k) => st.days[k] || { ms: 0, posts: 0, likes: 0, dislikes: 0 };
+    const lastDays = (n) => {
+      const out = [];
+      for (let i = n - 1; i >= 0; i--) {
+        const t = now - i * DAY;
+        const k = dayKey(t);
+        const date = new Date(t);
+        out.push({ k, d: day(k), long: date.toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'short' }), short: i === 0 ? 'hoy' : n <= 7 ? date.toLocaleDateString('es', { weekday: 'narrow' }) : i % 7 === 0 ? date.toLocaleDateString('es', { day: 'numeric', month: 'short' }) : '' });
+      }
+      return out;
+    };
+    const sumMs = (list) => list.reduce((a, x) => a + x.d.ms, 0);
+    const sumPosts = (list) => list.reduce((a, x) => a + x.d.posts, 0);
+    const allDays = Object.entries(st.days);
+    const totalMs = allDays.reduce((a, [, d]) => a + d.ms, 0);
+    const weekFrom = weekStart(now);
+    const weekDays = allDays.filter(([k]) => dayAt(k) >= weekFrom);
+    const monthDays = daysOf(monthKey(now));
+    const postsLabel = (v) => fmt(v) + (v === 1 ? ' post' : ' posts');
+    const meGusta = (v) => fmt(v) + ' me gusta';
+    const dateLong = (t) => new Date(t).toLocaleDateString('es', { day: 'numeric', month: 'long', year: 'numeric' });
+    const dateShort = (t) => new Date(t).toLocaleDateString('es', { day: 'numeric', month: 'long' });
 
-    const tile = (label, value, sub) => h('div', { class: 'stat-tile' }, h('span', { class: 'tile-label', text: label }), h('strong', { class: 'tile-value', text: value }), sub ? h('span', { class: 'tile-sub', text: sub }) : null);
+    // ---------- Tiempo (E1–E7)
+    const d7 = lastDays(7);
+    const d14 = lastDays(14);
+    const d30 = lastDays(30);
+    const ms7 = sumMs(d7);
+    const msPrev7 = sumMs(lastDays(14).slice(0, 7));
+    const diff = msPrev7 ? Math.round(((ms7 - msPrev7) / msPrev7) * 100) : null;
+    const activeKeys = allDays.filter(([, d]) => activeDay(d)).map(([k]) => k);
+    let streak = 0;
+    for (let t = activeDay(st.days[dayKey(now)]) ? now : now - DAY; activeDay(st.days[dayKey(t)]); t -= DAY) streak++;
+    const best = allDays.reduce((b, [k, d]) => (d.ms > (b ? b.ms : 0) ? { k, ms: d.ms } : b), null);
+    const sesDays = allDays.filter(([, d]) => d.ses);
+    const sesN = sesDays.reduce((a, [, d]) => a + d.ses, 0);
+    const sesMs = sesDays.reduce((a, [, d]) => a + d.ms, 0);
+    const perDay = sesDays.length ? sesN / sesDays.length : 0;
+    const perSes = sesN ? sesMs / sesN : st.sessions ? totalMs / st.sessions : 0;
 
+    const timeGroup = statGroup('time', 'Tiempo',
+      h('div', { class: 'tiles-2' },
+        tile('Hoy', fmtDur(today().ms)),
+        tile('Esta semana', fmtDur(weekDays.reduce((a, [, d]) => a + d.ms, 0)), 'desde el lunes'),
+        tile('Este mes', fmtDur(monthDays.reduce((a, [, d]) => a + d.ms, 0))),
+        tile('En total', fmtDur(totalMs), 'desde el ' + dateShort(st.since)),
+        tile('Últimos 7 días', fmtDur(ms7), diff == null ? 'promedio ' + fmtDur(ms7 / 7) + ' por día' : (diff >= 0 ? '↑ ' : '↓ ') + Math.abs(diff) + ' % que los 7 anteriores', diff == null ? '' : diff >= 0 ? 'up' : 'down'),
+        tile('Racha', streak === 1 ? '1 día' : streak + ' días', 'seguidos; la más larga, ' + bestRun(activeKeys) + (bestRun(activeKeys) === 1 ? ' día' : ' días')),
+        tile('Veces que la abres', perDay ? perDay.toLocaleString('es', { maximumFractionDigits: 1 }) + ' por día' : fmt(st.sessions) + ' en total', perSes ? 'cada vez, ' + fmtDur(perSes) : ''),
+        tile('Tu día récord', best ? fmtDur(best.ms) : '—', best ? new Date(dayAt(best.k)).toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'long' }) : ''),
+        tile('Tu sesión más larga', st.longest.ms ? fmtDur(st.longest.ms) : '—', st.longest.at ? dateShort(st.longest.at) : 'se mide desde la 1.17.0')
+      ),
+      (() => {
+        const periods = [{ key: 7, label: '7 días' }, { key: 30, label: '30 días' }];
+        const card = periodCard('Tiempo de uso por día', periods, (n) => {
+          const list = n === 7 ? d7 : d30;
+          const c = columnChart('', list.map((x) => ({ value: x.d.ms, long: x.long, short: x.short })), fmtDur, 'Todavía no hay datos de estos días.');
+          c.classList.add('bare');
+          return c;
+        });
+        return card;
+      })(),
+      columnChart('¿A qué hora usas la app?', st.hours.map((ms, hr) => ({ value: ms, long: 'De ' + hr + ':00 a ' + (hr + 1) + ':00', short: hr % 6 === 0 ? hr + 'h' : '' })), fmtDur, 'Todavía no hay datos.')
+    );
+
+    // ---------- Lo que miras (E8–E15)
     const kinds = st.kinds;
-    const kindTotal = kinds.image + kinds.gif + kinds.video;
-    const kindKeys = ['image', 'gif', 'video'];
-    const pct = (n) => (kindTotal ? Math.round((n / kindTotal) * 100) : 0);
+    const vidsN = st.vids.done + st.vids.skip;
+    const storyRows = topOf(st.stories.by, 5).map(([k, v]) => {
+      const [kind, ...rest] = k.split(':');
+      const name = rest.join(':');
+      const href = kind === 'user' ? '#/user/' + enc(name) : kind === 'rg' ? '#/rguser/' + enc(name) : kind === 'rgtag' ? '#/rgtag/' + enc(name) : '#/tag/' + enc(name);
+      return { label: (kind === 'user' ? '@' : kind === 'tag' ? '#' : '') + name, value: v, href, badge: kind === 'rg' || kind === 'rgtag' ? h('span', { class: 'srcb rg', text: 'RG' }) : null };
+    });
+    const seeGroup = statGroup('see', 'Lo que miras',
+      h('div', { class: 'tiles-2' },
+        tile('Posts vistos hoy', fmt(today().posts)),
+        tile('Esta semana', fmt(weekDays.reduce((a, [, d]) => a + d.posts, 0))),
+        tile('En total', fmt(st.viewsTotal), 'posts vistos'),
+        tile('Por post', st.dwell.n ? Math.round(st.dwell.ms / st.dwell.n / 1000) + ' s' : '—', 'en promedio, mirándolo'),
+        tile('Videos hasta el final', vidsN ? fmtPct((st.vids.done / vidsN) * 100) : '—', vidsN ? fmt(st.vids.done) + ' enteros, ' + fmt(st.vids.skip) + ' pasados' : 'videos con sonido; se mide desde la 1.17.0'),
+        tile('Pantalla completa', fmt(st.fsOpens) + (st.fsOpens === 1 ? ' vez' : ' veces'), fmtDur(st.fsMs) + ' en total')
+      ),
+      stackCard('Qué tipo de posts ves', ['image', 'gif', 'video'].map((k) => ({ label: KIND_NAMES[k], value: kinds[k], color: KIND_COLORS[k], text: fmt(kinds[k]) })), fmt, 'Todavía no hay datos.'),
+      stackCard('JoyReactor y RedGifs', [
+        { label: 'JoyReactor', value: st.src.jr, color: SRC_COLORS.jr, text: postsLabel(st.src.jr) + (st.srcMs.jr ? ' · ' + fmtDur(st.srcMs.jr) : '') },
+        { label: 'RedGifs', value: st.src.rg, color: SRC_COLORS.rg, text: postsLabel(st.src.rg) + (st.srcMs.rg ? ' · ' + fmtDur(st.srcMs.rg) : '') }
+      ], fmt, 'Se mide desde la 1.17.0.'),
+      rankList('De dónde viene lo que ves', topOf(st.sections, 8).map(([k, v]) => ({ label: SECTION_NAMES[k] || k, value: v })), postsLabel, 'Todavía no hay datos.'),
+      h('section', { class: 'stat-card' },
+        h('h2', { class: 'stat-title', text: 'Historias' }),
+        h('p', { class: 'stat-line' }, h('b', { text: fmt(st.stories.n) }), st.stories.n === 1 ? ' post de historias visto' : ' posts de historias vistos'),
+        storyRows.length ? rankRows(storyRows, postsLabel) : h('p', { class: 'chart-readout', text: 'Se cuenta desde la 1.17.0.' })
+      )
+    );
 
-    const top = (obj, n) =>
-      Object.entries(obj)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, n)
-        .map(([label, value]) => ({ label, value }));
+    // ---------- Tus gustos (E16–E22)
+    const tagTop = (bag, skip) => specificTags(topOf(bag, 40), (b) => (knownTree(b) || {}).p).filter(([n]) => !skip || !skip(n)).slice(0, 10);
+    const periods3 = [{ key: 'week', label: 'Semana' }, { key: 'month', label: 'Mes' }, { key: 'all', label: 'Siempre' }];
+    const bagOf = (key) => (key === 'week' ? st.time : key === 'month' ? st.timeMonth : st.timeAll);
+    const tagsByTime = periodCard('Top 10 hashtags por tiempo', periods3, (key) => {
+      // Los que sigues como cuenta van en «cuentas y creadores».
+      const rows = tagTop(bagOf(key).tags, isAccountTag).map(([n, ms]) => tagRow(n, ms, fmtDur(ms)));
+      return rows.length ? rankRows(rows, fmtDur) : h('p', { class: 'chart-readout', text: 'Todavía no hay datos.' });
+    });
+    const accountsByTime = periodCard('Top 10 cuentas y creadores por tiempo', periods3, (key) => {
+      const bag = bagOf(key);
+      const rows = topOf(bag.users, 20)
+        .map(([k, ms]) => whoRow(k, ms, fmtDur(ms)))
+        .concat(topOf(bag.tags, 60).filter(([n]) => isAccountTag(n)).map(([n, ms]) => tagRow(n, ms, fmtDur(ms))))
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 10);
+      return rows.length ? rankRows(rows, fmtDur) : h('p', { class: 'chart-readout', text: 'Todavía no hay datos.' });
+    });
+    // Subieron y bajaron: el puesto de cada hashtag esta semana contra la semana pasada.
+    const nowRank = tagTop(st.time.tags).map(([n]) => n);
+    const prevRank = st.lastWeek ? tagTop(st.lastWeek.tags).map(([n]) => n) : (S.weekly.tags || []).map((x) => x.name);
+    const moves = [];
+    nowRank.forEach((n, i) => {
+      const j = prevRank.indexOf(n);
+      moves.push({ n, d: j < 0 ? 99 : j - i });
+    });
+    prevRank.forEach((n, j) => !nowRank.includes(n) && moves.push({ n, d: -99, j }));
+    const moved = moves.filter((m) => m.d).sort((a, b) => Math.abs(b.d) - Math.abs(a.d)).slice(0, 8);
+    const movesCard = h('section', { class: 'stat-card' },
+      h('h2', { class: 'stat-title', text: 'Subieron y bajaron' }),
+      prevRank.length && moved.length
+        ? h('ol', { class: 'moves' },
+            moved.map((m) =>
+              h('li', {},
+                h('a', { class: 'rank-name', href: '#/tag/' + enc(m.n), text: '#' + m.n }),
+                h('span', { class: 'mv ' + (m.d === 99 ? 'new' : m.d === -99 ? 'down' : m.d > 0 ? 'up' : 'down'), text: m.d === 99 ? 'Nuevo' : m.d === -99 ? 'Salió del top' : (m.d > 0 ? '▲ ' : '▼ ') + Math.abs(m.d) })
+              )
+            )
+          )
+        : h('p', { class: 'chart-readout', text: prevRank.length ? 'Tus hashtags están igual que la semana pasada.' : 'Se ve desde tu primer resumen de la semana.' }),
+      h('p', { class: 'stat-note', text: 'Puestos en tu top 10 por tiempo, esta semana contra la pasada.' })
+    );
+    const month = monthKey(now);
+    const fresh = Object.entries(st.tagFirst)
+      .filter(([, k]) => k.startsWith(month))
+      .map(([tk, k]) => {
+        const name = Object.keys(st.tags).find((n) => tkey(n) === tk) || tk;
+        return { name, k, views: st.tags[name] || 0 };
+      })
+      .sort((a, b) => b.views - a.views)
+      .slice(0, 12);
+    const newTags = h('section', { class: 'stat-card' },
+      h('h2', { class: 'stat-title', text: 'Hashtags nuevos de este mes' }),
+      fresh.length
+        ? h('div', { class: 'stat-chips' }, fresh.map((x) => h('a', { class: 'stat-chip', href: '#/tag/' + enc(x.name) }, '#' + x.name, h('small', { text: ' ' + new Date(dayAt(x.k)).getDate() }))))
+        : h('p', { class: 'chart-readout', text: 'Los hashtags que ves por primera vez se cuentan desde la 1.17.0.' }),
+      fresh.length ? h('p', { class: 'stat-note', text: 'Los que viste por primera vez este mes; el número es el día.' }) : null
+    );
+    // Categorías: los hashtags vistos, agrupados por su carpeta de arriba del todo (y la de abajo más vista).
+    const cats = {};
+    for (const [n, v] of Object.entries(st.tags)) {
+      const p = (knownTree(n) || {}).p || [];
+      if (!p.length) continue;
+      const top = p[p.length - 1];
+      const sub = p.length >= 2 ? p[p.length - 2] : n;
+      const c = cats[top] || (cats[top] = { v: 0, subs: {} });
+      c.v += v;
+      c.subs[sub] = (c.subs[sub] || 0) + v;
+    }
+    const catRows = Object.entries(cats)
+      .sort((a, b) => b[1].v - a[1].v)
+      .slice(0, 8)
+      .map(([top, c]) => {
+        const sub = topOf(c.subs, 1)[0];
+        return { label: top + (sub ? ' › ' + sub[0] : ''), value: c.v, href: '#/tag/' + enc(sub ? sub[0] : top) };
+      });
+    // Los 5 que mejor te describen: su parte de tu tiempo, de tus me gusta y si lo sigues.
     const likedTags = {};
     for (const x of Object.values(S.likes)) for (const t of leafTags(x.post.tags)) likedTags[t.name] = (likedTags[t.name] || 0) + 1;
+    const share = (bag) => {
+      const tot = Object.values(bag).reduce((a, v) => a + v, 0) || 1;
+      return (n) => (bag[n] || 0) / tot;
+    };
+    const sTime = share(st.timeAll.tags);
+    const sLike = share(likedTags);
+    const sView = share(st.tags);
+    const cand = new Set(Object.keys(st.timeAll.tags).concat(Object.keys(likedTags), Object.keys(st.tags)));
+    const scored = Array.from(cand)
+      .filter((n) => !RS.isFormatTag(n))
+      .map((n) => [n, sTime(n) * 2 + sLike(n) * 2 + sView(n) + (isFollowedTag(n) ? 0.05 : 0)])
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 30);
+    const me5 = specificTags(scored, (b) => (knownTree(b) || {}).p).slice(0, 5);
+    const dayMs = st.hours.reduce((a, ms, hr) => a + (isNight(hr) ? 0 : ms), 0);
+    const nightMs = st.hours.reduce((a, ms, hr) => a + (isNight(hr) ? ms : 0), 0);
+    const top3 = (bag) => specificTags(topOf(bag, 20), (b) => (knownTree(b) || {}).p).slice(0, 3);
+    const tasteGroup = statGroup('taste', 'Tus gustos',
+      h('section', { class: 'stat-card' },
+        h('h2', { class: 'stat-title', text: 'Los 5 hashtags que mejor te describen' }),
+        me5.length
+          ? h('div', { class: 'stat-chips big' }, me5.map(([n]) => h('a', { class: 'stat-chip', href: '#/tag/' + enc(n) }, tagPic(n, 'chip-pic', '#'), '#' + n)))
+          : h('p', { class: 'chart-readout', text: 'Todavía no hay datos.' }),
+        h('p', { class: 'stat-note', text: 'Mezcla el tiempo que los miras, tus me gusta y lo que sigues.' })
+      ),
+      tagsByTime,
+      accountsByTime,
+      movesCard,
+      newTags,
+      rankList('Categorías más vistas', catRows, postsLabel, 'Todavía no hay datos (se arman con las carpetas de JoyReactor).'),
+      h('section', { class: 'stat-card' },
+        h('h2', { class: 'stat-title', text: 'De día y de noche' }),
+        dayMs + nightMs
+          ? h('div', { class: 'stack', role: 'img', 'aria-label': 'De día ' + Math.round((dayMs / (dayMs + nightMs)) * 100) + ' %' },
+              h('span', { style: { width: (dayMs / (dayMs + nightMs)) * 100 + '%', background: PAIR_COLORS[0] } }),
+              h('span', { style: { width: (nightMs / (dayMs + nightMs)) * 100 + '%', background: PAIR_COLORS[1] } })
+            )
+          : null,
+        h('div', { class: 'daynight' },
+          [['De día', '7 a 20 h', dayMs, st.dayTags, PAIR_COLORS[0]], ['De noche', '20 a 7 h', nightMs, st.nightTags, PAIR_COLORS[1]]].map(([t, hrs, ms, bag, c]) =>
+            h('div', {},
+              h('b', {}, h('i', { style: { background: c } }), t),
+              h('span', { class: 'dn-sub', text: hrs + ' · ' + fmtDur(ms) }),
+              top3(bag).length ? h('ol', {}, top3(bag).map(([n]) => h('li', {}, h('a', { href: '#/tag/' + enc(n), text: '#' + n })))) : h('span', { class: 'dn-sub', text: 'Se cuenta desde la 1.17.0.' })
+            )
+          )
+        )
+      )
+    );
 
-    const n = (v) => fmt(v);
-    const postsFmt = (v) => fmt(v) + (v === 1 ? ' post' : ' posts');
+    // ---------- Me gusta (E23–E28)
+    const likes = Object.values(S.likes).sort((a, b) => a.at - b.at);
+    const likesSince = (t) => likes.filter((x) => x.at >= t).length;
+    const dayStart = new Date(now).setHours(0, 0, 0, 0);
+    const likes30 = likesSince(now - 30 * DAY);
+    const views30 = sumPosts(d30);
+    const likeChart = columnChart('Me gusta por día', d14.map((x) => ({ value: likes.filter((y) => dayKey(y.at) === x.k).length, long: x.long, short: x.short })), meGusta, 'En estos 14 días no hay me gusta.');
+    const likeAcc = {};
+    for (const x of likes) {
+      const accs = postAccounts(x.post);
+      if (accs.length) accs.forEach((a) => (likeAcc['acc:' + a.kind + ':' + a.name] = (likeAcc['acc:' + a.kind + ':' + a.name] || 0) + 1));
+      else if (x.post.user) {
+        const k = userStatKey(x.post);
+        likeAcc[k] = (likeAcc[k] || 0) + 1;
+      }
+    }
+    const likeAccRows = topOf(likeAcc, 10).map(([k, v]) => {
+      if (!k.startsWith('acc:')) return whoRow(k, v, meGusta(v));
+      const [, kind, ...rest] = k.split(':');
+      const name = rest.join(':');
+      return { label: name, value: v, text: meGusta(v), href: (kind === 'rgtag' ? '#/rgtag/' : '#/tag/') + enc(name) };
+    });
+    const folders = folderList().map((f) => ({ label: f.name, value: folderIds(f).length, href: '#/likes?folder=' + enc(f.id) }));
+    const inFolder = new Set(folderList().flatMap((f) => folderIds(f)));
+    const loose = likes.filter((x) => !inFolder.has(x.post.id)).length;
+    if (folders.length) folders.push({ label: 'Sin carpeta', value: loose, href: '#/likes' });
+    const dis = Object.values(S.dislikes);
+    const firstLike = likes[0];
+    const lastLike = likes[likes.length - 1];
+    const likePost = (x, label) =>
+      x
+        ? h('button', { type: 'button', class: 'stat-post', onclick: () => openViewer(null, x.post, 0) },
+            h('span', { class: 'sp-pic', style: { backgroundImage: x.post.media[0] ? 'url("' + (x.post.media[0].kind === 'video' ? RS.posterUrl(x.post.media[0]) : RS.imageUrl(x.post.media[0])) + '")' : '' } }),
+            h('span', { class: 'sp-t' }, h('span', { class: 'tile-label', text: label }), h('b', { text: dateLong(x.at) }), h('span', { class: 'tile-sub', text: x.post.user ? (RS.isRg(x.post) ? '' : '@') + x.post.user : '' }))
+          )
+        : null;
+    const likesGroup = statGroup('likes', 'Me gusta',
+      h('div', { class: 'tiles-2' },
+        tile('Me gusta', fmt(likes.length), 'en total'),
+        tile('Esta semana', fmt(likesSince(weekFrom)), 'hoy, ' + fmt(likesSince(dayStart))),
+        tile('De cada 100 que ves', views30 ? fmtPct(Math.min(100, (likes30 / views30) * 100)) : '—', 'les das me gusta (últimos 30 días)'),
+        tile('No me gusta', fmt(dis.length), 'posts ocultados para siempre; este mes, ' + fmt(dis.filter((x) => monthKey(x.at) === month).length)),
+        tile('Hashtags bloqueados', fmt((S.mix.exclude || []).length), 'sus posts no salen')
+      ),
+      likeChart,
+      h('div', { class: 'stat-posts' }, likePost(firstLike, 'Tu primer me gusta'), likePost(lastLike !== firstLike ? lastLike : null, 'El más reciente')),
+      rankList('Hashtags de tus me gusta', topOf(likedTags, 10).map(([n, v]) => tagRow(n, v, meGusta(v))), meGusta, 'Todavía no le diste me gusta a nada.'),
+      rankList('Cuentas de tus me gusta', likeAccRows, meGusta, 'Todavía no le diste me gusta a nada.'),
+      rankList('Me gusta por carpeta', folders, meGusta, 'Todavía no tienes carpetas. En Me gusta, mantén presionada una miniatura para crear una.')
+    );
+
+    // ---------- Lo que sigues (E29–E33)
+    const follows = [
+      ...Object.values(S.following).map((x) => ({ kind: 'user', name: x.name, at: x.addedAt, views: st.users[x.name] || 0, ms: st.timeAll.users[x.name] || 0, href: '#/user/' + enc(x.name), label: '@' + x.name })),
+      ...Object.values(S.rgFollowing).map((x) => ({ kind: 'rg', name: x.name, at: x.addedAt, views: st.users['rg:' + x.name] || st.users[x.name] || 0, ms: st.timeAll.users['rg:' + x.name] || 0, href: '#/rguser/' + enc(x.name), label: x.name, rg: true })),
+      ...Object.values(S.tagProfiles).map((x) => ({ kind: 'account', name: x.name, at: x.addedAt, views: st.tags[x.name] || 0, ms: st.timeAll.tags[x.name] || 0, href: '#/tag/' + enc(x.name), label: x.name })),
+      ...Object.values(S.rgTags).filter((x) => x.as === 'account').map((x) => ({ kind: 'rgtag', name: x.name, at: x.addedAt, views: st.tags[x.name] || 0, ms: st.timeAll.tags[x.name] || 0, href: '#/rgtag/' + enc(x.name), label: x.name, rg: true }))
+    ];
+    const tagFollows = Object.values(S.favorites).concat(Object.values(S.rgTags).filter((x) => x.as === 'tag'));
+    const thisMonth = (list) => list.filter((x) => x.at && monthKey(x.at) === month).length;
+    const accMonth = thisMonth(follows);
+    const tagMonth = thisMonth(tagFollows.map((x) => ({ at: x.addedAt })));
+    const quiet = follows
+      .filter((x) => x.at && now - x.at > 7 * DAY && x.views < 3 && x.ms < 60000)
+      .sort((a, b) => a.views - b.views || a.at - b.at)
+      .slice(0, 10);
+    const pubRows = Object.values(st.pub)
+      .filter((x) => now - x.at < 14 * DAY)
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 10)
+      .map((x) => ({
+        label: (x.kind === 'user' ? '@' : x.kind === 'tag' ? '#' : '') + x.name,
+        value: x.n,
+        text: (x.full ? fmt(x.n) + ' o más' : fmt(x.n)) + ' en 7 días',
+        href: x.kind === 'user' ? '#/user/' + enc(x.name) : x.kind === 'rg' ? '#/rguser/' + enc(x.name) : x.kind === 'rgtag' ? '#/rgtag/' + enc(x.name) : '#/tag/' + enc(x.name),
+        badge: x.kind === 'rg' || x.kind === 'rgtag' ? h('span', { class: 'srcb rg', text: 'RG' }) : null
+      }));
+    const followGroup = statGroup('follow', 'Lo que sigues',
+      h('div', { class: 'tiles-2' },
+        tile('Cuentas', fmt(follows.length), 'este mes, +' + fmt(accMonth)),
+        tile('Hashtags', fmt(tagFollows.length), 'este mes, +' + fmt(tagMonth))
+      ),
+      rankList('De quién viste más posts', topOf(st.users, 10).map(([k, v]) => whoRow(k, v, postsLabel(v))), postsLabel, 'Todavía no hay datos.'),
+      rankList('Cuentas que más publican', pubRows, fmt, 'Se anota al armar las historias (desde la 1.17.0).', null, 'Posts en los últimos 7 días, según lo que llega a tus historias.'),
+      h('section', { class: 'stat-card' },
+        h('h2', { class: 'stat-title', text: 'Sigues y casi no miras' }),
+        quiet.length
+          ? h('ul', { class: 'facts' }, quiet.map((x) => h('li', {}, h('a', { class: 'rank-name', href: x.href, text: x.label }), x.rg ? h('span', { class: 'srcb rg', text: 'RG' }) : null, h('span', { class: 'rank-val', text: x.views ? postsLabel(x.views) + ' vistos' : 'nada visto' }))))
+          : h('p', { class: 'chart-readout', text: 'Miras todo lo que sigues.' }),
+        h('p', { class: 'stat-note', text: 'Lo que sigues hace más de una semana y casi no viste: por si quieres dejar de seguirlo.' })
+      ),
+      stackCard('Tus cuentas y «Te puede gustar»', [
+        { label: 'Lo que sigues', value: st.mine.fol, color: PAIR_COLORS[0], text: fmtDur(st.mine.fol) },
+        { label: 'Te puede gustar', value: st.mine.sug, color: PAIR_COLORS[1], text: fmtDur(st.mine.sug) },
+        { label: 'Lo demás', value: st.mine.other, color: PAIR_COLORS[2], text: fmtDur(st.mine.other) }
+      ], fmtDur, 'Se mide desde la 1.17.0.', 'Tiempo mirando posts.')
+    );
+
+    // ---------- Búsquedas y descargas (E34–E35)
+    const queryRows = topOf(st.queries, 10).map(([k, v]) => {
+      const [type, ...rest] = k.split(':');
+      const name = rest.join(':');
+      const href = type === 'user' ? '#/user/' + enc(name) : type === 'rguser' ? '#/rguser/' + enc(name) : type === 'rgtag' ? '#/rgtag/' + enc(name) : '#/tag/' + enc(name);
+      return { label: (type === 'user' ? '@' : type === 'tag' ? '#' : '') + name, value: v, href, badge: type.startsWith('rg') ? h('span', { class: 'srcb rg', text: 'RG' }) : null };
+    });
+    const searchGroup = statGroup('search', 'Búsquedas y descargas',
+      h('div', { class: 'tiles-2' },
+        tile('Búsquedas', fmt(st.searches), 'resultados que abriste'),
+        tile('Descargas', fmt(st.downloads.posts) + (st.downloads.posts === 1 ? ' post' : ' posts'), st.downloads.files ? fmt(st.downloads.files) + (st.downloads.files === 1 ? ' archivo' : ' archivos') + ' en la galería' : 'se cuentan desde la 1.17.0')
+      ),
+      rankList('Lo que más buscas', queryRows, (v) => fmt(v) + (v === 1 ? ' vez' : ' veces'), 'Se cuenta desde la 1.17.0.')
+    );
+
+    // ---------- Datos y teléfono (E36–E38)
+    const netOn = !!(RS.android && typeof RS.android.netBytes === 'function');
+    const net = (list) => list.reduce((a, x) => a + (x.d.net || 0), 0);
+    const saved30 = d30.reduce((a, x) => a + (x.d.saved || 0), 0);
+    const disk = h('div', { class: 'stat-card' }, h('h2', { class: 'stat-title', text: 'Espacio en el teléfono' }), h('p', { class: 'chart-readout' }, icon('spinner', 16, 'spin'), ' Midiendo…'));
+    const dataGroup = statGroup('data', 'Datos y teléfono',
+      h('div', { class: 'tiles-2' },
+        tile('Datos hoy', netOn ? fmtBytes(today().net) : '—', netOn ? 'aproximado' : 'solo en el teléfono'),
+        tile('Últimos 7 días', netOn ? fmtBytes(net(d7)) : '—', netOn ? '30 días: ' + fmtBytes(net(d30)) : ''),
+        tile('Ahorrado en Explorar', fmtBytes(st.saved), 'con la vista previa; 30 días: ' + fmtBytes(saved30))
+      ),
+      netOn ? columnChart('Datos por día', d14.map((x) => ({ value: x.d.net || 0, long: x.long, short: x.short })), fmtBytes, 'Se mide desde la 1.17.0, con la app abierta.') : null,
+      disk
+    );
+    fillDisk(disk);
+
+    // ---------- Curiosidades (E39–E40)
+    const firstAt = Math.min(st.since, firstLike ? firstLike.at : now, ...(S.history || []).map((x) => x.at), S.backup && S.backup.install ? Number(S.backup.install) : now);
+    const lastMonth = Object.keys(st.months).sort().pop();
+    const monthName = (k) => new Date(dayAt(k + '-15')).toLocaleDateString('es', { month: 'long' });
+    const funGroup = statGroup('fun', 'Curiosidades',
+      h('section', { class: 'stat-card recap-card' },
+        h('h2', { class: 'stat-title', text: 'Tu mes en historias' }),
+        h('p', { class: 'chart-readout', text: 'Tus récords del mes, como historias: tiempo, tu día récord, tu racha, tu hashtag y tu cuenta del mes, y tus me gusta.' }),
+        h('div', { class: 'row-btns' },
+          lastMonth ? h('a', { class: 'btn', href: '#/monthrecap?m=' + lastMonth }, icon('play', 16), 'Ver ' + monthName(lastMonth)) : null,
+          h('a', { class: lastMonth ? 'btn quiet' : 'btn', href: '#/monthrecap?m=' + month }, icon('play', 16), cap(monthName(month)) + ', hasta hoy')
+        )
+      ),
+      h('div', { class: 'tiles-2' },
+        tile('Usas la app desde', dateLong(firstAt), Math.max(1, Math.round((now - firstAt) / DAY)) + ' días'),
+        tile('Posts vistos', fmt(st.viewsTotal), 'en total')
+      )
+    );
+
+    const groups = [['time', 'Tiempo'], ['see', 'Lo que miras'], ['taste', 'Tus gustos'], ['likes', 'Me gusta'], ['follow', 'Lo que sigues'], ['search', 'Búsquedas'], ['data', 'Datos'], ['fun', 'Curiosidades']];
+    const jump = h('nav', { class: 'chips stat-jump', 'aria-label': 'Grupos' },
+      groups.map(([id, label]) =>
+        h('button', {
+          type: 'button',
+          class: 'chip',
+          onclick: () => {
+            const el = document.getElementById('st-' + id);
+            if (el) window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - headOffsetPx() - 52, behavior: 'smooth' });
+          }
+        }, label)
+      )
+    );
 
     mount([
-      h('header', { class: 'top has-back' }, backBtn('/settings'), h('h1', { text: 'Tus estadísticas' })),
+      h('header', { class: 'top has-back' }, backBtn('/me'), h('h1', { text: 'Estadísticas' })),
+      jump,
       h('div', { class: 'stats-page' },
-        h('div', { class: 'tiles-2' },
-          tile('Hoy', fmtDur(todayStats.ms), fmt(todayStats.posts) + (todayStats.posts === 1 ? ' post visto' : ' posts vistos')),
-          tile('Últimos 7 días', fmtDur(ms7), 'promedio ' + fmtDur(ms7 / 7) + ' por día'),
-          tile('Posts vistos', fmt(totalPosts), 'en total'),
-          tile('Me gusta', fmt(totalLikes), totalPosts ? 'te gusta el ' + likeRate + ' de lo que ves' : 'desde que se activaron las estadísticas'),
-          tile('No me gusta', fmt(totalDis), 'posts ocultados'),
-          tile('Pantalla completa', fmt(st.fsOpens) + (st.fsOpens === 1 ? ' vez' : ' veces'), fmtDur(st.fsMs) + ' en total')
-        ),
-        columnChart('Tiempo de uso por día', dayList.map((d) => ({ value: d.ms, long: d.long, short: d.short })), (v) => fmtDur(v), 'Todavía no hay datos de estos días.'),
-        columnChart(
-          '¿A qué hora usas la app?',
-          st.hours.map((ms, hr) => ({ value: ms, long: 'De ' + hr + ':00 a ' + (hr + 1) + ':00', short: hr % 6 === 0 ? hr + 'h' : '' })),
-          (v) => fmtDur(v),
-          'Todavía no hay datos.'
-        ),
-        h('section', { class: 'stat-card' },
-          h('h2', { class: 'stat-title', text: 'Qué tipo de posts ves' }),
-          kindTotal
-            ? [
-                h('div', { class: 'stack', role: 'img', 'aria-label': kindKeys.map((k) => KIND_NAMES[k] + ' ' + pct(kinds[k]) + '%').join(', ') },
-                  kindKeys.filter((k) => kinds[k]).map((k) => h('span', { style: { width: (kinds[k] / kindTotal) * 100 + '%', background: KIND_COLORS[k] } }))
-                ),
-                h('ul', { class: 'legend2' },
-                  kindKeys.map((k) => h('li', {}, h('i', { style: { background: KIND_COLORS[k] } }), KIND_NAMES[k], h('span', { class: 'rank-val', text: pct(kinds[k]) + ' % · ' + n(kinds[k]) })))
-                )
-              ]
-            : h('p', { class: 'chart-readout', text: 'Todavía no hay datos.' })
-        ),
-        rankList('Hashtags que más ves', top(st.tags, 10), postsFmt, 'Todavía no hay datos.', (r) => '#/tag/' + enc(r.label)),
-        rankList('Hashtags de tus me gusta', top(likedTags, 5), (v) => fmt(v) + (v === 1 ? ' me gusta' : ' me gusta'), 'Todavía no le diste me gusta a nada.', (r) => '#/tag/' + enc(r.label)),
-        rankList('Usuarios que más ves', top(st.users, 5), postsFmt, 'Todavía no hay datos.', (r) => '#/user/' + enc(r.label)),
-        rankList('Dónde navegas', top(st.sections, 8).map((r) => ({ label: SECTION_NAMES[r.label] || r.label, value: r.value })), postsFmt, 'Todavía no hay datos.'),
-        h('section', { class: 'stat-card' },
-          h('h2', { class: 'stat-title', text: 'Más datos' }),
-          h('ul', { class: 'facts' },
-            h('li', {}, 'Veces que abriste la app', h('span', { class: 'rank-val', text: fmt(st.sessions) })),
-            h('li', {}, 'Búsquedas', h('span', { class: 'rank-val', text: fmt(st.searches) })),
-            h('li', {}, 'Tiempo total', h('span', { class: 'rank-val', text: fmtDur(totalMs) })),
-            h('li', {}, 'Hashtags que sigues', h('span', { class: 'rank-val', text: fmt(Object.keys(S.favorites).length) })),
-            h('li', {}, 'Usuarios que sigues', h('span', { class: 'rank-val', text: fmt(Object.keys(S.following).length) })),
-            h('li', {}, 'En tu historial', h('span', { class: 'rank-val', text: fmt((S.history || []).length) }))
-          )
-        ),
+        timeGroup,
+        seeGroup,
+        tasteGroup,
+        likesGroup,
+        followGroup,
+        searchGroup,
+        dataGroup,
+        funGroup,
         h('p', { class: 'foot-note' },
-          'Desde el ' + new Date(st.since).toLocaleDateString('es', { day: 'numeric', month: 'long', year: 'numeric' }) + ' · solo en este teléfono. ',
+          'Se miden desde el ' + dateLong(st.since) + ', solo en este teléfono (y en tu respaldo). Lo marcado «desde la 1.17.0» empezó a contarse con esta versión. ',
           h('button', {
             class: 'link-btn',
             onclick: () => {
@@ -9045,6 +9943,180 @@
         )
       )
     ]);
+  }
+  const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  const headOffsetPx = () => {
+    const top = document.querySelector('#view header.top');
+    return top ? top.getBoundingClientRect().height : 60;
+  };
+
+  // Espacio en el teléfono (E38): en Android, lo que mide Bridge.diskUse (caché del WebView y lo demás); además, lo
+  // que guarda la interfaz: tus fotos, el intro, las fotos de perfil, y los datos (localStorage).
+  async function fillDisk(card) {
+    const parts = { pic: 0, intro: 0, clip: 0, av: 0 };
+    try {
+      const all = await RS.localDb.entries('');
+      for (const [k, v] of all) {
+        const kind = String(k).split(':')[0];
+        if (kind in parts && v && v.blob) parts[kind] += v.blob.size || 0;
+      }
+    } catch (e) {
+      /* sin IndexedDB */
+    }
+    let ls = 0;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('rs:')) ls += (k.length + (localStorage.getItem(k) || '').length) * 2;
+      }
+    } catch (e) {
+      /* sin acceso */
+    }
+    let dev = null;
+    if (RS.android) {
+      try {
+        dev = await RS.native('diskUse');
+      } catch (e) {
+        dev = null;
+      }
+    }
+    let est = 0;
+    try {
+      est = navigator.storage && navigator.storage.estimate ? (await navigator.storage.estimate()).usage || 0 : 0;
+    } catch (e) {
+      est = 0;
+    }
+    if (!card.isConnected) return;
+    const inner = [
+      { label: 'Tus datos (me gusta, lo que sigues…)', value: ls },
+      { label: 'Tus fotos de perfil recortadas', value: parts.pic },
+      { label: 'Miniaturas y GIF del intro', value: parts.intro + parts.clip },
+      { label: 'Fotos de lo que sigues', value: parts.av }
+    ].filter((r) => r.value > 0);
+    const full = !!(dev && dev.cache != null);
+    const total = full ? dev.cache + dev.data : est + ls;
+    fill(card,
+      h('h2', { class: 'stat-title', text: 'Espacio en el teléfono' }),
+      h('p', { class: 'stat-line' }, h('b', { text: fmtBytes(total) }), full ? ' en total' : ' que usa la interfaz'),
+      full ? rankRows([{ label: 'Caché (lo ya visto)', value: dev.cache, text: fmtBytes(dev.cache) }, { label: 'La app y sus datos', value: dev.data, text: fmtBytes(dev.data) }], fmtBytes) : null,
+      inner.length ? h('p', { class: 'stat-note', text: full ? 'Dentro de «La app y sus datos»:' : 'De eso:' }) : null,
+      inner.length ? h('ul', { class: 'facts small' }, inner.map((r) => h('li', {}, r.label, h('span', { class: 'rank-val', text: fmtBytes(r.value) })))) : null,
+      h('p', { class: 'stat-note', text: full ? 'La caché se llena con los videos e imágenes ya vistos; Android la vacía si hace falta espacio.' : 'En el teléfono también sale la caché.' })
+    );
+  }
+
+  // ---- Tu mes en historias (E39): tus récords del mes, como el resumen de la semana. #/monthrecap?m=AAAA-MM; el mes
+  // en curso se arma con lo de hasta hoy.
+  function routeMonthRecap(q) {
+    const st = stats();
+    monthTime();
+    const key = (q && q.get('m')) || monthKey(Date.now());
+    const sum = st.months[key] || (key === st.timeMonth.key ? monthSummary(key, st.timeMonth) : null);
+    const page = h('div', { class: 'recap' });
+    mount(page);
+    if (!sum) {
+      fill(page,
+        h('button', { class: 'vw-btn rc-x', 'aria-label': 'Cerrar', onclick: () => goBack('#/stats') }, icon('x', 24)),
+        emptyBox('trophy', 'No hay datos de ese mes', 'Los meses se guardan desde la 1.17.0.')
+      );
+      return;
+    }
+    if (st.months[key] && st.monthSeen !== key) {
+      st.monthSeen = key;
+      saveStats();
+      onNewsChanged();
+    }
+    playSlides(page, monthSlides(sum), () => navReplace('#/stats'), '#/stats', 'Ver estadísticas');
+  }
+  function monthSlides(sum) {
+    const name = new Date(dayAt(sum.key + '-15')).toLocaleDateString('es', { month: 'long', year: 'numeric' });
+    const live = sum.key === monthKey(Date.now()) && !stats().months[sum.key];
+    const k = (text) => h('span', { class: 'rc-k', text });
+    const list = (rows) => h('ol', { class: 'rc-list' }, rows);
+    const slides = [];
+    slides.push([
+      k('Tu ' + name + (live ? ', hasta hoy' : '')),
+      h('span', { class: 'rc-big', text: fmtDur(sum.ms) }),
+      h('span', { class: 'rc-sub', text: 'en Reactor Swipe, mirando ' + fmt(sum.posts) + (sum.posts === 1 ? ' post.' : ' posts.') }),
+      h('span', { class: 'rc-dim', text: sum.active === 1 ? 'La usaste 1 día' : 'La usaste ' + sum.active + ' días' })
+    ]);
+    if (sum.best) {
+      slides.push([
+        k('Tu día récord'),
+        h('span', { class: 'rc-big', text: cap(new Date(dayAt(sum.best.k)).toLocaleDateString('es', { weekday: 'long', day: 'numeric' })) }),
+        h('span', { class: 'rc-sub', text: fmtDur(sum.best.ms) + ' en la app' })
+      ]);
+    }
+    if (sum.longest) {
+      slides.push([
+        k('Tu sesión más larga'),
+        h('span', { class: 'rc-big', text: fmtDur(sum.longest) }),
+        sum.longestAt ? h('span', { class: 'rc-sub', text: 'el ' + new Date(sum.longestAt).toLocaleDateString('es', { weekday: 'long', day: 'numeric' }) + ', sin cerrar la app' }) : null
+      ]);
+    }
+    if (sum.streak > 1) {
+      slides.push([k('Tu racha'), h('span', { class: 'rc-big', text: sum.streak + ' días' }), h('span', { class: 'rc-sub', text: 'seguidos usando la app' })]);
+    }
+    const t = sum.tags[0];
+    if (t) {
+      slides.push([
+        k('Tu hashtag del mes'),
+        h('span', { class: 'rc-av' }, tagPic(t[0], 'avatar', '#')),
+        h('span', { class: 'rc-big', text: '#' + t[0] }),
+        h('span', { class: 'rc-sub', text: fmtDur(t[1]) + ' mirándolo' }),
+        sum.tags.length > 1 ? list(sum.tags.slice(1).map(([n, ms], i) => h('li', {}, h('b', { text: String(i + 2) }), h('span', { class: 'ellipsis', text: '#' + n }), h('span', { text: fmtDur(ms) })))) : null
+      ]);
+    }
+    const u = sum.users[0];
+    if (u) {
+      const rg = u[0].startsWith('rg:');
+      const nm = rg ? u[0].slice(3) : u[0];
+      slides.push([
+        k('Tu cuenta del mes'),
+        h('span', { class: 'rc-av' }, rg ? rgPic(nm, '', 'avatar') : avatar({ user: nm })),
+        h('span', { class: 'rc-big', text: (rg ? '' : '@') + nm }),
+        h('span', { class: 'rc-sub', text: fmtDur(u[1]) + ' mirando sus posts' }),
+        sum.users.length > 1 ? list(sum.users.slice(1).map(([n, ms], i) => h('li', {}, h('b', { text: String(i + 2) }), h('span', { class: 'ellipsis', text: n.startsWith('rg:') ? n.slice(3) : '@' + n }), h('span', { text: fmtDur(ms) })))) : null
+      ]);
+    }
+    if (sum.likes) {
+      const posts = sum.likeIds.map((id) => S.likes[id] && S.likes[id].post).filter((p) => p && p.media[0]);
+      slides.push([
+        k('Tus me gusta'),
+        h('span', { class: 'rc-big', text: fmt(sum.likes) }),
+        h('span', { class: 'rc-sub', text: sum.likes === 1 ? 'post te gustó' : 'posts te gustaron' }),
+        posts.length ? h('div', { class: 'rc-thumbs' }, posts.map((p) => h('i', { style: { backgroundImage: 'url("' + (p.media[0].kind === 'video' ? RS.posterUrl(p.media[0]) : RS.imageUrl(p.media[0])) + '")' } }))) : null
+      ]);
+    }
+    return slides;
+  }
+  // Aviso en Novedades (la campanita lo cuenta) durante la primera semana del mes: tu mes anterior, en historias.
+  function monthPending() {
+    const st = stats();
+    const last = Object.keys(st.months).sort().pop();
+    if (!last || st.monthSeen === last || st.monthLater === last) return null;
+    return new Date().getDate() <= 7 && monthKey(Date.now()) > last ? last : null;
+  }
+  function monthBanner() {
+    const key = monthPending();
+    if (!key) return null;
+    const name = new Date(dayAt(key + '-15')).toLocaleDateString('es', { month: 'long' });
+    return h('section', { class: 'notice recap-note' },
+      h('strong', {}, icon('trophy', 19), 'Tu ' + name + ' en historias está listo'),
+      h('span', { text: 'Tus récords del mes: tiempo, tu día récord, tu hashtag y tu cuenta del mes.' }),
+      h('div', { class: 'row-btns' },
+        h('a', { class: 'btn', href: '#/monthrecap?m=' + key }, 'Ver'),
+        h('button', {
+          class: 'btn quiet',
+          onclick: () => {
+            stats().monthLater = key;
+            saveStats();
+            onNewsChanged();
+            if (current && current.feed) current.feed.refresh();
+          }
+        }, 'Ocultar')
+      )
+    );
   }
 
   // ================================================================ Árbol de hashtags (herramienta temporal)
