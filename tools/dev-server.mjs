@@ -132,6 +132,7 @@ window.RSAndroid = {
   getNews: () => '{}',
   installedAt: () => String(window.__simInstall || localStorage.getItem('sim:install') || 1),
   onWifi: () => localStorage.getItem('sim:wifi') !== '0',
+  setPrivacy(recents, lock) { window.__simPrivacy = { recents, lock }; },
   markNewsRead() {},
   syncConfig() {},
   syncWeek(json) { window.__simWeek = JSON.parse(json); },

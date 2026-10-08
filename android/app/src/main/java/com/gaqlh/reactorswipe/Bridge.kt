@@ -51,6 +51,13 @@ class Bridge(private val activity: MainActivity) {
         Notifs.cancelNews(ctx)
     }
 
+    /** Ajustes › Privacidad (1.16.0): tapar en apps recientes y esconder al bloquear (ver MainActivity). */
+    @JavascriptInterface
+    fun setPrivacy(recents: Boolean, lock: Boolean) {
+        Store.prefs(ctx).edit().putBoolean("privRecents", recents).putBoolean("privLock", lock).apply()
+        activity.runOnUiThread { activity.applyPrivacy() }
+    }
+
     @JavascriptInterface
     fun syncConfig(json: String) {
         Store.saveConfig(ctx, json)

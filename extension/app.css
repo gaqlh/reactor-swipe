@@ -1444,3 +1444,11 @@ h2 .verif .i { width: 18px; height: 18px; }
 .ptag.on .label { color: var(--accent); }
 .ptag .x { position: absolute; right: -4px; top: -4px; width: 20px; height: 20px; border-radius: 10px; background: var(--accent); color: #111; display: grid; place-items: center; border: 2px solid var(--bg); }
 .ptag .x .i { width: 12px; height: 12px; }
+
+/* ---------- 1.16.0 ---------- */
+/* Intro: el GIF se ve recién cuando se mueve (antes del primer cuadro el WebView pintaba su ícono de «play») */
+.in-wall i video { opacity: 0; transition: opacity 0.15s; }
+.in-wall i video.on { opacity: 1; }
+/* Pantalla completa: la bocina sin el círculo amarillo, como los demás botones (lo pidió el usuario) */
+.vw-sound .snd, .vw-sound.on .snd { background: transparent; color: #fff; box-shadow: none; }
+.vw-sound .snd .i { filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.75)); stroke-width: 2; }

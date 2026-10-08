@@ -2,9 +2,12 @@ package com.gaqlh.reactorswipe
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
@@ -13,7 +16,9 @@ import android.os.SystemClock
 import android.content.Context
 import android.provider.DocumentsContract
 import android.provider.Settings
+import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -55,6 +60,39 @@ class MainActivity : ComponentActivity() {
     private lateinit var root: FrameLayout
     private var fullscreen = false
     private var fileCallback: ValueCallback<Array<Uri>>? = null
+
+    // ---- Privacidad (1.16.0, lo pidió el usuario; Ajustes › Privacidad, las dos encendidas de entrada).
+    // · Tapar en apps recientes: al pasar a segundo plano se pone encima una capa del color de fondo y FLAG_SECURE, así
+    //   la miniatura de recientes sale tapada; al volver se quitan (las capturas de pantalla dentro de la app siguen
+    //   funcionando). En Android 13+ además setRecentsScreenshotEnabled(false).
+    // · Esconder al bloquear: al apagarse la pantalla con la app abierta, la app pasa a segundo plano; al desbloquear
+    //   se ve el escritorio.
+    private var cover: View? = null
+    private val screenOff = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (Intent.ACTION_SCREEN_OFF == intent.action && Store.prefs(this@MainActivity).getBoolean("privLock", true)) moveTaskToBack(true)
+        }
+    }
+    private fun hideRecents() = Store.prefs(this).getBoolean("privRecents", true)
+
+    /** Lo llama Bridge.setPrivacy cuando cambian los ajustes. */
+    fun applyPrivacy() {
+        if (Build.VERSION.SDK_INT >= 33) setRecentsScreenshotEnabled(!hideRecents())
+    }
+
+    private fun coverUp(on: Boolean) {
+        if (on && hideRecents()) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            if (cover == null) {
+                cover = View(this).apply { setBackgroundColor(BG) }
+                root.addView(cover, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            }
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            cover?.let { root.removeView(it) }
+            cover = null
+        }
+    }
 
     // El único archivo que pide la interfaz es el respaldo: el selector se abre en Descargas/ReactorSwipe,
     // donde lo escribe el respaldo automático (1.12.0).
@@ -136,6 +174,10 @@ class MainActivity : ComponentActivity() {
         }
 
         web.webChromeClient = object : WebChromeClient() {
+            // Sin esto, un <video> que todavía no tiene su primer cuadro muestra el ícono gris de «play» de Android
+            // (en el intro se veía un instante en los GIF; 1.16.0). Un punto transparente en su lugar.
+            override fun getDefaultVideoPoster(): Bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+
             override fun onShowFileChooser(
                 view: WebView,
                 callback: ValueCallback<Array<Uri>>,
@@ -173,6 +215,17 @@ class MainActivity : ComponentActivity() {
 
         Scheduler.ensure(this)
         maybeAskNotifications(false)
+        applyPrivacy()
+        ContextCompat.registerReceiver(this, screenOff, IntentFilter(Intent.ACTION_SCREEN_OFF), ContextCompat.RECEIVER_NOT_EXPORTED)
+    }
+
+    override fun onDestroy() {
+        try {
+            unregisterReceiver(screenOff)
+        } catch (e: Exception) {
+            // ya no estaba
+        }
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -184,6 +237,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        coverUp(false)
         web.onResume()
         web.evaluateJavascript("window.RSApp && RSApp.onResume && RSApp.onResume()", null)
     }
@@ -196,6 +250,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        coverUp(true)
         web.onPause()
         super.onPause()
     }

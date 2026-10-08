@@ -977,7 +977,7 @@
         mode: 'grid',
         stepBack: true,
         back: true,
-        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), account ? [findBtn(f), shuffleBtn(random, '#/rgtag/' + enc(name) + (random ? '' : '?order=random'))] : viewToggle(f)],
+        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), account ? [findBtn(f), shuffleBtn(random, '#/rgtag/' + enc(name) + (random ? '' : '?order=random'))] : null],
         extra: () => hero,
         sub: (f) => (account ? rgProfileTabs(f, 'rgtag', name) : null),
         empty: (f) =>
@@ -1092,7 +1092,7 @@
         favName: name,
         mode: 'grid',
         back: true,
-        head: (f) => [backBtn('/home'), h('h1', { text: name }), findBtn(f), viewToggle(f)],
+        head: (f) => [backBtn('/home'), h('h1', { text: name }), findBtn(f)],
         extra: () => hero,
         sub: (f) => rgProfileTabs(f, 'rguser', name),
         empty: (f) =>
@@ -2867,6 +2867,11 @@
   // sigues como cuenta), hashtags seguidos, me gusta e historial. Los dos primeros abren Seguidos; me gusta
   // e historial cambian la cuadrícula de abajo, como sus pestañas (active: la que se ve). La fila de
   // círculos con lo que sigues se quitó en la 1.8.3 (lo pidió el usuario).
+  // Tú (1.16.0, lo pidió el usuario): como un perfil de Instagram, la cabecera con los cuatro números y, donde irían
+  // tus posts, «No has publicado nada aún». Me gusta, Historial y Seguidos se abren tocando su número.
+  function routeMe() {
+    mount([h('header', { class: 'top' }, h('h1', { text: 'Tú' })), meHeader(), emptyBox('image', 'No has publicado nada aún')]);
+  }
   function meHeader(active) {
     const nRgTags = Object.values(S.rgTags).filter((t) => t.as === 'tag').length;
     const nTags = Object.keys(S.favorites).length + nRgTags;
@@ -2878,7 +2883,7 @@
         class: 'mestat' + (tab && tab === active ? ' on' : ''),
         href,
         'aria-current': tab && tab === active ? 'page' : null,
-        onclick: tab
+        onclick: tab && active
           ? (e) => {
               e.preventDefault();
               if (tab !== active) navReplace(href);
@@ -3412,7 +3417,9 @@
     const open = h('button', {
       class: 'thumb-open',
       'aria-label': 'Abrir post' + (p.tags.length ? ' ' + p.tags.slice(0, 3).map((t) => '#' + t).join(' ') : ''),
-      onclick: () => (feed.sel ? toggleSelect(feed, p.id) : feed.setMode('feed', p.id))
+      // 1.16.0 (lo pidió el usuario): directo a pantalla completa; ya no hay vista de un post por pantalla en las
+      // listas de miniaturas.
+      onclick: () => (feed.sel ? toggleSelect(feed, p.id) : openViewer(feed, p, 0))
     });
     const media = thumbMedia(m);
     if (media) open.append(media);
@@ -3563,8 +3570,9 @@
       feed = null;
     }
     const scroller = h('div', { class: 'vw-feed' });
-    // El sonido empieza siempre apagado; se prende con el botón amarillo.
-    const v = { feed, scroller, current: null, muted: true, onAdd: null, openedAt: Date.now(), story: story ? {} : null };
+    // El sonido empieza apagado cada vez que entras (1.16.0: se puede cambiar en Ajustes › Cómo se ve › Recordar
+    // el sonido; entonces sigue como lo dejaste la última vez).
+    const v = { feed, scroller, current: null, muted: !(S.settings.fsKeepSound && fsSoundOn), onAdd: null, openedAt: Date.now(), story: story ? {} : null };
     viewer = v;
     stats().fsOpens++;
     saveStats();
@@ -3827,9 +3835,11 @@
     b.setAttribute('aria-pressed', String(!viewer.muted));
     b.setAttribute('aria-label', viewer.muted ? 'Activar sonido' : 'Silenciar');
   }
+  let fsSoundOn = false; // cómo quedó el sonido de la pantalla completa (para «Recordar el sonido»)
   function toggleViewerSound() {
     if (!viewer) return;
     viewer.muted = !viewer.muted;
+    fsSoundOn = !viewer.muted;
     viewer.el.querySelectorAll('video').forEach((x) => (x.muted = viewer.muted));
     viewer.el.querySelectorAll('.vw-sound').forEach(paintSound);
   }
@@ -5117,7 +5127,7 @@
     home: 'home', tag: 'home', user: 'home', rguser: 'home', rgtag: 'home', news: 'home',
     search: 'search', find: 'search', visited: 'search', cross: 'search',
     random: 'random', mix: 'random',
-    following: 'me', favorites: 'me', likes: 'me', history: 'me',
+    me: 'me', following: 'me', favorites: 'me', likes: 'me', history: 'me',
     settings: 'settings', hidden: 'settings', blocked: 'settings', debug: 'settings', stats: 'settings', week: 'settings', recap: 'settings', topusers: 'settings', tree: 'settings'
   };
   let lastNavWasBack = false;
@@ -5164,6 +5174,7 @@
     if (name === 'search') return routeSearch(q);
     if (name === 'find') return routeFind();
     if (name === 'cross') return routeCross(q);
+    if (name === 'me') return routeMe();
     if (name === 'likes') return routeLikes(q);
     if (name === 'history') return routeHistory();
     if (name === 'visited') return routeVisited();
@@ -5186,11 +5197,8 @@
 
   // Un solo botón para la vista, igual en todas las cabeceras: con un post por pantalla muestra las
   // miniaturas (y las pone al tocarlo); en miniaturas muestra un post por pantalla.
-  function viewToggle(feed) {
-    const toGrid = feed.mode !== 'grid';
-    const label = toGrid ? 'Ver en miniaturas' : 'Ver un post por pantalla';
-    return h('button', { class: 'ib', 'aria-label': label, title: label, onclick: () => feed.setMode(toGrid ? 'grid' : 'feed') }, icon(toGrid ? 'grid' : 'feed', 22));
-  }
+  // (Hasta la 1.15.0 aquí iba viewToggle, el botón ⊞ / ▭. Desde la 1.16.0 Inicio, Aleatorio y Novedades son siempre un
+  // post por pantalla, y todo lo demás, miniaturas que se abren en pantalla completa.)
 
   // La campanita cuenta los posts nuevos de lo que vigilas y los avisos que esperan en Novedades: el
   // resumen de la semana sin mirar y, con la app recién instalada, restaurar el respaldo.
@@ -5635,7 +5643,8 @@
         key: 'home:following',
         kind: 'following',
         dates: () => true,
-        head: (f) => [h('h1', { text: 'Inicio' }), bellLink(), viewToggle(f)],
+        // Inicio es siempre un post por pantalla (1.16.0, lo pidió el usuario: sin miniaturas).
+        head: () => [h('h1', { text: 'Inicio' }), bellLink()],
         // En Inicio solo queda el aviso de versión nueva; los demás esperan en la campanita (Novedades).
         extra: () => [updateBanner(), storiesRow()],
         empty: (f) =>
@@ -6049,7 +6058,7 @@
         // Buscar dentro de la cuenta (1.13.0): sus posts con otros hashtags o un texto.
         findKey: profile ? 'tag:' + tkey(name) : null,
         findBase: () => ({ tag: name }),
-        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), profile ? [findBtn(f), shuffleBtn(random, url({ random: !random }))] : viewToggle(f)],
+        head: (f) => [backBtn('/home'), h('h1', { text: '#' + name }), profile ? [findBtn(f), shuffleBtn(random, url({ random: !random }))] : null],
         extra: (f) => {
           // Bloquear #gif (o #video…) esconde casi todos los GIF y videos: se avisa arriba.
           const blocked = fmtBlocked();
@@ -7120,10 +7129,8 @@
             ? null
             : { q: chip === 'all' ? { rotate: rgExploreQueries() } : { tags: rgTagFor(chip), order: 'trending', random: true, verified: true, creators: true }, general: true },
         mode: 'grid',
-        head: (f) => (f.mode === 'feed'
-          ? [backBtn('/search'), h('h1', { text: 'Explorar' })]
-          : [h('button', { type: 'button', class: 'search-pill', onclick: () => nav('#/find') }, icon('search', 20), h('span', { text: 'Buscar' }))]),
-        extra: () => exploreChips(chip),
+        head: () => [h('button', { type: 'button', class: 'search-pill', onclick: () => nav('#/find') }, icon('search', 20), h('span', { text: 'Buscar' }))],
+        // Las fichas (Para ti, tus hashtags, Descubrir) se quitaron en la 1.16.0 (lo pidió el usuario); ?c= sigue andando.
         empty: () => (chip === 'new'
           ? emptyBox('search', 'Todavía no hay nada para descubrir', 'Mira posts y dales me gusta: de ahí salen los hashtags nuevos para ti.')
           : emptyBox('search', 'No encontré posts', 'Desliza hacia abajo arriba del todo para intentar otra vez.'))
@@ -7220,10 +7227,10 @@
       key,
       kind: 'cross',
       cross: tags,
-      mode: 'feed',
+      mode: 'grid',
       back: true,
       onTotal: showCount,
-      head: (f) => [backBtn('/find'), h('h1', { text: 'Cruzar hashtags' }), viewToggle(f)],
+      head: () => [backBtn('/find'), h('h1', { text: 'Cruzar hashtags' })],
       extra: (f) => {
         if (f.crossOrder) showCount(f.total);
         return [crossChips(tags, () => openCrossAdd(tags)), countEl];
@@ -7494,7 +7501,7 @@
     }
 
     drawLists();
-    mount([h('header', { class: 'top has-back' }, backBtn('/likes'), h('h1', { text: 'Seguidos' })), tabsEl, sb.el, sb.results, lists]);
+    mount([h('header', { class: 'top has-back' }, backBtn('/me'), h('h1', { text: 'Seguidos' })), tabsEl, sb.el, sb.results, lists]);
     pageFollowHook = drawLists; // al seguir desde el buscador de arriba (menú «como hashtag o como cuenta»)
   }
 
@@ -7604,7 +7611,7 @@
     };
     const sb = searchBox('Buscar @usuario', false, null, true, { usersOnly: true, onFollow: () => draw() });
     draw();
-    mount([h('header', { class: 'top has-back' }, backBtn('/likes'), h('h1', { text: 'Seguidos' })), tabsEl, sb.el, sb.results, listEl]);
+    mount([h('header', { class: 'top has-back' }, backBtn('/me'), h('h1', { text: 'Seguidos' })), tabsEl, sb.el, sb.results, listEl]);
     pageFollowHook = draw;
   }
 
@@ -7641,8 +7648,8 @@
       memoryKey: 'likes' + (fid ? ':' + fid : ''),
       anchor: feedMemory.get('likes' + (fid ? ':' + fid : '')),
       mode: 'grid',
-      head: (f) => (f.sel ? selectionHead(f, 'likes', fid ? S.folders[fid] : null) : [h('h1', { text: 'Tú' })]),
-      extra: () => [meHeader('likes'), favTabs('likes'), folderStrip(fid), fid && S.folders[fid] ? folderBar(S.folders[fid]) : null],
+      head: (f) => (f.sel ? selectionHead(f, 'likes', fid ? S.folders[fid] : null) : [backBtn('/me'), h('h1', { text: 'Me gusta' })]),
+      extra: () => [favTabs('likes'), folderStrip(fid), fid && S.folders[fid] ? folderBar(S.folders[fid]) : null],
       empty: () => (fid
         ? emptyBox('folder', 'Esta carpeta está vacía', 'En Todos, mantén presionada una miniatura, elige los posts y toca Mover.')
         : emptyBox('heart', 'Todavía no tienes me gusta', 'Toca el corazón en cualquier post.'))
@@ -8059,9 +8066,8 @@
       memoryKey: 'history',
       anchor: feedMemory.get('history'),
       mode: 'grid',
-      head: (f) => (f.sel ? selectionHead(f, 'history') : [h('h1', { text: 'Tú' })]),
+      head: (f) => (f.sel ? selectionHead(f, 'history') : [backBtn('/me'), h('h1', { text: 'Historial' })]),
       extra: () => [
-        meHeader('history'),
         favTabs('history'),
         list.length
           ? h('div', { class: 'countline', style: { display: 'flex', alignItems: 'center', gap: '8px' } },
@@ -8228,7 +8234,7 @@
       memoryKey: 'news',
       anchor: feedMemory.get('news'),
       back: true,
-      head: (f) => [backBtn('/home'), h('h1', { text: 'Novedades' }), checkBtn, viewToggle(f)],
+      head: () => [backBtn('/home'), h('h1', { text: 'Novedades' }), checkBtn],
       // Lo que se vigila se vuelve a leer cada vez (pudiste tocar una campanita desde la última visita).
       extra: () => {
         const list = watchList();
@@ -8650,8 +8656,27 @@
         }, segField('Sensibilidad', 'Cuánto avanza al cruzar la pantalla de lado a lado. En un video más corto, cruzarla lo recorre entero.', [[15, '15 s'], [30, '30 s'], [60, '1 min'], [120, '2 min']], Number(st.seekSpan) || 60, (v) => {
           st.seekSpan = v;
           save();
-        }))
+        })),
+        switchLine('Recordar el sonido', 'Al volver a la pantalla completa, el sonido sigue como lo dejaste. Apagado, siempre empieza en silencio.', !!st.fsKeepSound, (on) => {
+          st.fsKeepSound = on;
+          save();
+        })
       ),
+      // Privacidad (1.16.0, lo pidió el usuario): las dos vienen encendidas. Las aplica Android (MainActivity).
+      RS.android
+        ? group('Privacidad',
+            switchLine('Tapar en apps recientes', 'Al ver las apps abiertas (el botón cuadrado de Android), la app sale tapada: no se ve lo que estabas mirando.', st.privRecents !== false, (on) => {
+              st.privRecents = on;
+              save();
+              syncPrivacy();
+            }),
+            switchLine('Esconder al bloquear', 'Si bloqueas el teléfono con la app abierta, al desbloquearlo la app queda en segundo plano: ves la pantalla de inicio de Android.', st.privLock !== false, (on) => {
+              st.privLock = on;
+              save();
+              syncPrivacy();
+            })
+          )
+        : null,
       group('Funciones para el futuro',
         switchLine('Aleatorio', 'Posts al azar de lo que sigues, con tu mezcla. Encendido, vuelve a la barra de abajo.', !!st.randomTab, (on) => {
           st.randomTab = on;
@@ -9332,6 +9357,7 @@
   // se usa el siguiente. Lo que deja de estar entre los últimos me gusta se borra del teléfono.
   const INTRO_MS = 1500;
   const INTRO_TILES = 15;
+  const BLANK_POSTER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
   const INTRO_CLIPS = 4; // 1.13.4 (lo pidió el usuario); antes 3
   // Dónde van los que se mueven (el mosaico tiene 3 columnas, va girado y el 7 queda detrás del logo). Desde la
   // 1.14.1, los que eligió el usuario marcándolos en una captura: justo arriba, abajo, a la izquierda y a la
@@ -9433,6 +9459,11 @@
         vid.autoplay = true;
         vid.setAttribute('muted', '');
         vid.setAttribute('playsinline', '');
+        // Antes del primer cuadro, el WebView pintaba su ícono gris de «play» (lo vio el usuario en la 1.14.1): poster
+        // transparente y el video invisible hasta que se mueve (se ve la miniatura de la casilla). Android, además,
+        // ya no tiene ícono por defecto (getDefaultVideoPoster en MainActivity).
+        vid.poster = BLANK_POSTER;
+        vid.addEventListener('playing', () => vid.classList.add('on'), { once: true });
         vid.src = clip;
         vid.addEventListener('timeupdate', () => vid.currentTime >= INTRO_CLIP_S && (vid.currentTime = 0));
         vid.play().catch(() => {});
@@ -9568,6 +9599,17 @@
     setTimeout(cacheAvatars, 6000);
   }
 
+  // Le pasa a Android los ajustes de Privacidad (1.16.0).
+  function syncPrivacy() {
+    if (RS.android && typeof RS.android.setPrivacy === 'function') {
+      try {
+        RS.android.setPrivacy(S.settings.privRecents !== false, S.settings.privLock !== false);
+      } catch (e) {
+        /* una versión de Android sin esto */
+      }
+    }
+  }
+
   async function boot() {
     try {
       history.scrollRestoration = 'manual';
@@ -9588,6 +9630,7 @@
     if (RS.android) {
       loadNativeNews();
       syncNative();
+      syncPrivacy();
     }
     initTabs();
     initPullToRefresh();
