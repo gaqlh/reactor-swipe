@@ -5673,6 +5673,8 @@
     const st = f.fol || (f.fol = { srcs: homeSources().map((q) => ({ src: RS.createRgSource(q), buf: [] })) });
     const since = Date.now() - STORY_WINDOW;
     const out = [];
+    // Las sugerencias se piden mientras tanto (homeSuggest); se reparten al final.
+    const sugging = st.srcs.length ? fillSuggest(f, HOME_SUG_N).catch(() => {}) : null;
     while (out.length < HOME_CHUNK) {
       // Para saber cuál es el más nuevo hace falta al menos un post de cada uno.
       const empty = st.srcs.filter((s) => !s.buf.length && !s.src.done);
@@ -5703,7 +5705,87 @@
       out.push({ post });
       st.picked = (st.picked || []).concat(best).slice(-HOME_GAP);
     }
-    return out;
+    if (!sugging || !out.length) return out;
+    await sugging;
+    return mixSuggest(f, out);
+  }
+
+  // ---- Inicio con un 30 % de posts que no sigues (1.15.0, lo pidió el usuario; eligió que sean solo de RedGifs):
+  // videos de creadores que no sigues, de las etiquetas que más consumes en RedGifs (homeSuggestTags: las que
+  // sigues como hashtag, las de tus me gusta, tu historial y lo que miraste esta semana; las que sigues como
+  // cuenta ya están en Inicio). Como en Buscar, solo videos de creadores (verticales y con sonido), sin lo que ya
+  // viste ni lo de los creadores que sigues, y como mucho uno por creador en cada tanda. Se reparten entre los de
+  // tus cuentas (mixSuggest: uno cada dos o tres, nunca dos seguidos) y llevan arriba «Te puede gustar · #etiqueta».
+  const HOME_SUGGEST = 0.3;
+  const HOME_SUG_N = Math.round((HOME_CHUNK * HOME_SUGGEST) / (1 - HOME_SUGGEST)); // por tanda: 5 para 12
+  function homeSuggestTags(f) {
+    const score = new Map();
+    const skip = new Set(Object.values(S.rgTags).filter((t) => t.as === 'account').map((t) => tkey(t.name)));
+    const add = (t, w) => {
+      const k = tkey(t);
+      if (skip.has(k)) return;
+      const x = score.get(k) || { name: t, w: 0 };
+      x.w += w;
+      score.set(k, x);
+    };
+    for (const t of Object.values(S.rgTags)) add(t.name, 5);
+    const from = (list, w) => {
+      for (const x of list) if (x && x.post && RS.isRg(x.post)) x.post.tags.slice(0, 6).forEach((t) => add(t, w));
+    };
+    from(Object.values(S.likes), 2);
+    from(S.history || [], 1);
+    from(f.items, 0.5);
+    const time = weekTime().tags;
+    for (const x of score.values()) x.w += (time[x.name] || 0) / 120000; // medio punto por minuto mirado
+    return [...score.values()].sort((a, b) => b.w - a.w).slice(0, 4);
+  }
+  async function fillSuggest(f, n) {
+    const sg = f.fol.sug || (f.fol.sug = { srcs: null, queue: [] });
+    if (!sg.srcs) {
+      const tags = homeSuggestTags(f);
+      const qs = tags.length
+        ? tags.map((x) => ({ tags: x.name, order: 'trending', random: true }))
+        : [{ order: 'trending', verified: true, random: true }];
+      sg.srcs = qs.map((q) => ({ q, src: RS.createRgSource(q), buf: [] }));
+    }
+    const ok = (post) =>
+      !f.ids.has(post.id) && !S.seenSet.has(post.id) && !S.dislikes[post.id] && !isRgFollowed(post.user) && RS.isCreatorVideo(post) && pass(post) &&
+      !sg.queue.some((x) => x.post.id === post.id || x.post.user === post.user);
+    for (let round = 0; sg.queue.length < n && round < 3; round++) {
+      // Las etiquetas sin posts esperando se piden todas a la vez; después se toma uno de cada una, por turnos.
+      const empty = sg.srcs.filter((x) => !x.buf.length && !x.src.done);
+      await Promise.all(empty.map((x) => x.src.more().then((posts) => x.buf.push(...posts), () => (x.src.done = true))));
+      const live = sg.srcs.filter((x) => x.buf.length);
+      if (!live.length) break;
+      let moved = true;
+      while (sg.queue.length < n && moved) {
+        moved = false;
+        for (const x of live) {
+          if (sg.queue.length >= n) break;
+          while (x.buf.length) {
+            const post = x.buf.shift();
+            if (!ok(post)) continue;
+            sg.queue.push({ post, label: 'Te puede gustar' + (x.q.tags ? ' · #' + x.q.tags : ''), icon: 'search' });
+            moved = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+  function mixSuggest(f, out) {
+    const sg = f.fol.sug;
+    const want = Math.min(sg ? sg.queue.length : 0, Math.round((out.length * HOME_SUGGEST) / (1 - HOME_SUGGEST)));
+    if (!want) return out;
+    const sug = sg.queue.splice(0, want).filter((x) => !f.ids.has(x.post.id));
+    const gap = Math.max(2, Math.floor(out.length / Math.max(1, sug.length)));
+    const res = [];
+    out.forEach((it, i) => {
+      res.push(it);
+      if ((i + 1) % gap === 0 && sug.length) res.push(sug.shift());
+    });
+    sg.queue.unshift(...sug); // las que no entraron, para la tanda siguiente
+    return res;
   }
   // Los últimos 20 posts de cada usuario o hashtag que sigues, guardados unos minutos, para las historias
   // (lo que ya se está pidiendo no se repite). Se piden de a 12 por consulta.
